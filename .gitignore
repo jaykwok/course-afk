@@ -1,0 +1,30 @@
+# Python cache and local environments
+__pycache__/
+*.py[cod]
+.venv/
+
+# Editor and local tooling
+.vscode/
+.claude/
+docs/
+
+# Local secrets and session state
+.env
+cookies.json
+credential_meta.json
+
+# Runtime logs and temporary probe files
+log.txt
+tmp_*
+*_probe.txt
+.coverage
+.pytest_cache/
+htmlcov/
+build/
+dist/
+
+# Generated workflow output files
+课程链接.json
+挂课失败链接.json
+考试链接.json
+人工考试链接.json

@@ -1,0 +1,396 @@
+"""
+统一配置与日志工具。
+
+运行时配置主要从 .env 读取，本文件负责集中定义默认值、路径和日志行为。
+"""
+
+import asyncio
+import ctypes
+import logging
+import os
+import sys
+from datetime import datetime
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+# 加载 .env 文件（API密钥等敏感信息仍由 .env 管理）
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+load_dotenv(PROJECT_ROOT / ".env")
+
+# ============================================================
+# 日志配置
+# ============================================================
+LOG_FILE = PROJECT_ROOT / "log.txt"
+LOG_LEVEL = logging.DEBUG
+CONSOLE_LOG_LEVEL = logging.INFO
+LOG_FORMAT = (
+    "%(asctime)s [%(levelname)s] %(filename)s:%(lineno)d (%(funcName)s) %(message)s"
+)
+CONSOLE_LOG_FORMAT = "%(message)s"
+_LOGGING_CONFIGURED = False
+_NOISY_LOGGER_NAMES = (
+    "asyncio",
+    "openai",
+    "httpx",
+    "httpcore",
+    "playwright",
+    "urllib3",
+    "websockets",
+)
+
+
+def _sanitize_console_message(message: str) -> str:
+    if not message:
+        return message
+
+    normalized = message.replace("\r\n", "\n").replace("\r", "\n")
+    if normalized.lstrip().startswith("Traceback (most recent call last):"):
+        return ""
+
+    sanitized_lines: list[str] = []
+    skipping_call_log = False
+
+    for line in normalized.split("\n"):
+        stripped = line.strip()
+
+        if stripped.startswith("Call log:"):
+            skipping_call_log = True
+            continue
+
+        if skipping_call_log:
+            if not stripped:
+                continue
+            if line.lstrip().startswith("- "):
+                continue
+            skipping_call_log = False
+
+        sanitized_lines.append(line)
+
+    collapsed_lines: list[str] = []
+    previous_blank = False
+    for line in sanitized_lines:
+        is_blank = not line.strip()
+        if is_blank and previous_blank:
+            continue
+        collapsed_lines.append(line)
+        previous_blank = is_blank
+
+    return "\n".join(collapsed_lines).strip("\n")
+
+
+class _SanitizedConsoleFormatter(logging.Formatter):
+    def format(self, record):
+        return _sanitize_console_message(super().format(record))
+
+
+class _SanitizedConsoleFilter(logging.Filter):
+    def filter(self, record):
+        return bool(_sanitize_console_message(record.getMessage()).strip())
+
+
+def summarize_exception_message(exc: Exception, fallback: str) -> str:
+    sanitized = _sanitize_console_message(str(exc)).strip()
+    if not sanitized:
+        return fallback
+
+    lines = [line.strip() for line in sanitized.splitlines() if line.strip()]
+    if not lines:
+        return fallback
+
+    first_line = lines[0]
+    noisy_prefixes = (
+        "Locator.",
+        "Traceback ",
+        "playwright.",
+    )
+    if first_line.startswith(noisy_prefixes):
+        return fallback
+    return f"{fallback}: {first_line}"
+
+
+def _is_unretrieved_target_closed_context(context: dict) -> bool:
+    message = str(context.get("message", ""))
+    if "Future exception was never retrieved" not in message:
+        return False
+
+    exc = context.get("exception")
+    if exc is None:
+        return False
+
+    exc_text = str(exc).lower()
+    return exc.__class__.__name__ == "TargetClosedError" or any(
+        marker in exc_text
+        for marker in (
+            "target page, context or browser has been closed",
+            "browser has been closed",
+        )
+    )
+
+
+def _make_asyncio_exception_handler(previous_handler=None):
+    def _handle_asyncio_exception(loop, context):
+        if _is_unretrieved_target_closed_context(context):
+            return
+        if previous_handler is not None:
+            previous_handler(loop, context)
+            return
+        loop.default_exception_handler(context)
+
+    return _handle_asyncio_exception
+
+
+def run_async(awaitable):
+    with asyncio.Runner() as runner:
+        loop = runner.get_loop()
+        previous_handler = loop.get_exception_handler()
+        loop.set_exception_handler(_make_asyncio_exception_handler(previous_handler))
+        return runner.run(awaitable)
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_text(name: str, default: str | None = None) -> str | None:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    stripped = value.strip()
+    return stripped or default
+
+
+def _default_browser_channel(browser_type: str) -> str | None:
+    if browser_type == "chromium" and sys.platform.startswith("win"):
+        return "msedge"
+    return None
+
+
+def _build_file_handler():
+    handler = logging.FileHandler(LOG_FILE, mode="a", encoding="utf-8")
+    handler.setLevel(LOG_LEVEL)
+    handler.setFormatter(logging.Formatter(LOG_FORMAT))
+    return handler
+
+
+def _get_console_log_level() -> int:
+    return logging.DEBUG if _env_flag("DEBUG_MODE") else CONSOLE_LOG_LEVEL
+
+
+def _is_utf8_console_encoding(encoding: str | None) -> bool:
+    if not encoding:
+        return False
+    normalized = encoding.strip().lower().replace("_", "-")
+    return normalized in {"utf-8", "utf8", "cp65001"}
+
+
+def _prepare_console_streams() -> None:
+    _disable_windows_console_input_modes()
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                try:
+                    reconfigure(errors="replace")
+                except Exception:
+                    pass
+
+
+def _can_use_rich_console() -> bool:
+    return _is_utf8_console_encoding(getattr(sys.stdout, "encoding", None)) and (
+        _is_utf8_console_encoding(getattr(sys.stderr, "encoding", None))
+    )
+
+
+def _disable_windows_console_input_modes() -> None:
+    if not sys.platform.startswith("win"):
+        return
+
+    try:
+        kernel32 = ctypes.windll.kernel32
+        stdin_handle = kernel32.GetStdHandle(-10)
+        if stdin_handle in (0, -1):
+            return
+
+        mode = ctypes.c_uint()
+        if not kernel32.GetConsoleMode(stdin_handle, ctypes.byref(mode)):
+            return
+
+        extended_flags = 0x0080
+        quick_edit_mode = 0x0040
+        insert_mode = 0x0020
+        updated_mode = (mode.value | extended_flags) & ~(quick_edit_mode | insert_mode)
+        if updated_mode != mode.value:
+            kernel32.SetConsoleMode(stdin_handle, updated_mode)
+    except Exception:
+        pass
+
+
+def _build_console_handler():
+    _prepare_console_streams()
+
+    handler = None
+    if _can_use_rich_console():
+        try:
+            from rich.logging import RichHandler
+
+            handler = RichHandler(
+                rich_tracebacks=True,
+                show_path=False,
+                show_time=False,
+                show_level=False,
+                markup=True,
+            )
+        except Exception:
+            handler = None
+
+    if handler is None:
+        handler = logging.StreamHandler()
+    handler.setLevel(_get_console_log_level())
+    handler.addFilter(_SanitizedConsoleFilter())
+    handler.setFormatter(_SanitizedConsoleFormatter(CONSOLE_LOG_FORMAT))
+    return handler
+
+
+def _silence_noisy_loggers():
+    for logger_name in _NOISY_LOGGER_NAMES:
+        logging.getLogger(logger_name).setLevel(logging.WARNING)
+
+
+def _should_show_startup_banner(show_startup_banner: bool | None) -> bool:
+    if show_startup_banner is not None:
+        return show_startup_banner
+    return not _env_flag("SUPPRESS_STARTUP_BANNER")
+
+
+def _log_startup_banner(root_logger):
+    script_name = sys.argv[0] if sys.argv[0] else "unknown"
+    separator = (
+        f"\n{'='*60}\n"
+        f"[启动] {script_name} | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"{'='*60}"
+    )
+    root_logger.info(separator)
+
+
+def setup_logging(show_startup_banner: bool | None = None):
+    """统一日志配置，所有脚本共用，追加模式保留历史日志"""
+    global _LOGGING_CONFIGURED
+
+    if _LOGGING_CONFIGURED:
+        return logging.getLogger()
+
+    root_logger = logging.getLogger()
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
+        try:
+            handler.close()
+        except Exception:
+            pass
+
+    root_logger.setLevel(LOG_LEVEL)
+    root_logger.addHandler(_build_file_handler())
+    root_logger.addHandler(_build_console_handler())
+    _silence_noisy_loggers()
+    _LOGGING_CONFIGURED = True
+
+    if _should_show_startup_banner(show_startup_banner):
+        _log_startup_banner(root_logger)
+    return root_logger
+
+
+# ============================================================
+# OpenAI 兼容 AI 模型配置（从 .env 读取）
+# ============================================================
+OPENAI_COMPLETION_BASE_URL = os.getenv("OPENAI_COMPLETION_BASE_URL")
+OPENAI_COMPLETION_API_KEY = os.getenv("OPENAI_COMPLETION_API_KEY")
+MODEL_NAME = os.getenv("MODEL_NAME")
+AI_REQUEST_TYPE = (_env_text("AI_REQUEST_TYPE", "responses") or "responses").lower()
+AI_ENABLE_WEB_SEARCH = _env_flag("AI_ENABLE_WEB_SEARCH", False)
+AI_ENABLE_THINKING = _env_flag("AI_ENABLE_THINKING", False)
+AI_REASONING_EFFORT = _env_text("AI_REASONING_EFFORT")
+if AI_REASONING_EFFORT:
+    AI_REASONING_EFFORT = AI_REASONING_EFFORT.lower()
+AI_RESPONSE_TOOLS = [{"type": "web_search"}] if AI_ENABLE_WEB_SEARCH else None
+
+# AI 考试参数
+AI_TEMPERATURE = 0
+AI_SYSTEM_PROMPT = (
+    "你是一个专业的考试助手, 请根据题目选择最合适的答案。"
+    "如果关键信息不足且已提供联网搜索工具, 可以先搜索再作答。"
+    "最终只输出答案内容, 不要解释。"
+)
+
+# ============================================================
+# 浏览器配置
+# ============================================================
+BROWSER_TYPE = (_env_text("BROWSER_TYPE", "chromium") or "chromium").lower()
+BROWSER_CHANNEL = _env_text("BROWSER_CHANNEL", _default_browser_channel(BROWSER_TYPE))
+BROWSER_ARGS = ["--mute-audio", "--disable-blink-features=AutomationControlled"]
+
+# ============================================================
+# 平台 URL
+# ============================================================
+MYLEARNING_HOME = "https://www.mylearning.cn/p5/index.html"
+MYLEARNING_SSO_PATTERN = "**/sso/login**"
+ZHIXUEYUN_HOME = "https://kc.zhixueyun.com/"
+ZHIXUEYUN_HOME_PATTERN = r"https://kc\.zhixueyun\.com/#/home-v\?id=\d+"
+ZHIXUEYUN_COURSE_PREFIX = "https://kc.zhixueyun.com/#/study/course/detail/"
+ZHIXUEYUN_SUBJECT_PREFIX = "https://kc.zhixueyun.com/#/study/subject/detail/"
+ZHIXUEYUN_EXAM_PREFIX = "https://kc.zhixueyun.com/#/exam/exam/answer-paper/"
+
+# ============================================================
+# 文件路径
+# ============================================================
+COOKIES_FILE = PROJECT_ROOT / "cookies.json"
+CREDENTIAL_META_FILE = PROJECT_ROOT / "credential_meta.json"
+LEARNING_URLS_FILE = PROJECT_ROOT / "课程链接.json"
+LEARNING_FAILURES_FILE = PROJECT_ROOT / "挂课失败链接.json"
+EXAM_URLS_FILE = PROJECT_ROOT / "考试链接.json"
+MANUAL_EXAM_FILE = PROJECT_ROOT / "人工考试链接.json"
+
+# ============================================================
+# 超时 / 等待时间（秒）
+# ============================================================
+# 视频课程服务端记录学习点的周期，也是播放结束后的额外等待上限
+VIDEO_SYNC_EXTRA_WAIT = 5 * 60  # 5分钟
+
+# 视频同步轮询与 fallback 进度日志的自适应间隔策略
+VIDEO_PROGRESS_SHORT_THRESHOLD = 5 * 60  # 5分钟及以下
+VIDEO_PROGRESS_MEDIUM_THRESHOLD = 30 * 60  # 30分钟及以下
+VIDEO_PROGRESS_SHORT_INTERVAL = 1  # 秒
+VIDEO_PROGRESS_MEDIUM_INTERVAL = 5  # 秒
+VIDEO_PROGRESS_LONG_INTERVAL = 10  # 秒
+
+# 文档课程初始等待时间
+DOCUMENT_INITIAL_WAIT = 5  # 秒
+# 文档课程进度同步额外等待时间
+DOCUMENT_SYNC_EXTRA_WAIT = 30  # 秒
+
+# URL 学习类型等待时间
+URL_TYPE_WAIT = 10  # 秒
+
+# 挂课流程的 slow_mo 参数
+AFK_SLOW_MO = 3000  # 毫秒
+
+# ============================================================
+# 考试配置
+# ============================================================
+# 课程内考试: 剩余次数 <= 此值时转为人工考试
+COURSE_EXAM_ATTEMPT_THRESHOLD = 1
+# 试卷链接考试: 剩余次数 <= 此值时转为人工考试
+PAPER_EXAM_ATTEMPT_THRESHOLD = 1
+
+# ============================================================
+# 自动登录配置
+# ============================================================
+# 自动登录天数选项的 data-time 值 ("3" 对应30天)
+AUTO_LOGIN_DATA_TIME = "3"
+
+# 登录凭证逻辑有效期（天）
+CREDENTIAL_VALID_DAYS = 28

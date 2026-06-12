@@ -1,0 +1,8 @@
+# requirements.txt
+# Install these packages using: pip install -r requirements.txt
+
+playwright
+beautifulsoup4
+python-dotenv
+openai
+rich
