@@ -14,6 +14,7 @@ class LauncherMenuTests(unittest.TestCase):
                 "手动选择课程 / 录入课程或考试链接",
                 "AI 自动考试",
                 "人工考试",
+                "保存课程课件 / AI导学资料",
                 "查看输出文件统计",
                 "查看课程链接详情",
                 "退出",

@@ -39,6 +39,7 @@ MENU_OPTIONS = [
     "手动选择课程 / 录入课程或考试链接",
     "AI 自动考试",
     "人工考试",
+    "保存课程课件 / AI导学资料",
     "查看输出文件统计",
     "查看课程链接详情",
     "退出",
@@ -70,6 +71,7 @@ def main() -> int:
         handle_ai_exam,
         handle_manual_exam,
         handle_manual_selection,
+        handle_reference_collection,
         handle_recommended_flow,
         handle_refresh_credential,
         handle_show_learning_links,
@@ -97,15 +99,17 @@ def main() -> int:
             elif choice == 6:
                 handle_manual_exam(ui)
             elif choice == 7:
+                handle_reference_collection(ui)
+            elif choice == 8:
                 handle_show_output_state(
                     EXAM_URLS_FILE,
                     LEARNING_URLS_FILE,
                     MANUAL_EXAM_FILE,
                     ui,
                 )
-            elif choice == 8:
-                handle_show_learning_links(LEARNING_URLS_FILE, ui)
             elif choice == 9:
+                handle_show_learning_links(LEARNING_URLS_FILE, ui)
+            elif choice == 10:
                 ui.show_success("已退出统一入口")
                 return 0
             else:

@@ -136,7 +136,7 @@ class ExamFlowLoggingTests(unittest.IsolatedAsyncioTestCase):
                 new=AsyncMock(return_value=question_data),
             ),
             patch("core.exam_flow.get_ai_answers", new=AsyncMock(return_value=["A"])),
-            patch("core.exam_flow.select_answers", new=AsyncMock()),
+            patch("core.exam_flow.select_answers", new=AsyncMock(return_value=True)),
             patch("core.exam_flow.submit_exam", new=AsyncMock()),
             patch("core.exam_flow.logging.info") as mock_info,
         ):
@@ -168,7 +168,7 @@ class ExamFlowLoggingTests(unittest.IsolatedAsyncioTestCase):
                 new=AsyncMock(return_value=[question_data]),
             ),
             patch("core.exam_flow.get_ai_answers", new=AsyncMock(return_value=["A"])),
-            patch("core.exam_flow.select_answers", new=AsyncMock()),
+            patch("core.exam_flow.select_answers", new=AsyncMock(return_value=True)),
             patch(
                 "core.exam_flow._wait_for_manual_submit_completion",
                 new=AsyncMock(),
@@ -204,7 +204,7 @@ class ExamFlowLoggingTests(unittest.IsolatedAsyncioTestCase):
                 new=AsyncMock(return_value=question_data),
             ),
             patch("core.exam_flow.get_ai_answers", new=AsyncMock(return_value=[])),
-            patch("core.exam_flow.select_answers", new=AsyncMock()),
+            patch("core.exam_flow.select_answers", new=AsyncMock(return_value=False)),
             patch("core.exam_flow.submit_exam", new=AsyncMock()) as mock_submit_exam,
             patch(
                 "core.exam_flow._wait_for_manual_submit_completion",
@@ -241,7 +241,7 @@ class ExamFlowLoggingTests(unittest.IsolatedAsyncioTestCase):
                 new=AsyncMock(return_value=[question_data]),
             ),
             patch("core.exam_flow.get_ai_answers", new=AsyncMock(return_value=[])),
-            patch("core.exam_flow.select_answers", new=AsyncMock()),
+            patch("core.exam_flow.select_answers", new=AsyncMock(return_value=False)),
             patch("core.exam_flow.submit_exam", new=AsyncMock()) as mock_submit_exam,
             patch(
                 "core.exam_flow._wait_for_manual_submit_completion",
@@ -254,6 +254,39 @@ class ExamFlowLoggingTests(unittest.IsolatedAsyncioTestCase):
         mock_submit_exam.assert_not_awaited()
         mock_wait_manual_submit.assert_awaited_once_with(page)
         mock_info.assert_any_call("检测到需要人工处理的题目，已自动切换为手动交卷")
+
+    async def test_ai_exam_disables_auto_submit_when_selecting_single_answer_fails(self):
+        from core.exam_flow import ai_exam
+
+        question_data = {
+            "type": "single",
+            "text": "测试单题",
+            "options": [
+                {"label": "A", "text": "选项一"},
+                {"label": "B", "text": "选项二"},
+            ],
+        }
+        page = _FakePage()
+
+        with (
+            patch("core.exam_flow.close_exam_notice_if_present", new=AsyncMock()),
+            patch("core.exam_flow.detect_exam_mode", new=AsyncMock(return_value="single")),
+            patch(
+                "core.exam_flow.extract_single_question_data",
+                new=AsyncMock(return_value=question_data),
+            ),
+            patch("core.exam_flow.get_ai_answers", new=AsyncMock(return_value=["A"])),
+            patch("core.exam_flow.select_answers", new=AsyncMock(return_value=False)),
+            patch("core.exam_flow.submit_exam", new=AsyncMock()) as mock_submit_exam,
+            patch(
+                "core.exam_flow._wait_for_manual_submit_completion",
+                new=AsyncMock(),
+            ) as mock_wait_manual_submit,
+        ):
+            await ai_exam(object(), "test-model", page, "https://example.com/exam", auto_submit=True)
+
+        mock_submit_exam.assert_not_awaited()
+        mock_wait_manual_submit.assert_awaited_once_with(page)
 
     async def test_wait_for_manual_submit_completion_closes_result_modal_when_present(self):
         from core.exam_flow import _wait_for_manual_submit_completion

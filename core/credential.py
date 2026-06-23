@@ -80,11 +80,15 @@ def extract_account_profile_from_storage(storage_value: str | dict[str, Any] | N
 async def extract_account_profile_from_async_context(
     context,
     wait_milliseconds: int = 3000,
+    navigation_timeout: int = 10000,
 ) -> AccountProfile:
     page = await context.new_page()
     try:
-        await page.goto(ZHIXUEYUN_HOME)
-        await page.wait_for_url(re.compile(ZHIXUEYUN_HOME_PATTERN), timeout=0)
+        await page.goto(ZHIXUEYUN_HOME, timeout=navigation_timeout)
+        await page.wait_for_url(
+            re.compile(ZHIXUEYUN_HOME_PATTERN),
+            timeout=navigation_timeout,
+        )
         await page.wait_for_timeout(wait_milliseconds)
         storage_value = await page.evaluate(
             "() => window.localStorage.getItem('user')"
@@ -97,11 +101,15 @@ async def extract_account_profile_from_async_context(
 def extract_account_profile_from_sync_context(
     context,
     wait_milliseconds: int = 3000,
+    navigation_timeout: int = 10000,
 ) -> AccountProfile:
     page = context.new_page()
     try:
-        page.goto(ZHIXUEYUN_HOME)
-        page.wait_for_url(re.compile(ZHIXUEYUN_HOME_PATTERN), timeout=0)
+        page.goto(ZHIXUEYUN_HOME, timeout=navigation_timeout)
+        page.wait_for_url(
+            re.compile(ZHIXUEYUN_HOME_PATTERN),
+            timeout=navigation_timeout,
+        )
         page.wait_for_timeout(wait_milliseconds)
         storage_value = page.evaluate(
             "() => window.localStorage.getItem('user')"

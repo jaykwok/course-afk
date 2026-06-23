@@ -4,13 +4,10 @@ import asyncio
 import json
 import logging
 import re
-from datetime import datetime
-from pathlib import Path
 from typing import Callable
 from urllib.parse import urlparse
 
 from playwright.async_api import async_playwright
-
 from core.afk_runner import run_afk_until_complete
 from core.browser import (
     apply_async_browser_stealth,
@@ -25,11 +22,7 @@ from core.config import (
     ZHIXUEYUN_HOME,
     ZHIXUEYUN_HOME_PATTERN,
 )
-from core.credential import (
-    AccountProfile,
-    extract_account_profile_from_async_context,
-    save_credential_metadata,
-)
+from core.credential import AccountProfile
 from core.exam_runner import run_ai_exam_batch, run_manual_exam_batch
 from core.exam_queue import append_exam_url, append_exam_urls, read_exam_urls
 from core.learning_zone import collect_learning_links_from_learning_zone_urls
@@ -109,35 +102,10 @@ async def _wait_for_manual_popup_record_url(new_page) -> str | None:
             return fallback_url
 
 
-async def resolve_account_profile_from_cookies() -> AccountProfile:
-    with open(COOKIES_FILE, "r", encoding="utf-8") as file:
-        cookies = json.load(file)
-
-    async with async_playwright() as playwright:
-        browser = await launch_async_browser(playwright, headless=True)
-        context = await browser.new_context(
-            **build_browser_context_options(headless=True)
-        )
-        await apply_async_browser_stealth(context)
-        await context.add_cookies(cookies)
-        profile = await extract_account_profile_from_async_context(context)
-        await context.close()
-        await browser.close()
-    return profile
-
-
 def refresh_credential(status_callback: StatusCallback | None = None) -> AccountProfile:
     if status_callback:
         status_callback("正在打开浏览器，请完成登录")
-    profile = login_and_save_credential()
-    if profile.label == "未知账号":
-        profile = asyncio.run(resolve_account_profile_from_cookies())
-        save_credential_metadata(
-            saved_at=datetime.now(),
-            full_name=profile.full_name,
-            account_name=profile.account_name,
-        )
-    return profile
+    return login_and_save_credential()
 
 
 async def collect_learning_links_from_entry_urls(
@@ -343,6 +311,23 @@ async def run_manual_exam_workflow(status_callback: StatusCallback | None = None
     if status_callback:
         status_callback("人工考试流程完成")
     return processed_count
+
+
+async def run_reference_collection_workflow(
+    subject_urls: list[str],
+    status_callback: StatusCallback | None = None,
+) -> dict:
+    from core.reference_collector import collect_reference_materials
+
+    if status_callback:
+        status_callback("开始保存课程课件和视频 AI 导学资料")
+    result = await collect_reference_materials(
+        subject_urls,
+        status_callback=status_callback,
+    )
+    if status_callback:
+        status_callback(f"资料保存完成：{result['output_dir']}")
+    return result
 
 
 async def run_recommended_flow(

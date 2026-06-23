@@ -4,6 +4,7 @@ import json
 import logging
 from datetime import datetime
 
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
 from core.config import (
@@ -228,11 +229,18 @@ def login_and_save_credential() -> AccountProfile:
             )
 
             page.wait_for_url(MYLEARNING_HOME, timeout=0)
+            # 防止网盘同步等外部工具把 cookies.json 设为只读，导致覆盖写入时 PermissionError
+            if COOKIES_FILE.exists():
+                COOKIES_FILE.chmod(0o644)
             with open(COOKIES_FILE, "w", encoding="utf-8") as file:
                 json.dump(context.cookies(), file, ensure_ascii=False, indent=2)
             logging.info("已保存登录凭证")
 
-            profile = extract_account_profile_from_sync_context(context)
+            try:
+                profile = extract_account_profile_from_sync_context(context)
+            except PlaywrightTimeoutError as exc:
+                logging.debug(f"读取知学云账号信息超时，继续保存登录凭证: {exc}")
+                profile = AccountProfile()
             save_credential_metadata(
                 saved_at=datetime.now(),
                 full_name=profile.full_name,

@@ -15,6 +15,24 @@ class BrowserLaunchConfigTests(unittest.TestCase):
 
         self.assertIn("--disable-blink-features=AutomationControlled", options["args"])
 
+    def test_default_chromium_args_disable_local_network_access_checks(self):
+        with (
+            unittest.mock.patch.object(browser, "BROWSER_TYPE", "chromium"),
+            unittest.mock.patch.object(browser, "BROWSER_CHANNEL", "msedge"),
+        ):
+            options = browser.build_browser_launch_options(headless=False)
+
+        disable_features = next(
+            (
+                arg
+                for arg in options["args"]
+                if arg.startswith("--disable-features=")
+            ),
+            "",
+        )
+        self.assertIn("LocalNetworkAccessChecks", disable_features)
+        self.assertIn("BlockInsecurePrivateNetworkRequests", disable_features)
+
     def test_build_browser_launch_options_uses_channel_for_chromium(self):
         with (
             unittest.mock.patch.object(browser, "BROWSER_TYPE", "chromium"),

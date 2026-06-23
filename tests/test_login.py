@@ -123,6 +123,30 @@ class LoginTests(unittest.TestCase):
             fake_browser.context.page.frame.evaluate_calls[0][0],
         )
 
+    def test_login_saves_credentials_when_profile_lookup_times_out(self):
+        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+        from core.login import login_and_save_credential
+
+        fake_browser = FakeLoginBrowser()
+
+        with TemporaryDirectory() as tmp:
+            cookies_file = Path(tmp) / "cookies.json"
+            with (
+                patch("core.login.COOKIES_FILE", cookies_file),
+                patch("core.login.launch_sync_browser", return_value=fake_browser),
+                patch(
+                    "core.login.extract_account_profile_from_sync_context",
+                    side_effect=PlaywrightTimeoutError("blank zhixueyun page"),
+                ),
+                patch("core.login.save_credential_metadata") as mock_save_metadata,
+                patch("core.login.sync_playwright"),
+            ):
+                profile = login_and_save_credential()
+                self.assertTrue(cookies_file.exists())
+
+        self.assertEqual(profile.label, "未知账号")
+        mock_save_metadata.assert_called_once()
+
     def test_login_closed_before_success_raises_clear_error(self):
         from core.login import LoginNotCompletedError, login_and_save_credential
 

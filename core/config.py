@@ -331,7 +331,18 @@ AI_SYSTEM_PROMPT = (
 # ============================================================
 BROWSER_TYPE = (_env_text("BROWSER_TYPE", "chromium") or "chromium").lower()
 BROWSER_CHANNEL = _env_text("BROWSER_CHANNEL", _default_browser_channel(BROWSER_TYPE))
-BROWSER_ARGS = ["--mute-audio", "--disable-blink-features=AutomationControlled"]
+# 关闭 Chromium「本地网络访问 / 私有网络访问(PNA)」拦截：知学云/天翼登录会探测本机服务
+# (localhost), 触发 Edge「kc.zhixueyun.com 想要访问此设备上的其他应用和服务」授权弹窗,
+# 该弹窗会阻塞页面加载、导致自动化超时卡死。Playwright 的 grant_permissions
+# ("local-network-access") 目前压不住该提示(见 playwright#37861), 改用启动参数直接禁用。
+BROWSER_ARGS = [
+    "--mute-audio",
+    "--disable-blink-features=AutomationControlled",
+    "--disable-features="
+    "LocalNetworkAccessChecks,"
+    "BlockInsecurePrivateNetworkRequests,"
+    "BlockInsecurePrivateNetworkRequestsForPermissions",
+]
 
 # ============================================================
 # 平台 URL
@@ -353,6 +364,7 @@ LEARNING_URLS_FILE = PROJECT_ROOT / "课程链接.json"
 LEARNING_FAILURES_FILE = PROJECT_ROOT / "挂课失败链接.json"
 EXAM_URLS_FILE = PROJECT_ROOT / "考试链接.json"
 MANUAL_EXAM_FILE = PROJECT_ROOT / "人工考试链接.json"
+REFERENCE_OUTPUT_DIR = PROJECT_ROOT / "参考资料"
 
 # ============================================================
 # 超时 / 等待时间（秒）

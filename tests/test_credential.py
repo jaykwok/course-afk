@@ -38,8 +38,8 @@ class FakeAsyncPage:
         self.storage_value = storage_value
         self.calls = []
 
-    async def goto(self, url):
-        self.calls.append(("goto", url))
+    async def goto(self, url, timeout=None):
+        self.calls.append(("goto", url, timeout))
 
     async def wait_for_url(self, pattern, timeout=0):
         self.calls.append(("wait_for_url", pattern.pattern, timeout))
@@ -71,9 +71,10 @@ class AsyncCredentialTests(unittest.IsolatedAsyncioTestCase):
         profile = await extract_account_profile_from_async_context(context)
 
         self.assertEqual(profile.label, "测试用户（test_user）")
-        self.assertEqual(page.calls[0], ("goto", ZHIXUEYUN_HOME))
+        self.assertEqual(page.calls[0], ("goto", ZHIXUEYUN_HOME, 10000))
         self.assertEqual(page.calls[1][0], "wait_for_url")
         self.assertIn("home-v", page.calls[1][1])
+        self.assertEqual(page.calls[1][2], 10000)
         self.assertEqual(page.calls[2], ("wait_for_timeout", 3000))
         self.assertEqual(page.calls[3], ("evaluate",))
         self.assertEqual(page.calls[4], ("close",))

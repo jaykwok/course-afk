@@ -104,12 +104,17 @@ async def ai_exam(client, model, page, course_url, auto_submit=True, ai_model_co
 
             answers = await get_ai_answers(client, model, question_data)
             auto_submit = _ensure_manual_submit(auto_submit, question_data, answers)
-            await select_answers(
+            selected_successfully = await select_answers(
                 page,
                 question_data,
                 answers,
                 course_url,
                 ai_model_config=ai_model_config,
+            )
+            auto_submit = _ensure_manual_submit(
+                auto_submit,
+                question_data,
+                answers if selected_successfully else [],
             )
 
             next_button = page.locator(".single-btn-next")
@@ -146,7 +151,7 @@ async def ai_exam(client, model, page, course_url, auto_submit=True, ai_model_co
             answers = await get_ai_answers(client, model, question_data)
             auto_submit = _ensure_manual_submit(auto_submit, question_data, answers)
             item_id = question_data["item_id"]
-            await select_answers(
+            selected_successfully = await select_answers(
                 page,
                 question_data,
                 answers,
@@ -154,13 +159,15 @@ async def ai_exam(client, model, page, course_url, auto_submit=True, ai_model_co
                 selector_prefix=f"[data-dynamic-key='{item_id}'] ",
                 ai_model_config=ai_model_config,
             )
+            auto_submit = _ensure_manual_submit(
+                auto_submit,
+                question_data,
+                answers if selected_successfully else [],
+            )
             await page.wait_for_timeout(500)
 
         if auto_submit:
-            try:
-                await submit_exam(page)
-            except Exception as exc:
-                logging.error(f"点击交卷按钮失败: {exc}")
+            await submit_exam(page)
         else:
             logging.info("自动交卷已取消, 请手动交卷")
             logging.info("页面将保持打开状态, 等待手动交卷完成...")

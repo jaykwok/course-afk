@@ -347,6 +347,113 @@ class LauncherControllerTests(unittest.TestCase):
         self.assertIn("已取消手动选择课程 / 录入链接", ui.messages)
         self.assertIn("pause", ui.messages)
 
+    def test_handle_reference_collection_cancel_returns_to_menu(self):
+        from core.abort import UserCancelRequested
+        from core.launcher_controller import handle_reference_collection
+
+        class FakeUi:
+            def __init__(self):
+                self.messages = []
+
+            def prompt_multiline_input(self, _prompts, **_kwargs):
+                raise UserCancelRequested("已取消保存课程课件 / AI导学资料")
+
+            def show_warning(self, message):
+                self.messages.append(message)
+
+            def pause(self):
+                self.messages.append("pause")
+
+        ui = FakeUi()
+
+        handle_reference_collection(ui)
+
+        self.assertIn("已取消保存课程课件 / AI导学资料", ui.messages)
+        self.assertIn("pause", ui.messages)
+
+    def test_handle_reference_collection_reports_invalid_subject_url(self):
+        from core.launcher_controller import handle_reference_collection
+
+        class FakeUi:
+            def __init__(self):
+                self.messages = []
+
+            def prompt_multiline_input(self, _prompts, **_kwargs):
+                return "https://example.com/not-a-subject"
+
+            def show_warning(self, message):
+                self.messages.append(message)
+
+            def show_info(self, message):
+                self.messages.append(message)
+
+            def pause(self):
+                self.messages.append("pause")
+
+        ui = FakeUi()
+
+        with patch(
+            "core.workflows.run_reference_collection_workflow",
+            new=unittest.mock.AsyncMock(side_effect=ValueError("未识别到有效的知学云学习专区链接")),
+        ):
+            handle_reference_collection(ui)
+
+        self.assertIn("未识别到有效的知学云学习专区链接", ui.messages)
+        self.assertIn("pause", ui.messages)
+
+    def test_handle_reference_collection_shows_summary(self):
+        from core.launcher_controller import handle_reference_collection
+
+        class FakeUi:
+            def __init__(self):
+                self.messages = []
+                self.summary = None
+
+            def prompt_multiline_input(self, _prompts, **_kwargs):
+                return (
+                    "https://kc.zhixueyun.com/#/study/subject/detail/"
+                    "12345678-1234-1234-1234-123456789abc"
+                )
+
+            def show_info(self, message):
+                self.messages.append(message)
+
+            def show_summary(self, title, rows):
+                self.summary = (title, rows)
+
+            def pause(self):
+                self.messages.append("pause")
+
+        ui = FakeUi()
+        result = {
+            "output_dir": "D:/ChinaTelecom/course-afk/参考资料/知学云资料_20260623_181800",
+            "course_count": 2,
+            "section_count": 3,
+            "document_count": 1,
+            "document_failed_count": 0,
+            "video_count": 2,
+            "video_with_items": 1,
+        }
+
+        with patch(
+            "core.workflows.run_reference_collection_workflow",
+            new=unittest.mock.AsyncMock(return_value=result),
+        ) as mock_workflow:
+            handle_reference_collection(ui)
+
+        mock_workflow.assert_awaited_once_with(
+            [
+                "https://kc.zhixueyun.com/#/study/subject/detail/"
+                "12345678-1234-1234-1234-123456789abc"
+            ],
+            status_callback=ui.show_info,
+        )
+        self.assertEqual(ui.summary[0], "课程资料保存结果")
+        self.assertIn(("输出目录", result["output_dir"]), ui.summary[1])
+        self.assertIn(("文档保存成功", "1"), ui.summary[1])
+        self.assertIn(("有AI导学内容的视频", "1"), ui.summary[1])
+        self.assertIn("pause", ui.messages)
+
 
 if __name__ == "__main__":
     unittest.main()

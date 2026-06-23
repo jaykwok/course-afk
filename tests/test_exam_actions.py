@@ -92,8 +92,14 @@ class ExamActionTests(unittest.IsolatedAsyncioTestCase):
             patch("core.exam_actions.logging.info") as mock_info,
             patch("core.exam_actions.append_manual_exam_entry") as mock_append_manual,
         ):
-            await select_answers(object(), question_data, [], "https://example.com/exam")
+            result = await select_answers(
+                object(),
+                question_data,
+                [],
+                "https://example.com/exam",
+            )
 
+        self.assertFalse(result)
         mock_append_manual.assert_called_once_with(
             "https://example.com/exam",
             reason="ai_no_answer",
@@ -120,7 +126,7 @@ class ExamActionTests(unittest.IsolatedAsyncioTestCase):
             "option_click_selector": ".option-item",
         }
 
-        await select_answers(
+        result = await select_answers(
             page,
             question_data,
             ["B"],
@@ -128,6 +134,7 @@ class ExamActionTests(unittest.IsolatedAsyncioTestCase):
             selector_prefix="[data-dynamic-key='item-1'] ",
         )
 
+        self.assertTrue(result)
         self.assertIn(
             "[data-dynamic-key='item-1'] .option-item",
             page.locator_calls,
@@ -136,6 +143,29 @@ class ExamActionTests(unittest.IsolatedAsyncioTestCase):
             ("[data-dynamic-key='item-1'] .option-item", 1),
             page.locator_calls,
         )
+
+    async def test_select_answers_returns_false_when_click_fails(self):
+        from core.exam_actions import select_answers
+
+        page = _FakePage(click_error=RuntimeError("click failed"))
+        question_data = {
+            "index": 0,
+            "type": "single",
+            "text": "示例公司的英文缩写是什么？",
+            "options": [
+                {"label": "A", "text": "CT"},
+                {"label": "B", "text": "CU"},
+            ],
+        }
+
+        result = await select_answers(
+            page,
+            question_data,
+            ["A"],
+            "https://example.com/exam",
+        )
+
+        self.assertFalse(result)
 
     async def test_select_answers_raises_user_abort_when_exam_was_auto_submitted(self):
         from core.abort import UserAbortRequested

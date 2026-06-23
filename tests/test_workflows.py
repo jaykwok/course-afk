@@ -133,5 +133,24 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(message, "记录新页面链接失败")
 
 
+class RefreshCredentialTests(unittest.TestCase):
+    def test_refresh_credential_returns_login_result_without_profile_fallback(self):
+        from core.credential import AccountProfile
+        from core.workflows import refresh_credential
+
+        messages = []
+        profile = AccountProfile()
+
+        with patch(
+            "core.workflows.login_and_save_credential",
+            return_value=profile,
+        ) as mock_login:
+            result = refresh_credential(status_callback=messages.append)
+
+        self.assertIs(result, profile)
+        self.assertEqual(messages, ["正在打开浏览器，请完成登录"])
+        mock_login.assert_called_once_with()
+
+
 if __name__ == "__main__":
     unittest.main()

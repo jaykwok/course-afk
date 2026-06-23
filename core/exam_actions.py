@@ -65,13 +65,13 @@ async def select_answers(
                 ai_failed_model_config=ai_model_config,
                 file_path=MANUAL_EXAM_FILE,
             )
-            return
+            return False
 
         logging.info(f"{log_prefix}选择答案: {answers}")
 
         if question_data["type"] == "fill_blank":
             logging.info(f"{log_prefix}填空题, 跳过自动作答")
-            return
+            return False
 
         if question_data["type"] == "ordering":
             answer_sequence = "".join(answers)
@@ -80,10 +80,11 @@ async def select_answers(
                 selector = f"{selector_prefix}.answer-input-shot"
                 await page.fill(selector, answer_sequence)
                 logging.info(f"{log_prefix}已输入排序顺序: {answer_sequence}")
+                return True
             except Exception as exc:
                 _raise_if_exam_auto_submitted(exc)
                 logging.warning(f"{log_prefix}输入排序顺序失败: {exc}")
-            return
+                return False
 
         if question_data["type"] == "judge":
             answer_label = "T" if answers[0] == "正确" else "F"
@@ -99,11 +100,13 @@ async def select_answers(
                 selector = f"{selector_prefix}{_get_option_click_selector(question_data)}"
                 await page.locator(selector).nth(answer_index).click(timeout=2000)
                 logging.info(f"{log_prefix}已点击判断题选项: {answers[0]}")
+                return True
             except Exception as exc:
                 _raise_if_exam_auto_submitted(exc)
                 logging.warning(f"{log_prefix}点击判断题选项失败: {exc}")
-            return
+                return False
 
+        selected_count = 0
         for answer in answers:
             option_index = ord(answer) - ord("A")
             if 0 <= option_index < len(question_data["options"]):
@@ -111,15 +114,20 @@ async def select_answers(
                     selector = f"{selector_prefix}{_get_option_click_selector(question_data)}"
                     await page.locator(selector).nth(option_index).click(timeout=2000)
                     logging.info(f"{log_prefix}已点击选项: {answer}")
+                    selected_count += 1
                     await page.wait_for_timeout(300)
                 except Exception as exc:
                     _raise_if_exam_auto_submitted(exc)
                     logging.warning(f"{log_prefix}点击选项 {answer} 失败: {exc}")
+            else:
+                logging.warning(f"{log_prefix}答案 {answer} 超出选项范围")
+        return selected_count == len(answers)
     except UserAbortRequested:
         raise
     except Exception as exc:
         logging.error(f"选择答案出错: {exc}")
         logging.error(traceback.format_exc())
+        return False
 
 
 async def close_exam_notice_if_present(page):

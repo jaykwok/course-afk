@@ -9,6 +9,12 @@ _AI_EXAM_URL_INPUT_PROMPTS = [
     "识别到的链接会去重写入 考试链接.json，并立即开始 AI 自动考试。",
 ]
 
+_REFERENCE_COLLECTION_PROMPTS = [
+    "请粘贴知学云学习专区链接，一行一个。",
+    "程序会读取课程列表，保存 PDF/文档课件，并跳过 MP4 视频本体。",
+    "视频类资源会保存平台提供的 AI 导学/总结文本。",
+]
+
 
 def _prompt_ai_exam_auto_submit(ui) -> bool:
     return ui.prompt_yes_no("AI考试是否自动交卷？", default="N")
@@ -254,6 +260,53 @@ def handle_manual_exam(ui) -> None:
         )
     else:
         ui.show_warning("本次没有完成新的人工考试链接")
+    ui.pause()
+
+
+def handle_reference_collection(ui) -> None:
+    from core.links import extract_urls_from_text
+    from core.workflows import run_reference_collection_workflow
+
+    try:
+        input_text = ui.prompt_multiline_input(
+            _REFERENCE_COLLECTION_PROMPTS,
+            title="保存课程课件 / AI导学资料",
+            cancel_message="已取消保存课程课件 / AI导学资料",
+        )
+    except UserCancelRequested as exc:
+        ui.show_warning(str(exc) or "已取消保存课程课件 / AI导学资料")
+        ui.pause()
+        return
+
+    urls = extract_urls_from_text(input_text)
+    if not urls:
+        ui.show_warning("输入内容中未识别到有效的 HTTP/HTTPS 链接")
+        ui.pause()
+        return
+
+    try:
+        result = run_async(
+            run_reference_collection_workflow(
+                urls,
+                status_callback=ui.show_info,
+            )
+        )
+    except ValueError as exc:
+        ui.show_warning(str(exc))
+        ui.pause()
+        return
+    ui.show_summary(
+        "课程资料保存结果",
+        [
+            ("输出目录", result["output_dir"]),
+            ("课程数量", str(result["course_count"])),
+            ("章节资源", str(result["section_count"])),
+            ("文档保存成功", str(result["document_count"])),
+            ("文档保存失败", str(result["document_failed_count"])),
+            ("视频章节", str(result["video_count"])),
+            ("有AI导学内容的视频", str(result["video_with_items"])),
+        ],
+    )
     ui.pause()
 
 
