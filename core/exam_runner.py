@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import traceback
@@ -7,7 +8,7 @@ from typing import Callable
 
 from openai import OpenAI
 
-from core.abort import UserAbortRequested
+from core.abort import UserAbortRequested, UserCancelRequested
 from core.browser import create_browser_context, is_browser_connected, is_target_closed_exception
 from core.config import (
     AI_ENABLE_THINKING,
@@ -417,9 +418,8 @@ async def run_ai_exam_batch(
                             continue
                         else:
                             write_exam_urls(retained_urls + pending_urls, file_path=EXAM_URLS_FILE)
-                            raise UserAbortRequested(
-                                "已关闭浏览器窗口，程序退出",
-                                save_pending_urls=False,
+                            raise UserCancelRequested(
+                                "浏览器窗口已关闭，已保留剩余考试链接，返回主菜单"
                             ) from None
                     else:
                         logging.error(f"AI 自动考试失败: {exc}")
@@ -435,11 +435,20 @@ async def run_ai_exam_batch(
                     await _close_page_safely(page)
                 pending_urls.pop(0)
     except BaseException as exc:
-        if isinstance(exc, (UserAbortRequested, ExamAiConfigurationError)):
+        if isinstance(exc, (UserAbortRequested, UserCancelRequested, ExamAiConfigurationError)):
             raise
-        if not isinstance(exc, Exception):
+        if isinstance(exc, asyncio.CancelledError):
+            # TUI Ctrl+C / 任务取消：保存剩余考试链接，返回主菜单
             write_exam_urls(retained_urls + pending_urls, file_path=EXAM_URLS_FILE)
-            raise UserAbortRequested("已收到 Ctrl+C，程序退出", save_pending_urls=False) from None
+            raise UserCancelRequested(
+                "已中断 AI 自动考试，已保存剩余考试链接，返回主菜单"
+            ) from None
+        if not isinstance(exc, Exception):
+            # 命令行 Ctrl+C：保存后退出
+            write_exam_urls(retained_urls + pending_urls, file_path=EXAM_URLS_FILE)
+            raise UserAbortRequested(
+                "已收到 Ctrl+C，已保存剩余考试链接，程序退出"
+            ) from None
         raise
 
     write_exam_urls(retained_urls + pending_urls, file_path=EXAM_URLS_FILE)
@@ -541,9 +550,8 @@ async def run_manual_exam_batch(
                                 retained_entries + pending_entries,
                                 file_path=manual_exam_file,
                             )
-                            raise UserAbortRequested(
-                                "已关闭浏览器窗口，程序退出",
-                                save_pending_urls=False,
+                            raise UserCancelRequested(
+                                "浏览器窗口已关闭，已保留剩余人工考试链接，返回主菜单"
                             ) from None
                     else:
                         logging.error(f"人工考试流程失败: {exc}")
@@ -555,14 +563,26 @@ async def run_manual_exam_batch(
                     await _close_page_safely(page)
                 pending_entries.pop(0)
     except BaseException as exc:
-        if isinstance(exc, UserAbortRequested):
+        if isinstance(exc, (UserAbortRequested, UserCancelRequested)):
             raise
-        if not isinstance(exc, Exception):
+        if isinstance(exc, asyncio.CancelledError):
+            # TUI Ctrl+C / 任务取消：保存剩余人工考试链接，返回主菜单
             write_manual_exam_queue(
                 retained_entries + pending_entries,
                 file_path=manual_exam_file,
             )
-            raise UserAbortRequested("已收到 Ctrl+C，程序退出", save_pending_urls=False) from None
+            raise UserCancelRequested(
+                "已中断人工考试，已保存剩余人工考试链接，返回主菜单"
+            ) from None
+        if not isinstance(exc, Exception):
+            # 命令行 Ctrl+C：保存后退出
+            write_manual_exam_queue(
+                retained_entries + pending_entries,
+                file_path=manual_exam_file,
+            )
+            raise UserAbortRequested(
+                "已收到 Ctrl+C，已保存剩余人工考试链接，程序退出"
+            ) from None
         raise
 
     write_manual_exam_queue(

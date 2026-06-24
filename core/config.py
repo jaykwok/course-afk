@@ -9,6 +9,7 @@ import ctypes
 import logging
 import os
 import sys
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -145,7 +146,47 @@ def run_async(awaitable):
         loop = runner.get_loop()
         previous_handler = loop.get_exception_handler()
         loop.set_exception_handler(_make_asyncio_exception_handler(previous_handler))
-        return runner.run(awaitable)
+        thread_id = threading.get_ident()
+
+        async def _tracked():
+            # 把当前任务登记起来，便于主线程通过 interrupt_running_async 跨线程取消
+            # （TUI 里 Ctrl+C 需要打断工作线程上阻塞的 Playwright 循环并触发优雅保存）。
+            _RUNNING_ASYNC[thread_id] = (loop, asyncio.current_task())
+            try:
+                return await awaitable
+            finally:
+                _RUNNING_ASYNC.pop(thread_id, None)
+
+        try:
+            return runner.run(_tracked())
+        finally:
+            _RUNNING_ASYNC.pop(thread_id, None)
+
+
+# 线程 id -> (事件循环, 正在运行的任务)；run_async 登记，interrupt_running_async 读取
+_RUNNING_ASYNC: dict[int, tuple] = {}
+_RUNNING_ASYNC_LOCK = threading.Lock()
+
+
+def interrupt_running_async() -> bool:
+    """从主线程取消工作线程上正在运行的 run_async 任务。
+
+    TUI 的 Ctrl+C 绑定调用本函数：若挂课/考试流程正在工作线程上阻塞，
+    取消该任务会抛 CancelledError，由对应 workflow 的异常处理触发优雅保存。
+    没有正在运行的任务时返回 False（调用方可直接退出应用）。
+    """
+    current = threading.get_ident()
+    with _RUNNING_ASYNC_LOCK:
+        candidates = [
+            (tid, pair)
+            for tid, pair in _RUNNING_ASYNC.items()
+            if tid != current
+        ]
+    if not candidates:
+        return False
+    _tid, (loop, task) = candidates[0]
+    loop.call_soon_threadsafe(task.cancel)
+    return True
 
 
 def _env_flag(name: str, default: bool = False) -> bool:

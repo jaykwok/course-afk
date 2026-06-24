@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from core.abort import UserAbortRequested
+from core.abort import UserAbortRequested, UserCancelRequested
 from core.browser import (
     create_browser_context,
     ensure_controller_page,
@@ -49,10 +49,6 @@ def _write_learning_queue(urls: list[str], *, learning_file: Path | None = None)
         write_learning_urls(urls, file_path=learning_file)
 
 
-def _is_user_abort_exception(exc: BaseException) -> bool:
-    return isinstance(exc, (UserAbortRequested, KeyboardInterrupt, asyncio.CancelledError))
-
-
 def prepare_afk_batch(
     *,
     learning_file: Path | None = None,
@@ -67,9 +63,12 @@ def prepare_afk_batch(
 async def _process_url(context, url: str, handler) -> bool:
     """处理单条学习链接，返回是否需要保留在待学习队列。"""
 
-    await ensure_controller_page(context)
-    page = await context.new_page()
+    page = None
     try:
+        # new_page 也放进 try：浏览器窗口被关闭时这里会抛 TargetClosedError，
+        # 必须一并捕获，否则会直接报错退出。
+        await ensure_controller_page(context)
+        page = await context.new_page()
         await page.goto(url)
         await handler(page)
         return False
@@ -78,9 +77,9 @@ async def _process_url(context, url: str, handler) -> bool:
             if is_browser_connected(context):
                 logging.info(f"当前课程标签页已关闭，保留当前学习链接: {url}")
                 return True
-            raise UserAbortRequested(
-                "已关闭浏览器窗口，程序退出",
-                save_pending_urls=False,
+            # 浏览器窗口被关闭（如网络异常用户主动关掉浏览器）：保留剩余链接，返回主菜单
+            raise UserCancelRequested(
+                "浏览器窗口已关闭，已保留剩余学习链接，返回主菜单"
             ) from None
         logging.error(f"发生错误: {exc}")
         logging.error(traceback.format_exc())
@@ -100,10 +99,11 @@ async def _process_url(context, url: str, handler) -> bool:
         )
         return True
     finally:
-        try:
-            await page.close()
-        except Exception:
-            pass
+        if page is not None:
+            try:
+                await page.close()
+            except Exception:
+                pass
 
 
 async def _recheck_url_type_links(context) -> None:
@@ -209,17 +209,36 @@ async def run_afk_once(status_callback: StatusCallback | None = None) -> bool:
             await _recheck_url_type_links(context)
             _write_learning_queue(pending_learning_urls)
     except BaseException as exc:
-        if _is_user_abort_exception(exc):
-            if isinstance(exc, KeyboardInterrupt):
-                save_pending_urls = True
-                message = "已收到 Ctrl+C，已保存当前和剩余学习链接，程序退出"
-            else:
-                save_pending_urls = getattr(exc, "save_pending_urls", True)
-                message = str(exc) or (
-                    "已保存当前和剩余学习链接，程序退出"
-                    if save_pending_urls
-                    else "已关闭浏览器窗口，程序退出"
-                )
+        if isinstance(exc, asyncio.CancelledError):
+            # TUI Ctrl+C / 任务取消：保存剩余链接，返回主菜单
+            _write_learning_queue(pending_learning_urls)
+            logging.debug("挂课流程被取消，已保存剩余学习链接，返回主菜单")
+            raise UserCancelRequested(
+                "已中断挂课，已保存剩余学习链接，返回主菜单"
+            ) from None
+        if isinstance(exc, KeyboardInterrupt):
+            # 命令行 Ctrl+C：保存当前和剩余链接，退出
+            _write_learning_queue(pending_learning_urls)
+            logging.debug("收到 Ctrl+C，已保存当前和剩余学习链接，程序退出")
+            raise UserAbortRequested(
+                "已收到 Ctrl+C，已保存当前和剩余学习链接，程序退出"
+            ) from None
+        if is_target_closed_exception(exc):
+            # 浏览器窗口在启动阶段（认证/打开主控页）或复查阶段被关闭：
+            # 此时 _process_url 的保护还没接管，统一在这里兜底，保留链接并返回主菜单
+            _write_learning_queue(pending_learning_urls)
+            logging.debug("浏览器窗口已关闭，已保存剩余学习链接，返回主菜单")
+            raise UserCancelRequested(
+                "浏览器窗口已关闭，已保留剩余学习链接，返回主菜单"
+            ) from None
+        if isinstance(exc, UserCancelRequested):
+            # 浏览器关闭等取消：保存剩余链接，返回主菜单
+            _write_learning_queue(pending_learning_urls)
+            logging.debug("挂课流程被取消，已保存剩余学习链接，返回主菜单")
+            raise
+        if isinstance(exc, UserAbortRequested):
+            save_pending_urls = getattr(exc, "save_pending_urls", True)
+            message = str(exc) or "已保存当前和剩余学习链接，程序退出"
             if save_pending_urls:
                 _write_learning_queue(pending_learning_urls)
             logging.debug(f"用户主动终止挂课流程: {message}")

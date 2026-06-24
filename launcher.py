@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import ctypes
 import sys
 
@@ -55,7 +56,7 @@ MANUAL_SELECTION_PROMPTS = [
 
 
 def main() -> int:
-    from core.abort import UserAbortRequested
+    from core.abort import UserAbortRequested, UserCancelRequested
     from core.config import setup_logging
     from core.config import (
         EXAM_URLS_FILE,
@@ -86,34 +87,39 @@ def main() -> int:
             ui.render_dashboard(state)
             choice = ui.show_menu(MENU_OPTIONS)
 
-            if choice == 1:
-                handle_recommended_flow(ui)
-            elif choice == 2:
-                handle_afk(ui)
-            elif choice == 3:
-                handle_refresh_credential(state, ui)
-            elif choice == 4:
-                handle_manual_selection(MANUAL_SELECTION_PROMPTS, ui)
-            elif choice == 5:
-                handle_ai_exam(ui)
-            elif choice == 6:
-                handle_manual_exam(ui)
-            elif choice == 7:
-                handle_reference_collection(ui)
-            elif choice == 8:
-                handle_show_output_state(
-                    EXAM_URLS_FILE,
-                    LEARNING_URLS_FILE,
-                    MANUAL_EXAM_FILE,
-                    ui,
-                )
-            elif choice == 9:
-                handle_show_learning_links(LEARNING_URLS_FILE, ui)
-            elif choice == 10:
-                ui.show_success("已退出统一入口")
-                return 0
-            else:
-                ui.show_error("无效选择，请重试")
+            try:
+                if choice == 1:
+                    handle_recommended_flow(ui)
+                elif choice == 2:
+                    handle_afk(ui)
+                elif choice == 3:
+                    handle_refresh_credential(state, ui)
+                elif choice == 4:
+                    handle_manual_selection(MANUAL_SELECTION_PROMPTS, ui)
+                elif choice == 5:
+                    handle_ai_exam(ui)
+                elif choice == 6:
+                    handle_manual_exam(ui)
+                elif choice == 7:
+                    handle_reference_collection(ui)
+                elif choice == 8:
+                    handle_show_output_state(
+                        EXAM_URLS_FILE,
+                        LEARNING_URLS_FILE,
+                        MANUAL_EXAM_FILE,
+                        ui,
+                    )
+                elif choice == 9:
+                    handle_show_learning_links(LEARNING_URLS_FILE, ui)
+                elif choice == 10:
+                    ui.show_success("已退出统一入口")
+                    return 0
+                else:
+                    ui.show_error("无效选择，请重试")
+            except (UserCancelRequested, asyncio.CancelledError) as exc:
+                # 浏览器关闭 / TUI Ctrl+C 等取消：剩余链接已保存，返回主菜单
+                ui.show_warning(str(exc) or "已取消当前操作，返回主菜单")
+                continue
     except UserAbortRequested as exc:
         ui.show_warning(str(exc))
         return 0
@@ -123,4 +129,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    # 默认入口走 Textual TUI；main() 仍可作为后台控制流被复用/被测试。
+    from core.tui_bridge import launch_tui
+
+    raise SystemExit(launch_tui())

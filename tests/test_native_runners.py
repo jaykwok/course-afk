@@ -1,4 +1,7 @@
+import asyncio
 import json
+import threading
+import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -460,8 +463,8 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
             )
             mock_warning.assert_not_called()
 
-    async def test_run_afk_once_exits_without_saving_retry_urls_when_browser_window_is_closed(self):
-        from core.abort import UserAbortRequested
+    async def test_run_afk_once_returns_to_menu_and_preserves_urls_when_browser_window_is_closed(self):
+        from core.abort import UserCancelRequested
         from core.afk_runner import AfkBatch, run_afk_once
 
         class TargetClosedError(Exception):
@@ -524,12 +527,140 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                 ),
                 patch("core.afk_runner.logging.warning") as mock_warning,
             ):
-                with self.assertRaises(UserAbortRequested) as ctx:
+                with self.assertRaises(UserCancelRequested) as ctx:
                     await run_afk_once()
 
-            self.assertEqual(str(ctx.exception), "已关闭浏览器窗口，程序退出")
+            self.assertIn("返回主菜单", str(ctx.exception))
+            # 浏览器关闭时剩余链接（含正在处理的）已写回，不丢失
             self.assertEqual(_read_learning_queue_urls(learning_file), batch.urls)
             mock_warning.assert_not_called()
+
+    async def test_process_url_returns_to_menu_when_browser_closed_before_new_page(self):
+        """回归：浏览器在 new_page 阶段被关闭（曾被挡在 try 外导致报错退出）。"""
+        from core.abort import UserCancelRequested
+        from core.afk_runner import _process_url
+
+        class TargetClosedError(Exception):
+            pass
+
+        class FakeBrowser:
+            def is_connected(self):
+                return False
+
+        class FakeContext:
+            def __init__(self):
+                self.browser = FakeBrowser()
+
+            async def new_page(self):
+                raise TargetClosedError(
+                    "Target page, context or browser has been closed"
+                )
+
+        async def handler(_page):
+            self.fail("浏览器已关闭，handler 不应被调用")
+
+        with patch("core.afk_runner.ensure_controller_page", new=AsyncMock()):
+            with self.assertRaises(UserCancelRequested) as ctx:
+                await _process_url(
+                    FakeContext(),
+                    "https://kc.zhixueyun.com/#/study/course/detail/a",
+                    handler,
+                )
+
+        self.assertIn("返回主菜单", str(ctx.exception))
+
+    async def test_run_afk_once_returns_to_menu_when_browser_closed_during_setup(self):
+        """watchdog 未启动阶段（浏览器认证/打开主控页时）被关闭，也返回主菜单。"""
+        from core.abort import UserCancelRequested
+        from core.afk_runner import AfkBatch, run_afk_once
+
+        class TargetClosedError(Exception):
+            pass
+
+        class FakeBrowserContextManager:
+            async def __aenter__(self):
+                raise TargetClosedError(
+                    "Target page, context or browser has been closed"
+                )
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        with TemporaryDirectory() as tmp:
+            learning_file = Path(tmp) / "learning.json"
+            batch = AfkBatch(
+                urls=["https://kc.zhixueyun.com/#/study/course/detail/a"],
+                is_retry=False,
+            )
+
+            with (
+                patch("core.afk_runner.LEARNING_URLS_FILE", learning_file),
+                patch("core.afk_runner.prepare_afk_batch", return_value=batch),
+                patch(
+                    "core.afk_runner.create_browser_context",
+                    return_value=FakeBrowserContextManager(),
+                ),
+                patch("core.afk_runner.normalize_url", side_effect=lambda url: url),
+            ):
+                with self.assertRaises(UserCancelRequested) as ctx:
+                    await run_afk_once()
+
+            self.assertIn("返回主菜单", str(ctx.exception))
+            self.assertEqual(
+                _read_learning_queue_urls(learning_file),
+                ["https://kc.zhixueyun.com/#/study/course/detail/a"],
+            )
+
+    async def test_run_afk_once_returns_to_menu_on_cancelled_error(self):
+        """TUI Ctrl+C 经跨线程取消产生 CancelledError：保存剩余链接后返回主菜单。"""
+        from core.abort import UserCancelRequested
+        from core.afk_runner import AfkBatch, run_afk_once
+
+        class FakeContext:
+            pass
+
+        class FakeBrowserContextManager:
+            async def __aenter__(self):
+                return None, FakeContext()
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        with TemporaryDirectory() as tmp:
+            learning_file = Path(tmp) / "learning.json"
+            batch = AfkBatch(
+                urls=[
+                    "https://kc.zhixueyun.com/#/study/course/detail/a",
+                    "https://kc.zhixueyun.com/#/study/course/detail/b",
+                ],
+                is_retry=False,
+            )
+
+            with (
+                patch("core.afk_runner.LEARNING_URLS_FILE", learning_file),
+                patch("core.afk_runner.prepare_afk_batch", return_value=batch),
+                patch(
+                    "core.afk_runner.create_browser_context",
+                    return_value=FakeBrowserContextManager(),
+                ),
+                patch("core.afk_runner.normalize_url", side_effect=lambda url: url),
+                patch("core.afk_runner.is_compliant_url_regex", return_value=True),
+                patch(
+                    "core.afk_runner._process_url",
+                    side_effect=[True, asyncio.CancelledError()],
+                ),
+            ):
+                with self.assertRaises(UserCancelRequested) as ctx:
+                    await run_afk_once()
+
+            self.assertIn("返回主菜单", str(ctx.exception))
+            self.assertEqual(
+                _read_learning_queue_urls(learning_file),
+                [
+                    "https://kc.zhixueyun.com/#/study/course/detail/a",
+                    "https://kc.zhixueyun.com/#/study/course/detail/b",
+                ],
+            )
 
 
 class ExamAttemptRoutingTests(unittest.TestCase):
@@ -1051,8 +1182,8 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertFalse(manual_file.exists())
 
-    async def test_run_ai_exam_batch_saves_pending_when_browser_closed_before_new_page(self):
-        from core.abort import UserAbortRequested
+    async def test_run_ai_exam_batch_returns_to_menu_when_browser_closed_before_new_page(self):
+        from core.abort import UserCancelRequested
         from core.exam_runner import run_ai_exam_batch
 
         class TargetClosedError(Exception):
@@ -1092,10 +1223,62 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
                 ),
                 patch("core.exam_runner._build_exam_client", return_value=(object(), "test-model")),
             ):
-                with self.assertRaises(UserAbortRequested) as ctx:
+                with self.assertRaises(UserCancelRequested) as ctx:
                     await run_ai_exam_batch()
 
-            self.assertEqual(str(ctx.exception), "已关闭浏览器窗口，程序退出")
+            self.assertIn("返回主菜单", str(ctx.exception))
+            self.assertEqual(_read_exam_queue_urls(exam_file), urls)
+
+    async def test_run_ai_exam_batch_returns_to_menu_on_cancelled_error(self):
+        from core.abort import UserCancelRequested
+        from core.exam_runner import run_ai_exam_batch
+
+        class FakePage:
+            async def goto(self, url):
+                return None
+
+            async def wait_for_load_state(self, state):
+                return None
+
+            async def close(self):
+                return None
+
+        class FakeContext:
+            async def new_page(self):
+                return FakePage()
+
+        class FakeBrowserContextManager:
+            async def __aenter__(self):
+                return None, FakeContext()
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        with TemporaryDirectory() as tmp:
+            exam_file = Path(tmp) / "exam.json"
+            urls = [
+                "https://kc.zhixueyun.com/#/study/course/detail/test-course-a",
+                "https://kc.zhixueyun.com/#/study/course/detail/test-course-b",
+            ]
+            _write_exam_queue_fixture(exam_file, urls)
+
+            with (
+                patch("core.exam_runner.EXAM_URLS_FILE", exam_file),
+                patch(
+                    "core.exam_runner.create_browser_context",
+                    return_value=FakeBrowserContextManager(),
+                ),
+                patch("core.exam_runner._build_exam_client", return_value=(object(), "test-model")),
+                patch(
+                    "core.exam_runner._run_course_ai_exam",
+                    new=AsyncMock(side_effect=asyncio.CancelledError()),
+                ),
+            ):
+                with self.assertRaises(UserCancelRequested) as ctx:
+                    await run_ai_exam_batch()
+
+            self.assertIn("返回主菜单", str(ctx.exception))
+            # 取消时剩余考试链接已写回，不丢失
             self.assertEqual(_read_exam_queue_urls(exam_file), urls)
 
     async def test_run_ai_exam_batch_ignores_close_error_after_closed_exam_tab_skip(self):
@@ -1361,6 +1544,39 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
                 [entry["url"] for entry in _read_manual_exam_queue(manual_file)],
                 [failed_url],
             )
+
+
+class RunAsyncInterruptionTests(unittest.TestCase):
+    def test_interrupt_running_async_cancels_running_task(self):
+        from core.config import interrupt_running_async, run_async
+
+        started = threading.Event()
+        seen_cancel = {"value": False}
+
+        async def long_running():
+            started.set()
+            try:
+                await asyncio.sleep(100)
+            except asyncio.CancelledError:
+                seen_cancel["value"] = True
+                raise
+
+        def canceller():
+            started.wait(timeout=5)
+            time.sleep(0.1)
+            interrupt_running_async()
+
+        threading.Thread(target=canceller, daemon=True).start()
+
+        with self.assertRaises(asyncio.CancelledError):
+            run_async(long_running())
+
+        self.assertTrue(seen_cancel["value"])
+
+    def test_interrupt_running_async_returns_false_when_nothing_running(self):
+        from core.config import interrupt_running_async
+
+        self.assertFalse(interrupt_running_async())
 
 
 if __name__ == "__main__":

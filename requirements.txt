@@ -6,3 +6,6 @@ beautifulsoup4
 python-dotenv
 openai
 rich
+textual
+# Dev-only tooling (textual console / dev server), optional:
+# textual-dev
