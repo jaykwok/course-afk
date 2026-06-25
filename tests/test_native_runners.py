@@ -95,6 +95,10 @@ def _read_learning_failures(file_path):
     return json.loads(file_path.read_text(encoding="utf-8"))
 
 
+class TargetClosedError(Exception):
+    """模块级复用：模拟 Playwright 的 TargetClosedError（类名匹配 is_target_closed_exception）。"""
+
+
 class AfkBatchPreparationTests(unittest.TestCase):
     def test_prepare_afk_batch_reads_pending_learning_json_queue(self):
         from core.afk_runner import prepare_afk_batch
@@ -390,9 +394,6 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
     async def test_run_afk_once_keeps_current_url_when_only_course_tab_is_closed(self):
         from core.afk_runner import AfkBatch, run_afk_once
 
-        class TargetClosedError(Exception):
-            pass
-
         class FakeBrowser:
             def is_connected(self):
                 return True
@@ -467,9 +468,6 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
         from core.abort import UserCancelRequested
         from core.afk_runner import AfkBatch, run_afk_once
 
-        class TargetClosedError(Exception):
-            pass
-
         class FakeBrowser:
             def is_connected(self):
                 return False
@@ -540,9 +538,6 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
         from core.abort import UserCancelRequested
         from core.afk_runner import _process_url
 
-        class TargetClosedError(Exception):
-            pass
-
         class FakeBrowser:
             def is_connected(self):
                 return False
@@ -573,9 +568,6 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
         """watchdog 未启动阶段（浏览器认证/打开主控页时）被关闭，也返回主菜单。"""
         from core.abort import UserCancelRequested
         from core.afk_runner import AfkBatch, run_afk_once
-
-        class TargetClosedError(Exception):
-            pass
 
         class FakeBrowserContextManager:
             async def __aenter__(self):
@@ -1186,9 +1178,6 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
         from core.abort import UserCancelRequested
         from core.exam_runner import run_ai_exam_batch
 
-        class TargetClosedError(Exception):
-            pass
-
         class FakeBrowser:
             def is_connected(self):
                 return False
@@ -1283,9 +1272,6 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_run_ai_exam_batch_ignores_close_error_after_closed_exam_tab_skip(self):
         from core.exam_runner import run_ai_exam_batch
-
-        class TargetClosedError(Exception):
-            pass
 
         class FakeBrowser:
             def is_connected(self):

@@ -343,7 +343,8 @@ def _count_display(count: int) -> Text:
     return Text(str(count), style="bold bright_white")
 
 
-def render_dashboard(state: ProjectState) -> None:
+def build_dashboard_renderable(state: ProjectState):
+    """构造仪表盘渲染对象（CLI 与 TUI 共用，避免两处重复实现漂移）。"""
     metadata = load_credential_metadata()
     account_label = metadata.account_label if metadata else "未登录"
 
@@ -376,7 +377,11 @@ def render_dashboard(state: ProjectState) -> None:
         "建议操作",
         Text(f"->  {recommended}", style="bold bright_yellow"),
     )
-    console.print(Align.center(table))
+    return Align.center(table)
+
+
+def render_dashboard(state: ProjectState) -> None:
+    console.print(build_dashboard_renderable(state))
     console.print()
 
 
@@ -476,7 +481,8 @@ def pause(message: str = "按回车返回主菜单") -> None:
     console.print()
 
 
-def show_summary(title: str, rows: list[tuple[str, str]]) -> None:
+def build_summary_renderable(title: str, rows: list[tuple[str, str]]):
+    """构造汇总渲染对象（CLI 与 TUI 共用）。"""
     table = Table(
         show_header=False,
         box=SIMPLE_HEAVY,
@@ -490,7 +496,11 @@ def show_summary(title: str, rows: list[tuple[str, str]]) -> None:
     table.add_column("结果", overflow="fold", min_width=34)
     for left, right in rows:
         table.add_row(left, Text(right, style="bold white"))
-    console.print(Align.center(table))
+    return Align.center(table)
+
+
+def show_summary(title: str, rows: list[tuple[str, str]]) -> None:
+    console.print(build_summary_renderable(title, rows))
 
 
 async def wait_with_progress(

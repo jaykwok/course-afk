@@ -20,23 +20,19 @@ import asyncio
 import logging
 from typing import Any
 
-from rich.align import Align
-from rich.box import ROUNDED, SIMPLE_HEAVY
-from rich.table import Table
 from rich.text import Text
 from textual.widgets import RichLog
 
 import core.ui as cli_ui
 from core.abort import UserCancelRequested
 from core.config import LOG_FORMAT, _get_console_log_level, setup_logging
-from core.credential import load_credential_metadata
-from core.state import recommend_next_step
 from core.tui_app import (
     CourseTuiApp,
     MultilineScreen,
     OptionScreen,
     PauseScreen,
     YesNoScreen,
+    _PROMPT_CANCELLED,
 )
 
 
@@ -48,54 +44,6 @@ def _icon_text(icon: str, message: str, *, style: str) -> Text:
     text.append(f"  {icon}  ", style=f"bold {style}")
     text.append(message, style=style)
     return text
-
-
-def _build_dashboard(state: Any) -> Align:
-    metadata = load_credential_metadata()
-    account_label = metadata.account_label if metadata else "未登录"
-    recommended = recommend_next_step(
-        has_credential=state.has_credential and not state.credential_expired,
-        learning_count=state.learning_count,
-        exam_count=state.exam_count,
-        manual_exam_count=state.manual_exam_count,
-    )
-
-    table = Table(
-        show_header=False,
-        box=ROUNDED,
-        border_style="bright_black",
-        title="当前状态",
-        title_style="bold",
-        min_width=50,
-        padding=(0, 1),
-    )
-    table.add_column("项目", style="dim", min_width=8, justify="right")
-    table.add_column("值", overflow="fold", min_width=36)
-    table.add_row("账号", Text(account_label, style="bold"))
-    table.add_row("凭证", cli_ui._credential_display(state, metadata))
-    table.add_row("课程链接", cli_ui._count_display(state.learning_count))
-    table.add_row("挂课失败", cli_ui._count_display(state.learning_failure_count))
-    table.add_row("考试链接", cli_ui._count_display(state.exam_count))
-    table.add_row("人工考试", cli_ui._count_display(state.manual_exam_count))
-    table.add_row("建议操作", Text(f"→ {recommended}", style="bold yellow"))
-    return Align.center(table)
-
-
-def _build_summary_table(title: str, rows: list[tuple[str, str]]) -> Align:
-    table = Table(
-        show_header=False,
-        box=SIMPLE_HEAVY,
-        border_style="bright_black",
-        title=title,
-        title_style="bold",
-        min_width=50,
-        padding=(0, 1),
-    )
-    table.add_column("项目", style="dim", min_width=14, justify="right")
-    table.add_column("结果", overflow="fold", min_width=30)
-    for left, right in rows:
-        table.add_row(left, Text(str(right), style="bold"))
-    return Align.center(table)
 
 
 # ------------------------------------------------------------------
@@ -208,32 +156,41 @@ class TuiFrontend:
 
     def _bridge_show_summary(self, title: str, rows: list[tuple[str, str]]) -> None:
         self.app.call_from_thread(
-            self.app.emit_log, _build_summary_table(title, rows)
+            self.app.emit_log, cli_ui.build_summary_renderable(title, rows)
         )
 
     def _bridge_render_dashboard(self, state: Any) -> None:
-        self.app.call_from_thread(self.app.set_dashboard, _build_dashboard(state))
+        self.app.call_from_thread(
+            self.app.set_dashboard, cli_ui.build_dashboard_renderable(state)
+        )
 
     # ---------------- 阻塞提示类（工作线程在 Queue.get 上等待结果）----------------
-    def _prompt(self, screen: Any) -> Any:
+    def _prompt(self, screen: Any, *, cancellable: bool = False) -> Any:
         # call_from_thread 阻塞工作线程直到模态屏挂载完成并返回 Queue；
         # 随后 Queue.get 阻塞直到用户 dismiss（dismiss 回调会把结果 put 进队列）。
-        queue = self.app.call_from_thread(self.app.push_prompt, screen)
-        return queue.get()
+        queue = self.app.call_from_thread(
+            self.app.push_prompt, screen, cancellable=cancellable
+        )
+        result = queue.get()
+        # Ctrl+C 强制取消（仅 cancellable 提示）→ 抛 UserCancelRequested 返回主菜单
+        if result is _PROMPT_CANCELLED:
+            raise UserCancelRequested("已取消当前操作，返回主菜单")
+        return result
 
     def _bridge_show_menu(self, options: list[str]) -> int:
+        # 主菜单不可取消：在主菜单按 Ctrl+C 直接退出应用
         return self._prompt(OptionScreen("主菜单", options, "请选择功能"))
 
     def _bridge_prompt_choice(
         self, title: str, options: list[str], prompt: str = "请选择"
     ) -> int:
-        return self._prompt(OptionScreen(title, options, prompt))
+        return self._prompt(OptionScreen(title, options, prompt), cancellable=True)
 
     def _bridge_prompt_yes_no(self, message: str, default: str = "N") -> bool:
-        return self._prompt(YesNoScreen(message, default))
+        return self._prompt(YesNoScreen(message, default), cancellable=True)
 
     def _bridge_pause(self, message: str = "按回车返回主菜单") -> None:
-        self._prompt(PauseScreen(message))
+        self._prompt(PauseScreen(message), cancellable=True)
 
     def _bridge_prompt_multiline_input(
         self,
@@ -242,7 +199,10 @@ class TuiFrontend:
         title: str = "手动选择课程 / 录入链接",
         cancel_message: str = "已取消手动选择课程 / 录入链接",
     ) -> str:
-        kind, value = self._prompt(MultilineScreen(messages, title, cancel_message))
+        result = self._prompt(
+            MultilineScreen(messages, title, cancel_message), cancellable=True
+        )
+        kind, value = result
         if kind == "cancel":
             raise UserCancelRequested(cancel_message)
         return value

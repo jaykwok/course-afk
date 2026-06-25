@@ -35,6 +35,11 @@ from textual.widgets import (
 from textual.widgets.option_list import Option
 
 
+# Ctrl+C 强制取消当前模态提示时，用作 dismiss 的返回值；桥接层识别后抛
+# UserCancelRequested，让控制流正常返回主菜单（而非直接退出）。
+_PROMPT_CANCELLED: Any = object()
+
+
 class OptionScreen(ModalScreen[int]):
     """菜单 / 多选一。dismiss 值为 1-based 序号。"""
 
@@ -302,6 +307,12 @@ class CourseTuiApp(App):
         Binding("ctrl+c", "request_quit", "退出", show=False, priority=True),
     ]
 
+    def __init__(self) -> None:
+        super().__init__()
+        # 当前「可被 Ctrl+C 取消」的模态提示队列（是/否、多行、回车、子菜单）。
+        # 主菜单不在此列——在主菜单按 Ctrl+C 应直接退出。仅 app 线程读写，无需锁。
+        self._cancellable_prompt_queue: Queue | None = None
+
     def compose(self) -> ComposeResult:
         yield Header()
         yield Vertical(
@@ -382,15 +393,35 @@ class CourseTuiApp(App):
     def action_request_quit(self) -> None:
         from core.config import interrupt_running_async
 
-        # 若挂课/考试流程正在工作线程上阻塞，先取消它，触发 workflow 的优雅保存
-        # （取消后以 UserCancelRequested 返回主菜单）；没有运行中的流程时直接退出。
-        if not interrupt_running_async():
-            self.exit()
+        # 1. 工作流中的模态提示（是/否、多行、回车、子菜单）正打开：取消该提示，
+        #    桥接层识别 _PROMPT_CANCELLED 后抛 UserCancelRequested，正常返回主菜单。
+        if self._cancellable_prompt_queue is not None:
+            try:
+                self.screen.dismiss(_PROMPT_CANCELLED)
+            except Exception:
+                pass
+            return
+        # 2. 工作流正在工作线程上跑（Playwright 阻塞）：跨线程取消，触发优雅保存，
+        #    随后以 UserCancelRequested 返回主菜单。
+        if interrupt_running_async():
+            return
+        # 3. 主菜单 / 空闲：直接退出。
+        self.exit()
 
     # ------------------------------------------------------------------
     # 供桥接层挂载模态屏（call_from_thread 调用，阻塞工作线程直到挂载完成）
     # ------------------------------------------------------------------
-    async def push_prompt(self, screen: ModalScreen) -> Queue:
+    async def push_prompt(
+        self, screen: ModalScreen, *, cancellable: bool = False
+    ) -> Queue:
         queue: Queue = Queue()
-        await self.push_screen(screen, callback=queue.put)
+        if cancellable:
+            self._cancellable_prompt_queue = queue
+
+        def _on_dismiss(result: Any) -> None:
+            if self._cancellable_prompt_queue is queue:
+                self._cancellable_prompt_queue = None
+            queue.put(result)
+
+        await self.push_screen(screen, callback=_on_dismiss)
         return queue

@@ -162,6 +162,53 @@ class TuiSmokeTests(unittest.TestCase):
 
         asyncio.run(asyncio.wait_for(scenario(), timeout=30.0))
 
+    def test_ctrl_c_at_cancellable_prompt_returns_to_menu(self):
+        """Ctrl+C 命中工作流模态提示（是/否）时取消该提示，返回主菜单而非退出。"""
+
+        async def scenario() -> None:
+            outcomes: dict = {}
+
+            def caller() -> None:
+                try:
+                    outcomes["yesno"] = cli_ui.prompt_yes_no("自动交卷？", default="N")
+                except UserCancelRequested:
+                    outcomes["yesno"] = "cancelled"
+                except BaseException as exc:  # noqa: BLE001
+                    outcomes["yesno"] = f"error:{exc!r}"
+
+            worker = threading.Thread(target=caller, daemon=True)
+
+            with patch("core.config.setup_logging"):
+                app = _PromptApp()
+                frontend = TuiFrontend(app)
+                frontend.install()
+                try:
+                    async with app.run_test(size=(100, 30)) as pilot:
+                        worker.start()
+                        self.assertTrue(
+                            await _wait_for(
+                                lambda: isinstance(app.screen, YesNoScreen), pilot
+                            ),
+                            "yes/no 模态屏未出现",
+                        )
+                        # 模拟在提示上按 Ctrl+C
+                        app.action_request_quit()
+                        await pilot.pause()
+                        self.assertTrue(
+                            await _wait_for(
+                                lambda: not worker.is_alive(), pilot, timeout=8.0
+                            ),
+                            "Ctrl+C 取消提示后工作线程未结束",
+                        )
+                finally:
+                    frontend.restore()
+
+            self.assertEqual(
+                outcomes.get("yesno"), "cancelled", f"yes/no 结果异常: {outcomes}"
+            )
+
+        asyncio.run(asyncio.wait_for(scenario(), timeout=30.0))
+
     def test_wait_with_progress_updates_then_clears(self):
         """异步 wait_with_progress 桥接：在工作线程自己的 asyncio 循环上更新进度行。"""
 
