@@ -435,6 +435,8 @@ async def run_ai_exam_batch(
                     await _close_page_safely(page)
                 pending_urls.pop(0)
     except BaseException as exc:
+        if isinstance(exc, (SystemExit, GeneratorExit)):
+            raise
         if isinstance(exc, (UserAbortRequested, UserCancelRequested, ExamAiConfigurationError)):
             raise
         if isinstance(exc, asyncio.CancelledError):
@@ -563,6 +565,8 @@ async def run_manual_exam_batch(
                     await _close_page_safely(page)
                 pending_entries.pop(0)
     except BaseException as exc:
+        if isinstance(exc, (SystemExit, GeneratorExit)):
+            raise
         if isinstance(exc, (UserAbortRequested, UserCancelRequested)):
             raise
         if isinstance(exc, asyncio.CancelledError):

@@ -209,6 +209,9 @@ async def run_afk_once(status_callback: StatusCallback | None = None) -> bool:
             await _recheck_url_type_links(context)
             _write_learning_queue(pending_learning_urls)
     except BaseException as exc:
+        if isinstance(exc, (SystemExit, GeneratorExit)):
+            # 进程退出/生成器退出不应被吞掉，原样上抛
+            raise
         if isinstance(exc, asyncio.CancelledError):
             # TUI Ctrl+C / 任务取消：保存剩余链接，返回主菜单
             _write_learning_queue(pending_learning_urls)

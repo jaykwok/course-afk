@@ -151,16 +151,19 @@ def run_async(awaitable):
         async def _tracked():
             # 把当前任务登记起来，便于主线程通过 interrupt_running_async 跨线程取消
             # （TUI 里 Ctrl+C 需要打断工作线程上阻塞的 Playwright 循环并触发优雅保存）。
-            _RUNNING_ASYNC[thread_id] = (loop, asyncio.current_task())
+            with _RUNNING_ASYNC_LOCK:
+                _RUNNING_ASYNC[thread_id] = (loop, asyncio.current_task())
             try:
                 return await awaitable
             finally:
-                _RUNNING_ASYNC.pop(thread_id, None)
+                with _RUNNING_ASYNC_LOCK:
+                    _RUNNING_ASYNC.pop(thread_id, None)
 
         try:
             return runner.run(_tracked())
         finally:
-            _RUNNING_ASYNC.pop(thread_id, None)
+            with _RUNNING_ASYNC_LOCK:
+                _RUNNING_ASYNC.pop(thread_id, None)
 
 
 # 线程 id -> (事件循环, 正在运行的任务)；run_async 登记，interrupt_running_async 读取
