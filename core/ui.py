@@ -343,8 +343,12 @@ def _count_display(count: int) -> Text:
     return Text(str(count), style="bold bright_white")
 
 
-def build_dashboard_renderable(state: ProjectState):
-    """构造仪表盘渲染对象（CLI 与 TUI 共用，避免两处重复实现漂移）。"""
+def build_dashboard_renderable(state: ProjectState, *, expand: bool = False):
+    """构造仪表盘渲染对象（CLI 与 TUI 共用，避免两处重复实现漂移）。
+
+    expand=True 时表格铺满可用宽度（TUI 用，避免宽终端下表格居中留大片空白）；
+    expand=False 时保持居中、紧凑（CLI 用）。
+    """
     metadata = load_credential_metadata()
     account_label = metadata.account_label if metadata else "未登录"
 
@@ -363,9 +367,10 @@ def build_dashboard_renderable(state: ProjectState):
         title_style="bold white",
         min_width=54,
         padding=(0, 1),
+        expand=expand,
     )
-    table.add_column("项目", style="dim white", min_width=10, justify="right")
-    table.add_column("值", overflow="fold", min_width=40)
+    table.add_column("项目", style="dim white", min_width=10, justify="right", no_wrap=True)
+    table.add_column("值", overflow="fold", min_width=40, ratio=1)
 
     table.add_row("账号", Text(account_label, style="bold white"))
     table.add_row("凭证", _credential_display(state, metadata))
@@ -377,7 +382,7 @@ def build_dashboard_renderable(state: ProjectState):
         "建议操作",
         Text(f"->  {recommended}", style="bold bright_yellow"),
     )
-    return Align.center(table)
+    return table if expand else Align.center(table)
 
 
 def render_dashboard(state: ProjectState) -> None:
@@ -481,8 +486,8 @@ def pause(message: str = "按回车返回主菜单") -> None:
     console.print()
 
 
-def build_summary_renderable(title: str, rows: list[tuple[str, str]]):
-    """构造汇总渲染对象（CLI 与 TUI 共用）。"""
+def build_summary_renderable(title: str, rows: list[tuple[str, str]], *, expand: bool = False):
+    """构造汇总渲染对象（CLI 与 TUI 共用）。expand=True 时铺满宽度（TUI 用）。"""
     table = Table(
         show_header=False,
         box=SIMPLE_HEAVY,
@@ -491,12 +496,13 @@ def build_summary_renderable(title: str, rows: list[tuple[str, str]]):
         title_style="bold white",
         min_width=54,
         padding=(0, 1),
+        expand=expand,
     )
-    table.add_column("项目", style="dim white", min_width=16, justify="right")
-    table.add_column("结果", overflow="fold", min_width=34)
+    table.add_column("项目", style="dim white", min_width=16, justify="right", no_wrap=True)
+    table.add_column("结果", overflow="fold", min_width=34, ratio=1)
     for left, right in rows:
         table.add_row(left, Text(right, style="bold white"))
-    return Align.center(table)
+    return table if expand else Align.center(table)
 
 
 def show_summary(title: str, rows: list[tuple[str, str]]) -> None:

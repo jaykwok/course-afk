@@ -156,12 +156,12 @@ class TuiFrontend:
 
     def _bridge_show_summary(self, title: str, rows: list[tuple[str, str]]) -> None:
         self.app.call_from_thread(
-            self.app.emit_log, cli_ui.build_summary_renderable(title, rows)
+            self.app.emit_log, cli_ui.build_summary_renderable(title, rows, expand=True)
         )
 
     def _bridge_render_dashboard(self, state: Any) -> None:
         self.app.call_from_thread(
-            self.app.set_dashboard, cli_ui.build_dashboard_renderable(state)
+            self.app.set_dashboard, cli_ui.build_dashboard_renderable(state, expand=True)
         )
 
     # ---------------- 阻塞提示类（工作线程在 Queue.get 上等待结果）----------------

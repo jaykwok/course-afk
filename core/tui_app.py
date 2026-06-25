@@ -226,22 +226,22 @@ class CourseTuiApp(App):
     #dashboard {
         height: auto;
         max-height: 16;
-        border: round $accent 50%;
+        border: round $accent 60%;
         padding: 0 1;
-        margin: 1 1 0 1;
+        margin: 1 0 0 0;
         color: $text;
-        text-align: center;
     }
 
     #progress {
         height: 1;
-        margin: 0 1;
+        margin: 0;
+        padding: 0 1;
         color: $text;
     }
 
     #log {
         border: round $primary 50%;
-        margin: 1;
+        margin: 1 0;
         height: 1fr;
         background: $surface;
     }
