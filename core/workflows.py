@@ -21,6 +21,7 @@ from core.config import (
     MANUAL_EXAM_FILE,
     ZHIXUEYUN_HOME,
     ZHIXUEYUN_HOME_PATTERN,
+    is_ai_configured,
 )
 from core.credential import AccountProfile
 from core.exam_runner import run_ai_exam_batch, run_manual_exam_batch
@@ -351,6 +352,11 @@ async def run_recommended_flow(
         if status_callback:
             status_callback("未检测到考试链接，本次流程结束")
         return "afk-only"
+
+    if not is_ai_configured():
+        if status_callback:
+            status_callback("未填写 AI 配置，跳过 AI 自动考试；可改用人工考试")
+        return "ai-not-configured"
 
     auto_submit = ask_auto_submit() if ask_auto_submit else False
     manual_count = await run_ai_exam_workflow(

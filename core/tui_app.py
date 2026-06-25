@@ -41,7 +41,10 @@ _PROMPT_CANCELLED: Any = object()
 
 
 class OptionScreen(ModalScreen[int]):
-    """菜单 / 多选一。dismiss 值为 1-based 序号。"""
+    """菜单 / 多选一。dismiss 值为 1-based 序号。
+
+    交互：↑↓ 移动高亮、回车选中，或鼠标直接点击选项即可（不需要单独的确认按钮）。
+    """
 
     def __init__(
         self,
@@ -57,17 +60,13 @@ class OptionScreen(ModalScreen[int]):
     def compose(self) -> ComposeResult:
         yield Vertical(
             Static(self._title, id="opt-title"),
-            Static(self._prompt, id="opt-hint"),
+            Static(f"{self._prompt}（↑↓ 选择，回车 / 点击确认）", id="opt-hint"),
             OptionList(
                 *(
                     Option(f"{idx}. {opt}", id=str(idx))
                     for idx, opt in enumerate(self._options, start=1)
                 ),
                 id="opt-list",
-            ),
-            Horizontal(
-                Button("确认 [Enter]", id="confirm", variant="primary"),
-                id="opt-actions",
             ),
             id="opt-dialog",
         )
@@ -76,16 +75,6 @@ class OptionScreen(ModalScreen[int]):
         self, event: OptionList.OptionSelected
     ) -> None:
         self.dismiss(event.option_index + 1)
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id != "confirm":
-            return
-        option_list = self.query_one("#opt-list", OptionList)
-        highlighted = option_list.highlighted
-        if highlighted is None:
-            self.app.bell()
-            return
-        self.dismiss(highlighted + 1)
 
 
 class YesNoScreen(ModalScreen[bool]):
@@ -288,7 +277,7 @@ class CourseTuiApp(App):
         border: solid $primary 30%;
     }
 
-    #opt-actions, #yn-actions, #ml-actions, #pause-actions {
+    #yn-actions, #ml-actions, #pause-actions {
         align-horizontal: center;
         height: auto;
         margin-top: 1;

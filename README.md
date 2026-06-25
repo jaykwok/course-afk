@@ -15,7 +15,7 @@ uv venv
 uv pip install -r requirements.txt
 ```
 
-复制 `.env.example` 为 `.env`，填写你的 AI 参数：
+复制 `.env.example` 为 `.env`。**AI 参数是可选的**：不填也能用挂课、人工考试、课件收集等功能；只有「AI 自动考试」需要下面的 AI 配置（接口地址 / API Key / 模型名三项都填才生效）。没填时进入 AI 自动考试会提示未填写。
 
 ```env
 OPENAI_COMPLETION_BASE_URL="https://dashscope.aliyuncs.com/compatible-mode/v1"

@@ -106,6 +106,7 @@ _FLOW_RESULT_LABELS = {
     "credential": "凭证不可用，请更新登录凭证",
     "manual-selection": "未检测到学习链接，请手动选择课程或录入链接",
     "afk-only": "挂课完成，未检测到考试链接",
+    "ai-not-configured": "未填写 AI 配置，已跳过 AI 自动考试（可改用人工考试）",
     "manual-exam-pending": "AI 考试完成，仍有人工考试待处理",
     "done": "全部流程完成",
 }
@@ -219,8 +220,17 @@ def handle_afk(ui) -> None:
 
 
 def handle_ai_exam(ui) -> None:
+    from core.config import is_ai_configured
     from core.exam_answers import ExamAiConfigurationError
     from core.workflows import run_ai_exam_workflow
+
+    if not is_ai_configured():
+        ui.show_warning(
+            "未填写 AI 配置（OPENAI_COMPLETION_BASE_URL / OPENAI_COMPLETION_API_KEY / "
+            "MODEL_NAME），无法使用 AI 自动考试。请在 .env 填写后重试，或改用人工考试。"
+        )
+        ui.pause()
+        return
 
     if not _ensure_exam_urls_for_ai_exam(ui):
         ui.pause()

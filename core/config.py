@@ -372,6 +372,15 @@ AI_SYSTEM_PROMPT = (
     "最终只输出答案内容, 不要解释。"
 )
 
+
+def is_ai_configured() -> bool:
+    """是否已填写 AI 考试所需配置。
+
+    .env 未填 AI 信息时挂课、人工考试等非 AI 功能仍可用；只有 AI 自动考试
+    需要这三项（接口地址 / API Key / 模型名）。
+    """
+    return bool(OPENAI_COMPLETION_BASE_URL and OPENAI_COMPLETION_API_KEY and MODEL_NAME)
+
 # ============================================================
 # 浏览器配置
 # ============================================================

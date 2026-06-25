@@ -188,6 +188,38 @@ class LauncherControllerTests(unittest.TestCase):
             auto_submit=False,
         )
 
+    def test_handle_ai_exam_warns_when_ai_not_configured(self):
+        from core.launcher_controller import handle_ai_exam
+
+        class FakeUi:
+            def __init__(self):
+                self.messages = []
+
+            def show_warning(self, message):
+                self.messages.append(message)
+
+            def show_info(self, message):
+                self.messages.append(message)
+
+            def pause(self):
+                self.messages.append("pause")
+
+        ui = FakeUi()
+        with (
+            patch("core.config.is_ai_configured", return_value=False),
+            patch(
+                "core.workflows.run_ai_exam_workflow",
+                new=unittest.mock.AsyncMock(),
+            ) as mock_workflow,
+        ):
+            handle_ai_exam(ui)
+
+        self.assertTrue(
+            any("AI 配置" in message for message in ui.messages), ui.messages
+        )
+        self.assertIn("pause", ui.messages)
+        mock_workflow.assert_not_awaited()
+
     def test_handle_ai_exam_does_not_start_when_missing_links_are_declined(self):
         from core.launcher_controller import handle_ai_exam
 
