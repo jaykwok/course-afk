@@ -16,7 +16,12 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 # 加载 .env 文件（API密钥等敏感信息仍由 .env 管理）
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if getattr(sys, "frozen", False):
+    # PyInstaller 打包后：.env、cookies.json、课程链接.json、log.txt 等用户/输出文件
+    # 放在 exe 同级目录，而不是打包内部（内部只读、onefile 还会随退出清理）。
+    PROJECT_ROOT = Path(sys.executable).resolve().parent
+else:
+    PROJECT_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(PROJECT_ROOT / ".env")
 
 # ============================================================
