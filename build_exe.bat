@@ -33,4 +33,8 @@ if errorlevel 1 (
 
 echo.
 echo Build complete: dist\course-afk\course-afk.exe
+
+REM 附上 .env 模板和使用说明，方便用户上手
+copy /Y ".env.example" "dist\course-afk\.env.example" >nul
+copy /Y "使用说明.txt" "dist\course-afk\使用说明.txt" >nul
 exit /b 0
