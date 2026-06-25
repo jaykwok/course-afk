@@ -6,10 +6,6 @@ title Course Automation
 color 0B
 set PYTHONIOENCODING=utf-8
 set PYTHONUTF8=1
-REM cmd(传统控制台)默认窗口偏窄，这里把控制台拉宽，让 TUI 启动即铺满。
-REM 注意：cmd 调整窗口大小时 TUI 不会实时重排(传统控制台限制)，想要可随意缩放
-REM 请用 Windows Terminal 打开本 bat(右键 → 在终端中打开)。
-mode con cols=140 lines=42 >nul 2>&1
 cls
 
 set "PAD=                "
