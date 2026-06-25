@@ -10,10 +10,22 @@ cls
 
 set "PAD=                "
 echo.
-echo %PAD%Course Automation
-echo %PAD%Unified Entry Point
-echo %PAD%Starting launcher.py ...
+REM 检测控制台实际宽度，让方框在任何窗口尺寸下都居中
+setlocal EnableDelayedExpansion
+set COLS=120
+for /f %%W in ('powershell -NoProfile -Command "$Host.UI.RawUI.WindowSize.Width" 2^>nul') do set COLS=%%W
+set /a "PW=(!COLS! - 62) / 2"
+if !PW! LSS 0 set PW=0
+set BPAD=
+for /L %%i in (1,1,!PW!) do call set "BPAD=%%BPAD%% "
+echo !BPAD!+------------------------------------------------------------+
+echo !BPAD!^|                     Course Automation                      ^|
+echo !BPAD!^|                    Unified Entry Point                     ^|
+echo !BPAD!^|                                                            ^|
+echo !BPAD!^|                  Starting launcher.py ...                  ^|
+echo !BPAD!+------------------------------------------------------------+
 echo.
+endlocal
 
 set "PYTHON_EXE=.venv\Scripts\python.exe"
 if not exist "%PYTHON_EXE%" (
