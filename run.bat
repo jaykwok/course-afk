@@ -10,12 +10,9 @@ cls
 
 set "PAD=                "
 echo.
-echo %PAD%+------------------------------------------------------------+
-echo %PAD%^|                    Course Automation                     ^|
-echo %PAD%^|                    Unified Entry Point                    ^|
-echo %PAD%^|                                                            ^|
-echo %PAD%^|                 Starting launcher.py ...                   ^|
-echo %PAD%+------------------------------------------------------------+
+echo %PAD%Course Automation
+echo %PAD%Unified Entry Point
+echo %PAD%Starting launcher.py ...
 echo.
 
 set "PYTHON_EXE=.venv\Scripts\python.exe"
