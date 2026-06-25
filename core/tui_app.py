@@ -43,7 +43,8 @@ _PROMPT_CANCELLED: Any = object()
 class OptionScreen(ModalScreen[int]):
     """菜单 / 多选一。dismiss 值为 1-based 序号。
 
-    交互：↑↓ 移动高亮、回车选中，或鼠标直接点击选项即可（不需要单独的确认按钮）。
+    交互：方向键移动高亮、回车选中，或鼠标直接点击选项即可（不需要单独的确认按钮）。
+    提示文字避免 ↑↓ 等 East-Asian ambiguous 宽度字符，防止某些控制台字体下错位。
     """
 
     def __init__(
@@ -60,7 +61,7 @@ class OptionScreen(ModalScreen[int]):
     def compose(self) -> ComposeResult:
         yield Vertical(
             Static(self._title, id="opt-title"),
-            Static(f"{self._prompt}（↑↓ 选择，回车 / 点击确认）", id="opt-hint"),
+            Static(f"{self._prompt}（方向键移动，回车或点击确认）", id="opt-hint"),
             OptionList(
                 *(
                     Option(f"{idx}. {opt}", id=str(idx))
