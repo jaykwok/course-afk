@@ -1,11 +1,11 @@
 # requirements.txt
 # Install these packages using: pip install -r requirements.txt
 
-playwright==1.60.0
-beautifulsoup4==4.14.3
-python-dotenv==1.2.2
-openai==2.37.0
-rich==15.0.0
-textual==8.2.7
+playwright
+beautifulsoup4
+python-dotenv
+openai
+rich
+textual
 # Dev-only tooling (textual console / dev server), optional:
 # textual-dev
