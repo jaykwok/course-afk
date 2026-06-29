@@ -146,7 +146,7 @@ def load_credential_metadata(metadata_path=CREDENTIAL_META_FILE) -> CredentialMe
     try:
         with open(metadata_path, "r", encoding="utf-8") as file:
             data = json.load(file)
-    except FileNotFoundError:
+    except (FileNotFoundError, json.JSONDecodeError):
         return None
     return CredentialMetadata(
         saved_at=str(data.get("saved_at") or ""),

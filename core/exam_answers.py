@@ -2,16 +2,33 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 import traceback
+
+from openai import (
+    APIConnectionError,
+    APITimeoutError,
+    InternalServerError,
+    RateLimitError,
+)
 
 from core.config import (
     AI_ENABLE_THINKING,
     AI_ENABLE_WEB_SEARCH,
+    AI_MAX_RETRIES,
     AI_REASONING_EFFORT,
     AI_REQUEST_TYPE,
     AI_RESPONSE_TOOLS,
     AI_SYSTEM_PROMPT,
     AI_TEMPERATURE,
+)
+
+# 可重试的 OpenAI 异常：网络/超时/限流/服务端错误
+_RETRYABLE_API_ERRORS = (
+    APIConnectionError,
+    APITimeoutError,
+    RateLimitError,
+    InternalServerError,
 )
 
 
@@ -186,21 +203,41 @@ def _build_chat_request(model: str, prompt: str) -> dict:
 
 
 def _request_ai_answer_text(client, model: str, prompt: str) -> str:
-    if AI_REQUEST_TYPE == "responses":
-        response_or_stream = client.responses.create(
-            **_build_responses_request(model, prompt),
-        )
-        return _extract_responses_output_text(response_or_stream)
+    def _invoke() -> str:
+        if AI_REQUEST_TYPE == "responses":
+            response_or_stream = client.responses.create(
+                **_build_responses_request(model, prompt),
+            )
+            return _extract_responses_output_text(response_or_stream)
 
-    if AI_REQUEST_TYPE == "chat":
-        completion_or_stream = client.chat.completions.create(
-            **_build_chat_request(model, prompt),
-        )
-        return _extract_chat_stream_text(completion_or_stream)
+        if AI_REQUEST_TYPE == "chat":
+            completion_or_stream = client.chat.completions.create(
+                **_build_chat_request(model, prompt),
+            )
+            return _extract_chat_stream_text(completion_or_stream)
 
-    raise ExamAiConfigurationError(
-        f"AI_REQUEST_TYPE 配置无效: {AI_REQUEST_TYPE!r}，仅支持 'chat' 或 'responses'。"
-    )
+        raise ExamAiConfigurationError(
+            f"AI_REQUEST_TYPE 配置无效: {AI_REQUEST_TYPE!r}，仅支持 'chat' 或 'responses'。"
+        )
+
+    last_exc: Exception | None = None
+    for attempt in range(AI_MAX_RETRIES + 1):
+        try:
+            return _invoke()
+        except ExamAiConfigurationError:
+            raise
+        except _RETRYABLE_API_ERRORS as exc:
+            last_exc = exc
+            if attempt >= AI_MAX_RETRIES:
+                raise
+            wait_seconds = min(2 ** attempt, 8)
+            logging.warning(
+                f"AI 请求失败({type(exc).__name__})，{wait_seconds}s 后重试 "
+                f"({attempt + 1}/{AI_MAX_RETRIES}): {exc}"
+            )
+            time.sleep(wait_seconds)
+
+    raise last_exc if last_exc else RuntimeError("AI 请求未执行")
 
 
 def build_question_prompt(question_data) -> str:
@@ -242,8 +279,8 @@ def normalize_ai_answer_text(question_type: str, answer_text: str) -> list[str]:
             or re.search(r"(?<![a-z])t(?![a-z])", lowered)
         ):
             return ["正确"]
-        logging.warning(f"无法识别的判断题答案: {final_answer}")
-        return ["正确"]
+        logging.warning(f"无法识别的判断题答案: {final_answer}，将交由人工处理")
+        return []
 
     if question_type == "ordering":
         sequences = re.findall(r"(?<![A-Z])[A-Z]{2,}(?![A-Z])", normalized_upper)

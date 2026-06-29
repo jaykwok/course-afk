@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import re
@@ -14,6 +15,35 @@ def del_file(filename):
     """删除文件(如果存在)"""
     if os.path.exists(filename):
         os.remove(filename)
+
+
+def load_cookies(path) -> list:
+    """读取登录凭证 cookie 文件，失败时抛出带友好提示的异常。"""
+    try:
+        with open(path, "r", encoding="utf-8") as file:
+            cookies = json.load(file)
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(
+            "未找到登录凭证文件，请先在主菜单选择「切换账号 / 更新登录凭证」完成登录。"
+        ) from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            "登录凭证文件已损坏，请重新登录以刷新凭证。"
+        ) from exc
+    except PermissionError as exc:
+        raise PermissionError(
+            "无法读取登录凭证文件（可能被网盘/同步软件占用），请关闭相关软件后重试。"
+        ) from exc
+    if not isinstance(cookies, list):
+        raise ValueError("登录凭证文件格式异常（应为 cookie 列表），请重新登录。")
+    return cookies
+
+
+def write_text_atomic(path, content: str, *, encoding: str = "utf-8") -> None:
+    """原子写入：先写临时文件再 os.replace，避免并发读时读到半截内容。"""
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(content, encoding=encoding)
+    os.replace(tmp_path, path)
 
 
 def save_to_file(filename, url):
@@ -102,7 +132,8 @@ def normalize_url(url):
             candidate,
         )
         if business_match:
-            btype = _BUSINESS_TYPE_MAP.get(business_match.group(1))
+            type_code = business_match.group(1)
+            btype = _BUSINESS_TYPE_MAP.get(type_code)
             if btype:
                 prefix = (
                     ZHIXUEYUN_COURSE_PREFIX
@@ -110,6 +141,9 @@ def normalize_url(url):
                     else ZHIXUEYUN_SUBJECT_PREFIX
                 )
                 return f"{prefix}{business_match.group(2)}"
+            logging.warning(
+                f"未知 businessType={type_code}，链接未能归一化为标准格式: {url}"
+            )
 
     # detail带前缀格式: /detail/数字&UUID → /detail/UUID
     for candidate in candidates:

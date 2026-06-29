@@ -4,6 +4,7 @@ import asyncio
 import logging
 import traceback
 
+from core.abort import NoPermissionError
 from core.browser import is_page_browser_connected, is_target_closed_exception
 from core.config import (
     URL_TYPE_WAIT,
@@ -38,7 +39,7 @@ async def subject_learning(page):
     await page.wait_for_load_state("networkidle")
 
     if not await check_permission(page.main_frame):
-        raise Exception("无权限查看该资源")
+        raise NoPermissionError("无权限查看该资源")
 
     await page.locator(".item.current-hover").last.wait_for()
     await page.locator(".item.current-hover").locator(".section-type").last.wait_for()
@@ -68,7 +69,7 @@ async def subject_learning(page):
                 logging.error(f"发生错误: {str(exc)}")
                 logging.error(traceback.format_exc())
                 course_url = await get_course_url(learn_item)
-                if str(exc) == "无权限查看该资源":
+                if isinstance(exc, NoPermissionError):
                     record_learning_failure(
                         course_url,
                         reason="no_permission",
@@ -100,9 +101,16 @@ async def subject_learning(page):
             timer_task = asyncio.create_task(
                 timer(URL_TYPE_WAIT, fallback_interval=1, description="URL 类型学习等待")
             )
-            await page_detail.wait_for_timeout(URL_TYPE_WAIT * 1000)
-            await timer_task
-            await page_detail.close()
+            try:
+                await page_detail.wait_for_timeout(URL_TYPE_WAIT * 1000)
+                await timer_task
+            finally:
+                if not timer_task.done():
+                    timer_task.cancel()
+                try:
+                    await page_detail.close()
+                except Exception:
+                    pass
 
         elif section_type == "考试":
             await handle_subject_exam_item(learn_item)
@@ -134,7 +142,7 @@ async def course_learning(page_detail, learn_item=None):
         if await handle_rating_popup(page_detail):
             logging.info("五星评价完成")
     else:
-        raise Exception("无权限查看该资源")
+        raise NoPermissionError("无权限查看该资源")
 
     if await _is_course_completed(page_detail):
         title = await page_detail.locator("span.course-title-text").inner_text()
@@ -215,6 +223,8 @@ async def course_learning(page_detail, learn_item=None):
                 )
                 continue
         except Exception as exc:
+            if is_target_closed_exception(exc):
+                raise
             logging.error(f"课程{count+1}学习失败: {str(exc)}")
             logging.error(traceback.format_exc())
             has_failed_box = True

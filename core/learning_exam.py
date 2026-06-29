@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 
@@ -83,6 +84,8 @@ async def check_exam_passed(page):
 
         logging.info(f"考试状态: 未通过 ({status_cell})")
         return False
+    except asyncio.CancelledError:
+        raise
     except Exception as exc:
         logging.error(f"获取考试状态时出错: {exc}")
         return False

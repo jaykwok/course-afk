@@ -10,6 +10,7 @@ from datetime import datetime
 from rich.align import Align
 from rich.box import DOUBLE_EDGE, HEAVY_HEAD, ROUNDED, SIMPLE_HEAVY
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.progress import (
     BarColumn,
@@ -301,19 +302,19 @@ def show_title(title: str, subtitle: str | None = None) -> None:
 
 
 def show_info(message: str) -> None:
-    console.print(f"  [cyan]·[/cyan]  {message}")
+    console.print(f"  [cyan]·[/cyan]  {escape(message)}")
 
 
 def show_success(message: str) -> None:
-    console.print(f"  [bold green]√[/bold green]  [green]{message}[/green]")
+    console.print(f"  [bold green]√[/bold green]  [green]{escape(message)}[/green]")
 
 
 def show_warning(message: str) -> None:
-    console.print(f"  [bold yellow]![/bold yellow]  [yellow]{message}[/yellow]")
+    console.print(f"  [bold yellow]![/bold yellow]  [yellow]{escape(message)}[/yellow]")
 
 
 def show_error(message: str) -> None:
-    console.print(f"  [bold red]×[/bold red]  [bold red]{message}[/bold red]")
+    console.print(f"  [bold red]×[/bold red]  [bold red]{escape(message)}[/bold red]")
 
 
 def _credential_display(state: ProjectState, metadata) -> Text:

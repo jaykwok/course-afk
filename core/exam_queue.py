@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from core.config import EXAM_URLS_FILE
-from core.file_ops import del_file
+from core.file_ops import del_file, write_text_atomic
 
 
 @dataclass(frozen=True)
@@ -17,9 +17,9 @@ class ExamQueueEntry:
 def _unique_clean_strings(values) -> list[str]:
     return list(
         dict.fromkeys(
-            str(value).strip()
+            value.strip()
             for value in values
-            if str(value).strip()
+            if isinstance(value, str) and value.strip()
         )
     )
 
@@ -147,9 +147,9 @@ def write_exam_queue(
         del_file(file_path)
         return
 
-    file_path.write_text(
+    write_text_atomic(
+        file_path,
         json.dumps(_serialize_entries(normalized), ensure_ascii=False, indent=2),
-        encoding="utf-8",
     )
 
 

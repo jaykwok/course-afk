@@ -14,6 +14,7 @@ from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
+from urllib.parse import urlparse
 
 # 加载 .env 文件（API密钥等敏感信息仍由 .env 管理）
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -362,6 +363,10 @@ if AI_REASONING_EFFORT:
     AI_REASONING_EFFORT = AI_REASONING_EFFORT.lower()
 AI_RESPONSE_TOOLS = [{"type": "web_search"}] if AI_ENABLE_WEB_SEARCH else None
 
+# AI 请求超时与重试（应对接口不稳/网络抖动；单位：秒 / 次）
+AI_REQUEST_TIMEOUT = float(_env_text("AI_REQUEST_TIMEOUT", "60") or "60")
+AI_MAX_RETRIES = int(_env_text("AI_MAX_RETRIES", "2") or "2")
+
 # AI 考试参数
 AI_TEMPERATURE = 0
 AI_SYSTEM_PROMPT = (
@@ -378,6 +383,21 @@ def is_ai_configured() -> bool:
     需要这三项（接口地址 / API Key / 模型名）。
     """
     return bool(OPENAI_COMPLETION_BASE_URL and OPENAI_COMPLETION_API_KEY and MODEL_NAME)
+
+
+def validate_ai_base_url(url: str | None) -> str | None:
+    """校验 AI 接口地址，防止误填内网/非法地址导致 API Key 外泄。
+
+    仅 http/https 且带 hostname 的地址才放行；返回去掉末尾斜杠的地址。
+    """
+    if not url:
+        return url
+    parsed = urlparse(url.strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError(
+            f"OPENAI_COMPLETION_BASE_URL 非法（需以 http:// 或 https:// 开头）: {url!r}"
+        )
+    return url.strip().rstrip("/")
 
 # ============================================================
 # 浏览器配置

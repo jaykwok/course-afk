@@ -6,12 +6,15 @@ __pycache__/
 # Editor and local tooling
 .vscode/
 .claude/
+.agents/
 docs/
 
 # Local secrets and session state
 .env
 cookies.json
 credential_meta.json
+storage_state*.json
+auth_state*.json
 
 # Runtime logs and temporary probe files
 log.txt

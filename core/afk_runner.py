@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from core.abort import UserAbortRequested, UserCancelRequested
+from core.abort import NoPermissionError, UserAbortRequested, UserCancelRequested
 from core.browser import (
     create_browser_context,
     ensure_controller_page,
@@ -83,7 +83,7 @@ async def _process_url(context, url: str, handler) -> bool:
             ) from None
         logging.error(f"发生错误: {exc}")
         logging.error(traceback.format_exc())
-        if str(exc) == "无权限查看该资源":
+        if isinstance(exc, NoPermissionError):
             record_learning_failure(
                 url,
                 reason="no_permission",

@@ -326,7 +326,7 @@ class CourseTuiApp(App):
         def target() -> None:
             try:
                 launcher.main()
-            except BaseException as exc:  # noqa: BLE001 - 任何未预期错误都展示后退出
+            except Exception as exc:  # noqa: BLE001 - 未预期错误展示后退出；SystemExit/KeyboardInterrupt 放行
                 self._safe_emit_error(f"运行出错：{exc}")
             finally:
                 self._safe_exit()
@@ -385,7 +385,11 @@ class CourseTuiApp(App):
 
         # 1. 工作流中的模态提示（是/否、多行、回车、子菜单）正打开：取消该提示，
         #    桥接层识别 _PROMPT_CANCELLED 后抛 UserCancelRequested，正常返回主菜单。
-        if self._cancellable_prompt_queue is not None:
+        # 仅当栈顶确为模态屏时才 dismiss，避免误关其后压入的其他屏。
+        if (
+            self._cancellable_prompt_queue is not None
+            and isinstance(self.screen, ModalScreen)
+        ):
             try:
                 self.screen.dismiss(_PROMPT_CANCELLED)
             except Exception:

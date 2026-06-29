@@ -6,7 +6,7 @@ from pathlib import Path
 
 from core.config import MANUAL_EXAM_FILE
 from core.exam_queue import normalize_model_config, unique_model_configs
-from core.file_ops import del_file
+from core.file_ops import del_file, write_text_atomic
 
 
 @dataclass(frozen=True)
@@ -93,7 +93,7 @@ def _serialize_entries(entries: list[ManualExamEntry]) -> list[dict[str, object]
         {
             "url": entry.url,
             "reason": entry.reason,
-            "reason_text": entry.reason_text,
+            "reason_text": entry.reason_text[:500] if entry.reason_text else None,
             "remaining_attempts": entry.remaining_attempts,
             "threshold": entry.threshold,
             "ai_failed_model_configs": entry.ai_failed_model_configs,
@@ -129,9 +129,9 @@ def write_manual_exam_queue(
         del_file(file_path)
         return
 
-    file_path.write_text(
+    write_text_atomic(
+        file_path,
         json.dumps(_serialize_entries(normalized), ensure_ascii=False, indent=2),
-        encoding="utf-8",
     )
 
 

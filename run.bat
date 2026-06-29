@@ -29,11 +29,13 @@ endlocal
 
 set "PYTHON_EXE=.venv\Scripts\python.exe"
 if not exist "%PYTHON_EXE%" (
-    where python >nul 2>nul
+    REM 实测 PATH 里的 python 是否真正可执行（排除 Windows Store 重定向桩，它会静默退出 49）
+    python -c "import sys; sys.exit(0)" >nul 2>nul
     if errorlevel 1 (
         color 0C
-        echo %PAD%Python was not found.
-        echo %PAD%Create .venv or install Python and add it to PATH.
+        echo %PAD%Python was not found or is the Windows Store stub.
+        echo %PAD%Create .venv with: uv venv ^&^& uv pip install -r requirements.txt
+        echo %PAD%Or install real Python from https://python.org and add it to PATH.
         echo.
         pause
         exit /b 1

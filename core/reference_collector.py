@@ -394,17 +394,23 @@ async def collect_reference_materials(
         for subject_url, subject_id in subject_urls_with_ids:
             if status_callback:
                 status_callback(f"正在打开学习专区：{subject_url}")
-            courses = await _collect_courses_from_subject_page(page, subject_url)
-            if status_callback:
-                status_callback(f"识别到 {len(courses)} 门课程")
-            auth_header = await _get_authorization_header(page)
-            course_infos = await _fetch_course_infos(
-                page,
-                courses,
-                subject_id=subject_id,
-                auth_header=auth_header,
-                status_callback=status_callback,
-            )
+            try:
+                courses = await _collect_courses_from_subject_page(page, subject_url)
+                if status_callback:
+                    status_callback(f"识别到 {len(courses)} 门课程")
+                auth_header = await _get_authorization_header(page)
+                course_infos = await _fetch_course_infos(
+                    page,
+                    courses,
+                    subject_id=subject_id,
+                    auth_header=auth_header,
+                    status_callback=status_callback,
+                )
+            except Exception as exc:
+                if status_callback:
+                    status_callback(f"学习专区处理失败，已跳过：{exc}")
+                logging.error(f"学习专区处理失败，跳过 {subject_url}: {exc}")
+                continue
             resources = collect_section_resources(course_infos)
             all_course_infos.extend(course_infos)
             all_resources.extend(resources)

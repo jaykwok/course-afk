@@ -34,7 +34,7 @@ class DistributionFilesTests(unittest.TestCase):
         self.assertIn("Course Automation", content)
         self.assertIn("set \"PYTHON_EXE=.venv\\Scripts\\python.exe\"", content)
         self.assertIn("if not exist \"%PYTHON_EXE%\" (", content)
-        self.assertIn("where python >nul 2>nul", content)
+        self.assertIn('python -c "import sys; sys.exit(0)" >nul 2>nul', content)
         self.assertIn("set \"PYTHON_EXE=python\"", content)
         self.assertIn("Python was not found", content)
         self.assertIn("Starting launcher.py", content)

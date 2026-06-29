@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import re
 from typing import Callable
@@ -28,7 +27,12 @@ from core.exam_runner import run_ai_exam_batch, run_manual_exam_batch
 from core.exam_queue import append_exam_url, append_exam_urls, read_exam_urls
 from core.learning_zone import collect_learning_links_from_learning_zone_urls
 from core.links import extract_urls_from_text, split_manual_selection_urls
-from core.file_ops import is_compliant_url_regex, is_exam_url, normalize_url
+from core.file_ops import (
+    is_compliant_url_regex,
+    is_exam_url,
+    load_cookies,
+    normalize_url,
+)
 from core.learning_queue import append_learning_urls, read_learning_urls
 from core.login import login_and_save_credential
 from core.state import collect_project_state, read_non_empty_lines
@@ -116,8 +120,7 @@ async def collect_learning_links_from_entry_urls(
     if not entry_urls:
         return 0, 0, 0
 
-    with open(COOKIES_FILE, "r", encoding="utf-8") as file:
-        cookies = json.load(file)
+    cookies = load_cookies(COOKIES_FILE)
 
     collected_urls = set(read_learning_urls(LEARNING_URLS_FILE))
     collected_exam_urls = set(read_exam_urls(EXAM_URLS_FILE))
@@ -164,38 +167,52 @@ async def collect_learning_links_from_entry_urls(
 
     async with async_playwright() as playwright:
         browser = await launch_async_browser(playwright, headless=False)
-        context = await browser.new_context(
-            **build_browser_context_options(headless=False)
-        )
-        await apply_async_browser_stealth(context)
-        await context.add_cookies(cookies)
-        auth_page = await context.new_page()
-        await auth_page.goto(ZHIXUEYUN_HOME)
-        await auth_page.wait_for_url(re.compile(ZHIXUEYUN_HOME_PATTERN), timeout=0)
-        await auth_page.close()
+        context = None
+        try:
+            context = await browser.new_context(
+                **build_browser_context_options(headless=False)
+            )
+            await apply_async_browser_stealth(context)
+            await context.add_cookies(cookies)
+            auth_page = await context.new_page()
+            await auth_page.goto(ZHIXUEYUN_HOME)
+            await auth_page.wait_for_url(re.compile(ZHIXUEYUN_HOME_PATTERN), timeout=0)
+            await auth_page.close()
 
-        context.on(
-            "page",
-            lambda page: _track_background_task(
-                asyncio.create_task(handle_new_page(page)),
-                popup_tasks,
-            ),
-        )
+            context.on(
+                "page",
+                lambda page: _track_background_task(
+                    asyncio.create_task(handle_new_page(page)),
+                    popup_tasks,
+                ),
+            )
 
-        for index, entry_url in enumerate(entry_urls, start=1):
-            if status_callback:
-                status_callback(
-                    f"正在打开入口链接 {index}/{len(entry_urls)}，处理完成后请关闭当前入口页面继续下一条"
-                )
-            entry_page = await context.new_page()
-            ignored_pages.add(entry_page)
-            await entry_page.goto(entry_url, wait_until="load")
-            await entry_page.wait_for_event("close", timeout=0)
+            for index, entry_url in enumerate(entry_urls, start=1):
+                if status_callback:
+                    status_callback(
+                        f"正在打开入口链接 {index}/{len(entry_urls)}，处理完成后请关闭当前入口页面继续下一条"
+                    )
+                if not _is_recordable_manual_popup_url(entry_url):
+                    logging.warning(
+                        f"入口链接不在官方域名内，仍将打开但请确认来源可信: {entry_url}"
+                    )
+                entry_page = await context.new_page()
+                ignored_pages.add(entry_page)
+                await entry_page.goto(entry_url, wait_until="load")
+                await entry_page.wait_for_event("close", timeout=0)
 
-        if popup_tasks:
-            await asyncio.gather(*tuple(popup_tasks), return_exceptions=True)
-        await context.close()
-        await browser.close()
+            if popup_tasks:
+                await asyncio.gather(*tuple(popup_tasks), return_exceptions=True)
+        finally:
+            if context is not None:
+                try:
+                    await context.close()
+                except Exception:
+                    pass
+            try:
+                await browser.close()
+            except Exception:
+                pass
 
     return (
         len(collected_urls),

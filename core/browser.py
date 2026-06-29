@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import re
 from contextlib import asynccontextmanager
 
@@ -16,6 +15,7 @@ from core.config import (
     ZHIXUEYUN_HOME,
     ZHIXUEYUN_HOME_PATTERN,
 )
+from core.file_ops import load_cookies
 
 
 _CONTROLLER_PAGES: dict[int, object] = {}
@@ -259,8 +259,7 @@ async def create_browser_context(
 ):
     """浏览器初始化上下文管理器, 封装重复的启动/认证/关闭流程"""
 
-    with open(cookies_path, "r", encoding="utf-8") as f:
-        cookies = json.load(f)
+    cookies = load_cookies(cookies_path)
 
     async with async_playwright() as p:
         browser = await launch_async_browser(p, headless=headless, slow_mo=slow_mo)

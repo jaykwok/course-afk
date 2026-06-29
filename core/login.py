@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import stat
 from datetime import datetime
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -24,6 +26,15 @@ from core.credential import (
     extract_account_profile_from_sync_context,
     save_credential_metadata,
 )
+
+
+def _clear_readonly(path) -> None:
+    """清除文件只读位，兼容 Windows（Path.chmod 在 Windows 上对权限位基本无效）。"""
+    try:
+        current = os.stat(path).st_mode
+        os.chmod(path, current | stat.S_IWRITE)
+    except OSError:
+        pass
 
 
 class LoginNotCompletedError(RuntimeError):
@@ -229,9 +240,10 @@ def login_and_save_credential() -> AccountProfile:
             )
 
             page.wait_for_url(MYLEARNING_HOME, timeout=0)
-            # 防止网盘同步等外部工具把 cookies.json 设为只读，导致覆盖写入时 PermissionError
+            # 防止网盘同步等外部工具把 cookies.json 设为只读，导致覆盖写入时 PermissionError。
+            # 注意：Path.chmod 在 Windows 上对权限位基本无效，改用 os.chmod 清除只读位。
             if COOKIES_FILE.exists():
-                COOKIES_FILE.chmod(0o644)
+                _clear_readonly(COOKIES_FILE)
             with open(COOKIES_FILE, "w", encoding="utf-8") as file:
                 json.dump(context.cookies(), file, ensure_ascii=False, indent=2)
             logging.info("已保存登录凭证")

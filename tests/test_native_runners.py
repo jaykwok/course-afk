@@ -693,6 +693,7 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
         mock_openai.assert_called_once_with(
             api_key="test-key",
             base_url="https://openai-compatible.example/v1",
+            timeout=exam_runner.AI_REQUEST_TIMEOUT,
         )
         self.assertEqual(client, mock_openai.return_value)
         self.assertEqual(model, "test-model")

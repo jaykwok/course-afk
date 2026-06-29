@@ -19,7 +19,7 @@ uv pip install -r requirements.txt
 
 ```env
 OPENAI_COMPLETION_BASE_URL="https://dashscope.aliyuncs.com/compatible-mode/v1"
-OPENAI_COMPLETION_API_KEY=你的API Key
+OPENAI_COMPLETION_API_KEY=your_api_key_here
 MODEL_NAME=qwen3.6-plus
 AI_REQUEST_TYPE=responses
 AI_ENABLE_WEB_SEARCH=0

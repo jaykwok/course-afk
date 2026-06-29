@@ -14,6 +14,7 @@ from core.config import (
     AI_ENABLE_THINKING,
     AI_ENABLE_WEB_SEARCH,
     AI_REASONING_EFFORT,
+    AI_REQUEST_TIMEOUT,
     AI_REQUEST_TYPE,
     COURSE_EXAM_ATTEMPT_THRESHOLD,
     EXAM_URLS_FILE,
@@ -22,6 +23,7 @@ from core.config import (
     OPENAI_COMPLETION_API_KEY,
     OPENAI_COMPLETION_BASE_URL,
     PAPER_EXAM_ATTEMPT_THRESHOLD,
+    validate_ai_base_url,
 )
 from core.exam_engine import ai_exam, wait_for_finish_test
 from core.exam_answers import ExamAiConfigurationError
@@ -75,7 +77,8 @@ def should_route_exam_to_manual(button_text: str, threshold: int) -> bool:
 def _build_exam_client() -> tuple[OpenAI, str]:
     client = OpenAI(
         api_key=OPENAI_COMPLETION_API_KEY,
-        base_url=OPENAI_COMPLETION_BASE_URL,
+        base_url=validate_ai_base_url(OPENAI_COMPLETION_BASE_URL),
+        timeout=AI_REQUEST_TIMEOUT,
     )
     return client, MODEL_NAME
 

@@ -8,3 +8,7 @@ class UserAbortRequested(Exception):
 
 class UserCancelRequested(Exception):
     """用户取消当前菜单操作，应返回主菜单。"""
+
+
+class NoPermissionError(Exception):
+    """当前账号无权限查看该学习资源（不应反复重试，需记录后跳过）。"""
