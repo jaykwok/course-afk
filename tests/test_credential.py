@@ -1,10 +1,11 @@
 import unittest
 from datetime import datetime, timedelta
 
-from core.config import ZHIXUEYUN_HOME
+from core.config import MYLEARNING_CENTER_HOME
 from core.credential import (
     build_account_label,
     extract_account_profile_from_async_context,
+    extract_account_profile_from_sync_context,
     is_credential_expired,
     is_credential_expired_at,
 )
@@ -65,22 +66,70 @@ class FakeAsyncContext:
         return self.page
 
 
+class FakeSyncPage:
+    def __init__(self, profile_data):
+        self.profile_data = profile_data
+        self.calls = []
+
+    def goto(self, url, timeout=None):
+        self.calls.append(("goto", url, timeout))
+
+    def wait_for_url(self, pattern, timeout=0):
+        self.calls.append(("wait_for_url", pattern.pattern, timeout))
+
+    def wait_for_timeout(self, milliseconds):
+        self.calls.append(("wait_for_timeout", milliseconds))
+
+    def evaluate(self, script):
+        self.calls.append(("evaluate",))
+        if "__courseAfk" in script:
+            return None
+        return self.profile_data
+
+    def close(self):
+        self.calls.append(("close",))
+
+
+class FakeSyncContext:
+    def __init__(self, page):
+        self.page = page
+
+    def new_page(self):
+        return self.page
+
+
 class AsyncCredentialTests(unittest.IsolatedAsyncioTestCase):
-    async def test_extract_account_profile_from_async_context_authenticates_against_home(self):
-        page = FakeAsyncPage('{"fullName":"测试用户","name":"test_user"}')
+    async def test_extract_account_profile_from_async_context_uses_personal_center(self):
+        page = FakeAsyncPage(
+            {"fullName": "测试用户", "name": "test_user"}
+        )
         context = FakeAsyncContext(page)
 
         profile = await extract_account_profile_from_async_context(context)
 
         self.assertEqual(profile.label, "测试用户（test_user）")
-        self.assertEqual(page.calls[0], ("goto", ZHIXUEYUN_HOME, 10000))
+        self.assertEqual(page.calls[0], ("goto", MYLEARNING_CENTER_HOME, 30000))
         self.assertEqual(page.calls[1][0], "wait_for_url")
-        self.assertIn("home-v", page.calls[1][1])
-        self.assertEqual(page.calls[1][2], 10000)
+        self.assertIn("center", page.calls[1][1])
+        self.assertEqual(page.calls[1][2], 30000)
         self.assertEqual(page.calls[2], ("wait_for_timeout", 3000))
         self.assertEqual(page.calls[3], ("evaluate",))
         self.assertEqual(page.calls[4], ("evaluate",))
         self.assertEqual(page.calls[5], ("close",))
+
+
+class SyncCredentialTests(unittest.TestCase):
+    def test_extract_account_profile_from_sync_context_uses_personal_center(self):
+        page = FakeSyncPage({"fullName": "测试用户", "name": ""})
+        context = FakeSyncContext(page)
+
+        profile = extract_account_profile_from_sync_context(context)
+
+        self.assertEqual(profile.label, "测试用户")
+        self.assertEqual(page.calls[0], ("goto", MYLEARNING_CENTER_HOME, 30000))
+        self.assertIn("center", page.calls[1][1])
+        self.assertEqual(page.calls[1][2], 30000)
+        self.assertEqual(page.calls[-1], ("close",))
 
 
 if __name__ == "__main__":

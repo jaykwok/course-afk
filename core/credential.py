@@ -9,13 +9,31 @@ from typing import Any
 from core.config import (
     CREDENTIAL_META_FILE,
     CREDENTIAL_VALID_DAYS,
-    ZHIXUEYUN_HOME,
-    ZHIXUEYUN_HOME_PATTERN,
+    MYLEARNING_CENTER_HOME,
+    MYLEARNING_CENTER_HOME_PATTERN,
 )
 from core.page_overlays import (
     dismiss_topmost_overlays_async,
     dismiss_topmost_overlays_sync,
 )
+
+
+CENTER_ACCOUNT_PROFILE_SCRIPT = """
+() => {
+  const selectors = [
+    ".user-nav .user-info .user-name",
+    ".common-card.user-info .user-name",
+    ".user-nav .user-name",
+  ];
+  for (const selector of selectors) {
+    for (const element of document.querySelectorAll(selector)) {
+      const fullName = String(element.textContent || "").trim();
+      if (fullName) return { fullName, name: "" };
+    }
+  }
+  return null;
+}
+"""
 
 
 @dataclass
@@ -84,21 +102,19 @@ def extract_account_profile_from_storage(storage_value: str | dict[str, Any] | N
 async def extract_account_profile_from_async_context(
     context,
     wait_milliseconds: int = 3000,
-    navigation_timeout: int = 10000,
+    navigation_timeout: int = 30000,
 ) -> AccountProfile:
     page = await context.new_page()
     try:
-        await page.goto(ZHIXUEYUN_HOME, timeout=navigation_timeout)
+        await page.goto(MYLEARNING_CENTER_HOME, timeout=navigation_timeout)
         await page.wait_for_url(
-            re.compile(ZHIXUEYUN_HOME_PATTERN),
+            re.compile(MYLEARNING_CENTER_HOME_PATTERN),
             timeout=navigation_timeout,
         )
         await page.wait_for_timeout(wait_milliseconds)
         await dismiss_topmost_overlays_async(page)
-        storage_value = await page.evaluate(
-            "() => window.localStorage.getItem('user')"
-        )
-        return extract_account_profile_from_storage(storage_value)
+        profile_data = await page.evaluate(CENTER_ACCOUNT_PROFILE_SCRIPT)
+        return extract_account_profile(profile_data)
     finally:
         await page.close()
 
@@ -106,21 +122,19 @@ async def extract_account_profile_from_async_context(
 def extract_account_profile_from_sync_context(
     context,
     wait_milliseconds: int = 3000,
-    navigation_timeout: int = 10000,
+    navigation_timeout: int = 30000,
 ) -> AccountProfile:
     page = context.new_page()
     try:
-        page.goto(ZHIXUEYUN_HOME, timeout=navigation_timeout)
+        page.goto(MYLEARNING_CENTER_HOME, timeout=navigation_timeout)
         page.wait_for_url(
-            re.compile(ZHIXUEYUN_HOME_PATTERN),
+            re.compile(MYLEARNING_CENTER_HOME_PATTERN),
             timeout=navigation_timeout,
         )
         page.wait_for_timeout(wait_milliseconds)
         dismiss_topmost_overlays_sync(page)
-        storage_value = page.evaluate(
-            "() => window.localStorage.getItem('user')"
-        )
-        return extract_account_profile_from_storage(storage_value)
+        profile_data = page.evaluate(CENTER_ACCOUNT_PROFILE_SCRIPT)
+        return extract_account_profile(profile_data)
     finally:
         page.close()
 

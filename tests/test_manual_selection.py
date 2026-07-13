@@ -58,6 +58,7 @@ class FakeManualSelectionContext:
     def __init__(self, popup_urls: list[str] | None = None):
         self.page_handler = None
         self.popup_urls = list(popup_urls or [])
+        self.pages = []
 
     async def add_cookies(self, _cookies):
         return None
@@ -76,6 +77,7 @@ class FakeManualSelectionContext:
             popup_url=popup_url,
             page_handler_getter=lambda: self.page_handler,
         )
+        self.pages.append(page)
         if self.page_handler:
             self.page_handler(page)
         return page
@@ -166,6 +168,7 @@ class ManualSelectionWorkflowTests(unittest.IsolatedAsyncioTestCase):
                             )
 
         self.assertEqual(result, (0, 0, 0))
+        self.assertEqual(fake_context.pages[0].url, workflows.MYLEARNING_HOME)
 
     async def test_collect_learning_links_from_entry_urls_records_noopener_popup(self):
         popup_url = "https://kc.zhixueyun.com/#/study/course/detail/11111111-1111-1111-1111-111111111111"

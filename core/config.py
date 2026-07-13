@@ -422,8 +422,8 @@ BROWSER_ARGS = [
 # ============================================================
 MYLEARNING_HOME = "https://www.mylearning.cn/p5/index.html"
 MYLEARNING_SSO_PATTERN = "**/sso/login**"
-ZHIXUEYUN_HOME = "https://kc.zhixueyun.com/"
-ZHIXUEYUN_HOME_PATTERN = r"https://kc\.zhixueyun\.com/#/home-v\?id=\d+"
+MYLEARNING_CENTER_HOME = "https://center.mylearning.cn/PC/home"
+MYLEARNING_CENTER_HOME_PATTERN = r"https://center\.mylearning\.cn/PC/home(?:\?.*)?$"
 ZHIXUEYUN_COURSE_PREFIX = "https://kc.zhixueyun.com/#/study/course/detail/"
 ZHIXUEYUN_SUBJECT_PREFIX = "https://kc.zhixueyun.com/#/study/subject/detail/"
 ZHIXUEYUN_EXAM_PREFIX = "https://kc.zhixueyun.com/#/exam/exam/answer-paper/"

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 from typing import Callable
 from urllib.parse import urlparse
 
@@ -18,8 +17,7 @@ from core.config import (
     EXAM_URLS_FILE,
     LEARNING_URLS_FILE,
     MANUAL_EXAM_FILE,
-    ZHIXUEYUN_HOME,
-    ZHIXUEYUN_HOME_PATTERN,
+    MYLEARNING_HOME,
     is_ai_configured,
 )
 from core.credential import AccountProfile
@@ -175,8 +173,7 @@ async def collect_learning_links_from_entry_urls(
             await apply_async_browser_stealth(context)
             await context.add_cookies(cookies)
             auth_page = await context.new_page()
-            await auth_page.goto(ZHIXUEYUN_HOME)
-            await auth_page.wait_for_url(re.compile(ZHIXUEYUN_HOME_PATTERN), timeout=0)
+            await auth_page.goto(MYLEARNING_HOME, wait_until="load")
             await auth_page.close()
 
             context.on(
