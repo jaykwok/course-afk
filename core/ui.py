@@ -28,6 +28,13 @@ from core.credential import load_credential_metadata
 from core.palette import CYAN, CYAN_BRIGHT, ERROR, SUCCESS, WARNING
 from core.state import ProjectState, recommend_next_step
 
+# 输出图标约定（全 ASCII，cmd/conhost 宽度稳定；CLI 与 TUI 日志一致）。
+# 普通提示用裸 `-`，成功/警告/失败用方括号，统一占 3 格宽以左对齐。
+ICON_INFO = "-"  # 普通提示
+ICON_SUCCESS = "[+]"  # 成功
+ICON_WARNING = "[!]"  # 警告
+ICON_FAILURE = "[-]"  # 失败
+
 
 def _detect_legacy_windows_mode() -> bool | None:
     if sys.platform.startswith("win") and os.environ.get("WT_SESSION"):
@@ -319,19 +326,19 @@ def show_title(title: str, subtitle: str | None = None) -> None:
 
 
 def show_info(message: str) -> None:
-    console.print(f"  [{CYAN}]·[/]  {escape(message)}")
+    console.print(f"  [{CYAN}]{ICON_INFO:<3}[/]  {escape(message)}")
 
 
 def show_success(message: str) -> None:
-    console.print(f"  [bold {SUCCESS}]√[/]  [{SUCCESS}]{escape(message)}[/]")
+    console.print(f"  [bold {SUCCESS}]{ICON_SUCCESS:<3}[/]  [{SUCCESS}]{escape(message)}[/]")
 
 
 def show_warning(message: str) -> None:
-    console.print(f"  [bold {WARNING}]![/]  [{WARNING}]{escape(message)}[/]")
+    console.print(f"  [bold {WARNING}]{ICON_WARNING:<3}[/]  [{WARNING}]{escape(message)}[/]")
 
 
 def show_error(message: str) -> None:
-    console.print(f"  [bold {ERROR}]×[/]  [bold {ERROR}]{escape(message)}[/]")
+    console.print(f"  [bold {ERROR}]{ICON_FAILURE:<3}[/]  [bold {ERROR}]{escape(message)}[/]")
 
 
 def begin_operation(title: str, message: str) -> None:
@@ -351,23 +358,23 @@ def prepare_menu_loading() -> None:
 
 def _credential_display(state: ProjectState, metadata) -> Text:
     if not state.has_credential:
-        return Text("[-] 不存在", style=f"bold {ERROR}")
+        return Text(f"{ICON_FAILURE} 不存在", style=f"bold {ERROR}")
     if state.credential_expired:
-        return Text("[!] 已过期", style=f"bold {WARNING}")
+        return Text(f"{ICON_WARNING} 已过期", style=f"bold {WARNING}")
     if metadata and metadata.expires_at:
         try:
             expires_dt = datetime.fromisoformat(metadata.expires_at)
             now = datetime.now()
             if now.date() >= expires_dt.date():
-                return Text("[!] 已过期", style=f"bold {WARNING}")
+                return Text(f"{ICON_WARNING} 已过期", style=f"bold {WARNING}")
             seconds_left = (expires_dt - now).total_seconds()
             days_left = max(1, math.ceil(seconds_left / 86400))
-            t = Text(f"[+] 有效至 {expires_dt:%Y-%m-%d}", style=f"bold {SUCCESS}")
+            t = Text(f"{ICON_SUCCESS} 有效至 {expires_dt:%Y-%m-%d}", style=f"bold {SUCCESS}")
             t.append(f"  （还有 {days_left} 天）", style="dim")
             return t
         except ValueError:
             pass
-    return Text("[+] 有效", style=f"bold {SUCCESS}")
+    return Text(f"{ICON_SUCCESS} 有效", style=f"bold {SUCCESS}")
 
 
 def _count_display(count: int) -> Text:

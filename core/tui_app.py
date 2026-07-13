@@ -180,7 +180,7 @@ class YesNoScreen(ModalScreen[bool]):
         content.extend(
             (
                 Static(
-                    f"默认 {self._default}（[Y] 是 / [N] 否 · ESC 返回）",
+                    f"默认 {self._default}（[Y] 是 / [N] 否 | ESC 返回）",
                     id="yn-hint",
                 ),
                 Horizontal(
@@ -311,7 +311,7 @@ class PauseScreen(ModalScreen[None]):
         content.extend(
             (
                 Static(self._message, id="pause-msg"),
-                Static(f"Enter {hint_action} · ESC 返回", id="pause-hint"),
+                Static(f"Enter {hint_action} | ESC 返回", id="pause-hint"),
                 Horizontal(
                     Button(self._button_label, id="continue", variant="primary"),
                     id="pause-actions",
@@ -531,7 +531,7 @@ class CourseTuiApp(App):
     """
 
     TITLE = "课程自动化工具"
-    SUB_TITLE = "登录 · 学习 · 考试 统一入口"
+    SUB_TITLE = "登录 | 学习 | 考试 统一入口"
 
     # Esc 在任何界面都表示返回；主菜单没有上一级，因此返回即退出。
     # Ctrl+C 保留同样的优雅取消能力。
@@ -627,11 +627,16 @@ class CourseTuiApp(App):
         ratio = max(0, min(1, completed / total))
         bar_width = 20
         filled = int(ratio * bar_width)
-        bar = "█" * filled + "░" * (bar_width - filled)
-        text = f"  {description}  {bar} {completed}/{total}s ({ratio * 100:>3.0f}%)"
         from rich.text import Text
 
-        self.query_one("#progress", Static).update(Text(text, style=CYAN))
+        # ASCII 进度条：方块字符是 East-Asian ambiguous 宽度，cmd 下会错位；
+        # 已完成用亮青 #、剩余用 dim -，外加方括号。
+        bar = Text()
+        bar.append(f"  {description}  [", style=CYAN)
+        bar.append("#" * filled, style=f"bold {CYAN_BRIGHT}")
+        bar.append("-" * (bar_width - filled), style="dim")
+        bar.append(f"] {completed}/{total}s ({ratio * 100:>3.0f}%)", style=CYAN)
+        self.query_one("#progress", Static).update(bar)
 
     def clear_progress(self) -> None:
         self.query_one("#progress", Static).update("")

@@ -42,7 +42,8 @@ from core.tui_app import (
 # ------------------------------------------------------------------
 def _icon_text(icon: str, message: str, *, style: str) -> Text:
     text = Text()
-    text.append(f"  {icon}  ", style=f"bold {style}")
+    # 图标统一占 3 格宽（`-` 与 `[+]`/`[!]`/`[-]` 对齐），多行日志文本左对齐。
+    text.append(f"  {icon:<3}  ", style=f"bold {style}")
     text.append(message, style=style)
     return text
 
@@ -145,25 +146,25 @@ class TuiFrontend:
     def _bridge_show_info(self, message: str) -> None:
         self.app.call_from_thread(self.app.set_busy_status, message)
         self.app.call_from_thread(
-            self.app.emit_log, _icon_text("[*]", message, style=CYAN)
+            self.app.emit_log, _icon_text(cli_ui.ICON_INFO, message, style=CYAN)
         )
 
     def _bridge_show_success(self, message: str) -> None:
         self.app.call_from_thread(self.app.set_busy_status, message)
         self.app.call_from_thread(
-            self.app.emit_log, _icon_text("[+]", message, style=SUCCESS)
+            self.app.emit_log, _icon_text(cli_ui.ICON_SUCCESS, message, style=SUCCESS)
         )
 
     def _bridge_show_warning(self, message: str) -> None:
         self.app.call_from_thread(self.app.set_busy_status, message)
         self.app.call_from_thread(
-            self.app.emit_log, _icon_text("[!]", message, style=WARNING)
+            self.app.emit_log, _icon_text(cli_ui.ICON_WARNING, message, style=WARNING)
         )
 
     def _bridge_show_error(self, message: str) -> None:
         self.app.call_from_thread(self.app.set_busy_status, message)
         self.app.call_from_thread(
-            self.app.emit_log, _icon_text("[-]", message, style=ERROR)
+            self.app.emit_log, _icon_text(cli_ui.ICON_FAILURE, message, style=ERROR)
         )
 
     def _bridge_begin_operation(self, title: str, message: str) -> None:
