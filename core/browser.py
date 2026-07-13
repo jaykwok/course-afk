@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import re
 from contextlib import asynccontextmanager
 
 from playwright.async_api import async_playwright
@@ -12,8 +11,6 @@ from core.config import (
     BROWSER_TYPE,
     COOKIES_FILE,
     MYLEARNING_HOME,
-    ZHIXUEYUN_HOME,
-    ZHIXUEYUN_HOME_PATTERN,
 )
 from core.file_ops import load_cookies
 
@@ -193,12 +190,9 @@ def _is_page_closed(page) -> bool:
     return False
 
 
-async def _open_controller_page(context, *, authenticate: bool = False, headless: bool = False):
+async def _open_controller_page(context, *, headless: bool = False):
     page = await context.new_page()
     await maximize_browser_window_for_page(page, headless=headless)
-    if authenticate:
-        await page.goto(ZHIXUEYUN_HOME)
-        await page.wait_for_url(re.compile(ZHIXUEYUN_HOME_PATTERN), timeout=0)
     await page.goto(MYLEARNING_HOME, wait_until="load")
     return page
 
@@ -273,7 +267,6 @@ async def create_browser_context(
         # 保留一个常驻主控页，避免课程页关闭后浏览器直接退出。
         controller_page = await _open_controller_page(
             context,
-            authenticate=True,
             headless=headless,
         )
         _remember_controller_page(context, controller_page)
