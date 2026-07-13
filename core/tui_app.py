@@ -52,23 +52,35 @@ class OptionScreen(ModalScreen[int]):
         title: str,
         options: list[str],
         prompt: str = "请选择",
+        status_renderable: Any | None = None,
     ) -> None:
         super().__init__()
         self._title = title
         self._options = options
         self._prompt = prompt
+        self._status_renderable = status_renderable
 
     def compose(self) -> ComposeResult:
-        yield Vertical(
-            Static(self._title, id="opt-title"),
-            Static(f"{self._prompt}（方向键移动，回车或点击确认）", id="opt-hint"),
-            OptionList(
-                *(
-                    Option(f"{idx}. {opt}", id=str(idx))
-                    for idx, opt in enumerate(self._options, start=1)
+        content = [Static(self._title, id="opt-title")]
+        if self._status_renderable is not None:
+            content.append(Static(self._status_renderable, id="opt-status"))
+        content.extend(
+            (
+                Static(
+                    f"{self._prompt}（方向键移动，回车或点击确认）",
+                    id="opt-hint",
                 ),
-                id="opt-list",
-            ),
+                OptionList(
+                    *(
+                        Option(f"{idx}. {opt}", id=str(idx))
+                        for idx, opt in enumerate(self._options, start=1)
+                    ),
+                    id="opt-list",
+                ),
+            )
+        )
+        yield Vertical(
+            *content,
             id="opt-dialog",
         )
 
@@ -242,8 +254,10 @@ class CourseTuiApp(App):
     }
 
     #opt-dialog, #yn-dialog, #ml-dialog, #pause-dialog {
-        width: 68;
-        max-width: 92%;
+        width: 80;
+        height: auto;
+        max-width: 94%;
+        max-height: 96%;
         border: heavy $primary;
         background: $panel;
         padding: 1 2;
@@ -265,9 +279,14 @@ class CourseTuiApp(App):
         margin-bottom: 1;
     }
 
+    #opt-status {
+        height: auto;
+        margin-bottom: 1;
+    }
+
     #opt-list {
         height: auto;
-        max-height: 18;
+        max-height: 15;
         margin-bottom: 1;
         border: solid $primary 30%;
     }

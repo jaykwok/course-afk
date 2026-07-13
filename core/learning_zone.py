@@ -8,6 +8,11 @@ from core.browser import create_browser_context
 from core.config import ZHIXUEYUN_COURSE_PREFIX, ZHIXUEYUN_SUBJECT_PREFIX
 from core.file_ops import is_compliant_url_regex, normalize_url
 from core.learning_queue import append_learning_urls
+from core.page_overlays import dismiss_topmost_overlays_async
+
+
+LEARNING_ZONE_LINK_WAIT_MILLISECONDS = 15000
+LEARNING_ZONE_LINK_POLL_MILLISECONDS = 500
 
 
 def _unique_urls(urls: list[str]) -> list[str]:
@@ -80,16 +85,38 @@ async def collect_learning_links_from_learning_zone_urls(
             page = await context.new_page()
             try:
                 await page.goto(url, wait_until="load")
-                await page.wait_for_timeout(1500)
-                learning_links = extract_learning_links_from_learning_zone_html(
-                    await page.content()
-                )
+                elapsed = 0
+                learning_links: list[str] = []
+                while elapsed <= LEARNING_ZONE_LINK_WAIT_MILLISECONDS:
+                    dismissed_count = await dismiss_topmost_overlays_async(page)
+                    if dismissed_count and status_callback:
+                        status_callback(
+                            f"已关闭 {dismissed_count} 个页面弹窗，继续读取课程链接"
+                        )
+
+                    learning_links = extract_learning_links_from_learning_zone_html(
+                        await page.content()
+                    )
+                    if learning_links:
+                        break
+                    if elapsed >= LEARNING_ZONE_LINK_WAIT_MILLISECONDS:
+                        break
+                    await page.wait_for_timeout(LEARNING_ZONE_LINK_POLL_MILLISECONDS)
+                    elapsed += LEARNING_ZONE_LINK_POLL_MILLISECONDS
+
                 added = append_learning_urls(learning_links)
                 total_added += len(added)
                 if status_callback:
-                    status_callback(
-                        f"已从学习专区链接新增 {len(added)} 条学习链接"
-                    )
+                    if learning_links:
+                        status_callback(
+                            "已从学习专区识别 "
+                            f"{len(learning_links)} 条链接，新增 {len(added)} 条"
+                        )
+                    else:
+                        status_callback(
+                            "该学习专区暂未识别到课程链接；已处理弹窗并等待页面加载，"
+                            "可改用手动选择模式"
+                        )
             finally:
                 await page.close()
 

@@ -12,6 +12,10 @@ from core.config import (
     ZHIXUEYUN_HOME,
     ZHIXUEYUN_HOME_PATTERN,
 )
+from core.page_overlays import (
+    dismiss_topmost_overlays_async,
+    dismiss_topmost_overlays_sync,
+)
 
 
 @dataclass
@@ -90,6 +94,7 @@ async def extract_account_profile_from_async_context(
             timeout=navigation_timeout,
         )
         await page.wait_for_timeout(wait_milliseconds)
+        await dismiss_topmost_overlays_async(page)
         storage_value = await page.evaluate(
             "() => window.localStorage.getItem('user')"
         )
@@ -111,6 +116,7 @@ def extract_account_profile_from_sync_context(
             timeout=navigation_timeout,
         )
         page.wait_for_timeout(wait_milliseconds)
+        dismiss_topmost_overlays_sync(page)
         storage_value = page.evaluate(
             "() => window.localStorage.getItem('user')"
         )

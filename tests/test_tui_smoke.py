@@ -16,7 +16,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from textual.widgets import OptionList
+from textual.widgets import OptionList, Static
 
 import core.ui as cli_ui
 from core.abort import UserCancelRequested
@@ -292,6 +292,20 @@ class TuiSmokeTests(unittest.TestCase):
                         # 3. 确定性高亮到最后一项（退出）并确认
                         menu_screen = app.screen
                         self.assertIsInstance(menu_screen, OptionScreen)
+                        menu_screen.query_one("#opt-status", Static)
+                        dialog = menu_screen.query_one("#opt-dialog")
+                        screen_width = menu_screen.size.width
+                        screen_height = menu_screen.size.height
+                        self.assertLessEqual(
+                            abs((dialog.region.x * 2 + dialog.region.width) - screen_width),
+                            2,
+                            "主菜单没有水平居中",
+                        )
+                        self.assertLessEqual(
+                            abs((dialog.region.y * 2 + dialog.region.height) - screen_height),
+                            2,
+                            "主菜单没有垂直居中",
+                        )
                         option_list = menu_screen.query_one("#opt-list", OptionList)
                         option_list.action_last()
                         option_list.focus()

@@ -118,6 +118,7 @@ class TuiFrontend:
     def __init__(self, app: CourseTuiApp) -> None:
         self.app = app
         self._originals: dict[str, Any] = {}
+        self._latest_state: Any | None = None
 
     def install(self) -> None:
         for attr_name, method_name in self._PATCH_MAP.items():
@@ -160,6 +161,7 @@ class TuiFrontend:
         )
 
     def _bridge_render_dashboard(self, state: Any) -> None:
+        self._latest_state = state
         self.app.call_from_thread(
             self.app.set_dashboard, cli_ui.build_dashboard_renderable(state, expand=True)
         )
@@ -179,7 +181,19 @@ class TuiFrontend:
 
     def _bridge_show_menu(self, options: list[str]) -> int:
         # 主菜单不可取消：在主菜单按 Ctrl+C 直接退出应用
-        return self._prompt(OptionScreen("主菜单", options, "请选择功能"))
+        status_renderable = (
+            cli_ui.build_menu_status_renderable(self._latest_state)
+            if self._latest_state is not None
+            else None
+        )
+        return self._prompt(
+            OptionScreen(
+                "主菜单",
+                options,
+                "请选择功能",
+                status_renderable=status_renderable,
+            )
+        )
 
     def _bridge_prompt_choice(
         self, title: str, options: list[str], prompt: str = "请选择"

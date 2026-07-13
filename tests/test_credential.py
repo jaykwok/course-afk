@@ -49,6 +49,8 @@ class FakeAsyncPage:
 
     async def evaluate(self, _script):
         self.calls.append(("evaluate",))
+        if "__courseAfk" in _script:
+            return None
         return self.storage_value
 
     async def close(self):
@@ -77,7 +79,8 @@ class AsyncCredentialTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(page.calls[1][2], 10000)
         self.assertEqual(page.calls[2], ("wait_for_timeout", 3000))
         self.assertEqual(page.calls[3], ("evaluate",))
-        self.assertEqual(page.calls[4], ("close",))
+        self.assertEqual(page.calls[4], ("evaluate",))
+        self.assertEqual(page.calls[5], ("close",))
 
 
 if __name__ == "__main__":

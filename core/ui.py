@@ -330,7 +330,7 @@ def _credential_display(state: ProjectState, metadata) -> Text:
                 return Text("!  已过期", style="bold yellow")
             seconds_left = (expires_dt - now).total_seconds()
             days_left = max(1, math.ceil(seconds_left / 86400))
-            t = Text("√  有效", style="bold green")
+            t = Text(f"√  有效至 {expires_dt:%Y-%m-%d}", style="bold green")
             t.append(f"  （还有 {days_left} 天）", style="dim")
             return t
         except ValueError:
@@ -373,8 +373,8 @@ def build_dashboard_renderable(state: ProjectState, *, expand: bool = False):
     table.add_column("项目", style="dim white", min_width=10, justify="right", no_wrap=True)
     table.add_column("值", overflow="fold", min_width=40, ratio=1)
 
-    table.add_row("账号", Text(account_label, style="bold white"))
-    table.add_row("凭证", _credential_display(state, metadata))
+    table.add_row("当前账号", Text(account_label, style="bold white"))
+    table.add_row("账号有效期", _credential_display(state, metadata))
     table.add_row("课程链接", _count_display(state.learning_count))
     table.add_row("挂课失败", _count_display(state.learning_failure_count))
     table.add_row("考试链接", _count_display(state.exam_count))
@@ -384,6 +384,54 @@ def build_dashboard_renderable(state: ProjectState, *, expand: bool = False):
         Text(f"->  {recommended}", style="bold bright_yellow"),
     )
     return table if expand else Align.center(table)
+
+
+def build_menu_status_renderable(state: ProjectState):
+    """构造主菜单内的紧凑状态卡片。
+
+    Textual 主菜单是模态屏，会遮住底层完整仪表盘，因此这里保留用户做菜单
+    决策最需要的账号、有效期、任务数量和建议操作，并控制在较小高度内。
+    """
+    metadata = load_credential_metadata()
+    account_label = metadata.account_label if metadata else "未登录"
+    recommended = recommend_next_step(
+        has_credential=state.has_credential and not state.credential_expired,
+        learning_count=state.learning_count,
+        exam_count=state.exam_count,
+        manual_exam_count=state.manual_exam_count,
+    )
+
+    grid = Table.grid(expand=True, padding=(0, 1))
+    grid.add_column(style="dim white", width=10, justify="right", no_wrap=True)
+    grid.add_column(ratio=1, overflow="fold")
+    grid.add_row("当前账号", Text(account_label, style="bold bright_white"))
+    grid.add_row("账号有效期", _credential_display(state, metadata))
+
+    counts = Text()
+    for index, (label, count) in enumerate(
+        (
+            ("课程", state.learning_count),
+            ("挂课失败", state.learning_failure_count),
+            ("考试", state.exam_count),
+            ("人工考试", state.manual_exam_count),
+        )
+    ):
+        if index:
+            counts.append("  ·  ", style="dim")
+        counts.append(f"{label} ", style="dim")
+        counts.append(str(count), style="bold bright_white" if count else "dim")
+    grid.add_row("任务数量", counts)
+    grid.add_row(
+        "建议操作",
+        Text(f"->  {recommended}", style="bold bright_yellow"),
+    )
+
+    return Panel(
+        grid,
+        title="[bold cyan]账号与任务状态[/bold cyan]",
+        border_style="cyan",
+        padding=(0, 1),
+    )
 
 
 def render_dashboard(state: ProjectState) -> None:
