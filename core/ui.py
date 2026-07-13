@@ -25,6 +25,7 @@ from rich.text import Text
 
 from core.abort import UserCancelRequested
 from core.credential import load_credential_metadata
+from core.palette import CYAN, CYAN_BRIGHT, ERROR, SUCCESS, WARNING
 from core.state import ProjectState, recommend_next_step
 
 
@@ -287,7 +288,7 @@ def _ask_choice_number(prompt: str, *, min_value: int, max_value: int) -> int:
     choices_text = f" [{min_value}-{max_value}]: "
     while True:
         prompt_text = Text("  ")
-        prompt_text.append(prompt, style="bold cyan")
+        prompt_text.append(prompt, style=f"bold {CYAN}")
         prompt_text.append(choices_text, style="dim")
         raw_choice = _read_console_line(prompt_text).strip()
         if raw_choice.isdigit():
@@ -300,7 +301,7 @@ def _ask_choice_number(prompt: str, *, min_value: int, max_value: int) -> int:
 def show_title(title: str, subtitle: str | None = None) -> None:
     console.print()
     title_text = Text(justify="center")
-    title_text.append(title, style="bold bright_cyan")
+    title_text.append(title, style=f"bold {CYAN_BRIGHT}")
     if subtitle:
         title_text.append(f"\n{subtitle}", style="dim white")
     console.print(
@@ -308,7 +309,7 @@ def show_title(title: str, subtitle: str | None = None) -> None:
             Panel(
                 title_text,
                 expand=False,
-                border_style="bright_cyan",
+                border_style=CYAN_BRIGHT,
                 padding=(1, 6),
                 box=_rich_box(DOUBLE_EDGE),
             )
@@ -318,19 +319,19 @@ def show_title(title: str, subtitle: str | None = None) -> None:
 
 
 def show_info(message: str) -> None:
-    console.print(f"  [cyan]·[/cyan]  {escape(message)}")
+    console.print(f"  [{CYAN}]·[/]  {escape(message)}")
 
 
 def show_success(message: str) -> None:
-    console.print(f"  [bold green]√[/bold green]  [green]{escape(message)}[/green]")
+    console.print(f"  [bold {SUCCESS}]√[/]  [{SUCCESS}]{escape(message)}[/]")
 
 
 def show_warning(message: str) -> None:
-    console.print(f"  [bold yellow]![/bold yellow]  [yellow]{escape(message)}[/yellow]")
+    console.print(f"  [bold {WARNING}]![/]  [{WARNING}]{escape(message)}[/]")
 
 
 def show_error(message: str) -> None:
-    console.print(f"  [bold red]×[/bold red]  [bold red]{escape(message)}[/bold red]")
+    console.print(f"  [bold {ERROR}]×[/]  [bold {ERROR}]{escape(message)}[/]")
 
 
 def begin_operation(title: str, message: str) -> None:
@@ -350,23 +351,23 @@ def prepare_menu_loading() -> None:
 
 def _credential_display(state: ProjectState, metadata) -> Text:
     if not state.has_credential:
-        return Text("[-] 不存在", style="bold red")
+        return Text("[-] 不存在", style=f"bold {ERROR}")
     if state.credential_expired:
-        return Text("[!] 已过期", style="bold yellow")
+        return Text("[!] 已过期", style=f"bold {WARNING}")
     if metadata and metadata.expires_at:
         try:
             expires_dt = datetime.fromisoformat(metadata.expires_at)
             now = datetime.now()
             if now.date() >= expires_dt.date():
-                return Text("[!] 已过期", style="bold yellow")
+                return Text("[!] 已过期", style=f"bold {WARNING}")
             seconds_left = (expires_dt - now).total_seconds()
             days_left = max(1, math.ceil(seconds_left / 86400))
-            t = Text(f"[+] 有效至 {expires_dt:%Y-%m-%d}", style="bold green")
+            t = Text(f"[+] 有效至 {expires_dt:%Y-%m-%d}", style=f"bold {SUCCESS}")
             t.append(f"  （还有 {days_left} 天）", style="dim")
             return t
         except ValueError:
             pass
-    return Text("[+] 有效", style="bold green")
+    return Text("[+] 有效", style=f"bold {SUCCESS}")
 
 
 def _count_display(count: int) -> Text:
@@ -412,7 +413,7 @@ def build_dashboard_renderable(state: ProjectState, *, expand: bool = False):
     table.add_row("人工考试", _count_display(state.manual_exam_count))
     table.add_row(
         "建议操作",
-        Text(f"->  {recommended}", style="bold bright_yellow"),
+        Text(f"->  {recommended}", style=f"bold {WARNING}"),
     )
     return table if expand else Align.center(table)
 
@@ -454,13 +455,13 @@ def build_menu_status_renderable(state: ProjectState):
     grid.add_row("任务数量", counts)
     grid.add_row(
         "建议操作",
-        Text(f"->  {recommended}", style="bold bright_yellow"),
+        Text(f"->  {recommended}", style=f"bold {WARNING}"),
     )
 
     return Panel(
         grid,
-        title="[bold cyan]账号与任务状态[/bold cyan]",
-        border_style="cyan",
+        title=f"[bold {CYAN_BRIGHT}]账号与任务状态[/]",
+        border_style=CYAN,
         padding=(0, 1),
         box=_rich_box(ROUNDED),
     )
@@ -481,7 +482,7 @@ def show_menu(options: list[str]) -> int:
         min_width=54,
         padding=(0, 1),
     )
-    table.add_column("序号", justify="right", style="bold cyan", width=4)
+    table.add_column("序号", justify="right", style=f"bold {CYAN}", width=4)
     table.add_column("功能", min_width=44)
     for index, option in enumerate(options, start=1):
         if index == len(options):
@@ -502,7 +503,7 @@ def prompt_choice(title: str, options: list[str], prompt: str = "请选择") -> 
         min_width=54,
         padding=(0, 1),
     )
-    table.add_column("序号", justify="right", style="bold cyan", width=4)
+    table.add_column("序号", justify="right", style=f"bold {CYAN}", width=4)
     table.add_column("选项", min_width=44)
     for index, option in enumerate(options, start=1):
         table.add_row(str(index), option)
@@ -516,7 +517,7 @@ def prompt_yes_no(message: str, default: str = "N") -> bool:
         normalized_default = "N"
     while True:
         prompt_text = Text("  ")
-        prompt_text.append(message, style="bold cyan")
+        prompt_text.append(message, style=f"bold {CYAN}")
         prompt_text.append(f" [Y/N，默认 {normalized_default}]: ", style="dim")
         choice = _read_console_line(prompt_text).strip()
         if not choice:
@@ -547,19 +548,19 @@ def prompt_multiline_input(
 ) -> str:
     instruction = Text()
     for index, message in enumerate(messages, start=1):
-        instruction.append(f"  {index}. ", style="bold cyan")
+        instruction.append(f"  {index}. ", style=f"bold {CYAN}")
         instruction.append(f"{message}\n", style="white")
     instruction.append(
         "\n  按 Enter 换行，右键 / Ctrl+V 粘贴，输入完成后按 Ctrl+Enter 提交",
-        style="bold yellow",
+        style=f"bold {WARNING}",
     )
-    instruction.append("\n  输入过程中可按 ESC 取消并返回主菜单", style="bold yellow")
+    instruction.append("\n  输入过程中可按 ESC 取消并返回主菜单", style=f"bold {WARNING}")
     console.print(
         Align.center(
             Panel(
                 instruction,
                 title=f"[bold white]{title}[/bold white]",
-                border_style="cyan",
+                border_style=CYAN,
                 box=_rich_box(ROUNDED),
                 width=76,
                 padding=(1, 2),
@@ -639,7 +640,7 @@ async def wait_with_progress(
         SpinnerColumn(spinner_name="dots"),
         TextColumn("[progress.description]{task.description}"),
         BarColumn(bar_width=28),
-        TextColumn("[cyan]{task.completed}[/cyan][dim]/{task.total}s[/dim]"),
+        TextColumn(f"[{CYAN}]{{task.completed}}[/][dim]/{{task.total}}s[/dim]"),
         TextColumn("[dim]([/dim][bold]{task.percentage:>3.0f}%[/bold][dim])[/dim]"),
         TimeRemainingColumn(),
         console=console,

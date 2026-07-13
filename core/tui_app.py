@@ -24,6 +24,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
+from textual.theme import Theme
 from textual.widgets import (
     Button,
     Footer,
@@ -35,6 +36,8 @@ from textual.widgets import (
     TextArea,
 )
 from textual.widgets.option_list import Option
+
+from core.palette import CYAN, CYAN_BRIGHT, CYAN_DEEP, ERROR, SUCCESS, WARNING
 
 
 # Esc / Ctrl+C 强制取消当前模态提示时使用；桥接层识别后抛
@@ -354,6 +357,37 @@ class BusyScreen(ModalScreen[None]):
         self.query_one("#busy-message", Static).update(message)
 
 
+# ---------------------------------------------------------------------------
+# 主题：统一为青色调，让「选中焦点 / 焦点边框 / 主按钮」与标题、状态图标的
+# 亮青色一致。Textual 默认 textual-dark 的 primary 是蓝色、accent 是橙色，
+# 与本应用的青色基调冲突，焦点高亮因此显得突兀。
+#
+# 焦点链路全部由设计令牌派生：菜单光标 = block-cursor-background、
+# 列表/文本框聚焦边框 = border、-primary 按钮 = primary，故改一个主题即可全改。
+# 亮青底配深色字，保证选中项的可读对比度。
+# ---------------------------------------------------------------------------
+COURSE_THEME = Theme(
+    name="course-cyan",
+    primary=CYAN,        # 主色：选中高亮 / 焦点边框 / 主按钮
+    secondary=CYAN_DEEP, # 深青：次级层次
+    accent=CYAN_BRIGHT,  # 亮青：仪表盘/日志边框（CSS 里再降到 50~60%）
+    warning=WARNING,
+    error=ERROR,
+    success=SUCCESS,
+    foreground="#E2E8F0",
+    dark=True,
+    variables={
+        # 亮青底配深色字，保证选中项 / 主按钮文字的对比度
+        # （默认 block-cursor-foreground / button-color-foreground 是浅色字，对比不足）
+        "block-cursor-foreground": "#052432",
+        "button-color-foreground": "#052432",
+        # 聚焦用加粗，不用 reverse：变体按钮(是/否/提交)是亮底深字，
+        # reverse 会把它们反转为黑底，看起来像坏掉的光标。
+        "button-focus-text-style": "bold",
+    },
+)
+
+
 class CourseTuiApp(App):
     """课程自动化工具的 Textual 主应用。"""
 
@@ -485,6 +519,15 @@ class CourseTuiApp(App):
     Button {
         margin: 0 1;
     }
+
+    /* 按钮聚焦：整体提亮，替代默认的「反转」。
+       反转会把变体按钮(是=success / 否=error / 提交=primary)的亮底深字
+       反过来变成黑底，看起来像坏掉的光标；这里改成提亮底色 + 加粗
+       (加粗见主题 button-focus-text-style)，聚焦更醒目且不反色。
+       覆盖 Textual 默认的 5% 微弱提亮。 */
+    Button.-style-default:focus {
+        background-tint: $foreground 30%;
+    }
     """
 
     TITLE = "课程自动化工具"
@@ -517,6 +560,8 @@ class CourseTuiApp(App):
         yield Footer()
 
     def on_mount(self) -> None:
+        self.register_theme(COURSE_THEME)
+        self.theme = COURSE_THEME.name
         self._spawn_launcher_thread()
 
     # ------------------------------------------------------------------
@@ -549,7 +594,7 @@ class CourseTuiApp(App):
             from rich.text import Text
 
             self.call_from_thread(
-                self.emit_log, Text(f"  [-]  {message}", style="bold red")
+                self.emit_log, Text(f"  [-]  {message}", style=f"bold {ERROR}")
             )
         except Exception:
             pass
@@ -586,7 +631,7 @@ class CourseTuiApp(App):
         text = f"  {description}  {bar} {completed}/{total}s ({ratio * 100:>3.0f}%)"
         from rich.text import Text
 
-        self.query_one("#progress", Static).update(Text(text, style="cyan"))
+        self.query_one("#progress", Static).update(Text(text, style=CYAN))
 
     def clear_progress(self) -> None:
         self.query_one("#progress", Static).update("")

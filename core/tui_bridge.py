@@ -26,6 +26,7 @@ from textual.widgets import RichLog
 import core.ui as cli_ui
 from core.abort import UserCancelRequested
 from core.config import LOG_FORMAT, _get_console_log_level, setup_logging
+from core.palette import CYAN, ERROR, SUCCESS, WARNING
 from core.tui_app import (
     CourseTuiApp,
     MultilineScreen,
@@ -60,9 +61,9 @@ class TextualLogHandler(logging.Handler):
         try:
             message = self.format(record)
             if record.levelno >= logging.ERROR:
-                style = "bold red"
+                style = f"bold {ERROR}"
             elif record.levelno >= logging.WARNING:
-                style = "yellow"
+                style = WARNING
             else:
                 style = "dim"
             self._app.call_from_thread(self._write, Text(message, style=style))
@@ -144,25 +145,25 @@ class TuiFrontend:
     def _bridge_show_info(self, message: str) -> None:
         self.app.call_from_thread(self.app.set_busy_status, message)
         self.app.call_from_thread(
-            self.app.emit_log, _icon_text("[*]", message, style="cyan")
+            self.app.emit_log, _icon_text("[*]", message, style=CYAN)
         )
 
     def _bridge_show_success(self, message: str) -> None:
         self.app.call_from_thread(self.app.set_busy_status, message)
         self.app.call_from_thread(
-            self.app.emit_log, _icon_text("[+]", message, style="green")
+            self.app.emit_log, _icon_text("[+]", message, style=SUCCESS)
         )
 
     def _bridge_show_warning(self, message: str) -> None:
         self.app.call_from_thread(self.app.set_busy_status, message)
         self.app.call_from_thread(
-            self.app.emit_log, _icon_text("[!]", message, style="yellow")
+            self.app.emit_log, _icon_text("[!]", message, style=WARNING)
         )
 
     def _bridge_show_error(self, message: str) -> None:
         self.app.call_from_thread(self.app.set_busy_status, message)
         self.app.call_from_thread(
-            self.app.emit_log, _icon_text("[-]", message, style="red")
+            self.app.emit_log, _icon_text("[-]", message, style=ERROR)
         )
 
     def _bridge_begin_operation(self, title: str, message: str) -> None:
