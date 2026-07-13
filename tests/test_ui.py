@@ -123,7 +123,7 @@ class UiProgressTests(unittest.TestCase):
 
             display = _credential_display(state, metadata)
 
-        self.assertEqual(display.plain, "!  已过期")
+        self.assertEqual(display.plain, "[!] 已过期")
 
     def test_wait_with_progress_uses_ten_hz_rich_refresh(self):
         from core.ui import wait_with_progress

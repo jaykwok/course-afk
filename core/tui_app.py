@@ -71,7 +71,7 @@ class OptionScreen(ModalScreen[int]):
         content.extend(
             (
                 Static(
-                    f"{self._prompt}（方向键移动，回车或点击确认 · {escape_hint}）",
+                    f"{self._prompt}（方向键移动，回车或点击确认 | {escape_hint}）",
                     id="opt-hint",
                 ),
                 OptionList(
@@ -492,7 +492,7 @@ class CourseTuiApp(App):
             from rich.text import Text
 
             self.call_from_thread(
-                self.emit_log, Text(f"  ×  {message}", style="bold red")
+                self.emit_log, Text(f"  [-]  {message}", style="bold red")
             )
         except Exception:
             pass

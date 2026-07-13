@@ -143,25 +143,25 @@ class TuiFrontend:
     def _bridge_show_info(self, message: str) -> None:
         self.app.call_from_thread(self.app.set_busy_status, message)
         self.app.call_from_thread(
-            self.app.emit_log, _icon_text("·", message, style="cyan")
+            self.app.emit_log, _icon_text("[*]", message, style="cyan")
         )
 
     def _bridge_show_success(self, message: str) -> None:
         self.app.call_from_thread(self.app.set_busy_status, message)
         self.app.call_from_thread(
-            self.app.emit_log, _icon_text("√", message, style="green")
+            self.app.emit_log, _icon_text("[+]", message, style="green")
         )
 
     def _bridge_show_warning(self, message: str) -> None:
         self.app.call_from_thread(self.app.set_busy_status, message)
         self.app.call_from_thread(
-            self.app.emit_log, _icon_text("!", message, style="yellow")
+            self.app.emit_log, _icon_text("[!]", message, style="yellow")
         )
 
     def _bridge_show_error(self, message: str) -> None:
         self.app.call_from_thread(self.app.set_busy_status, message)
         self.app.call_from_thread(
-            self.app.emit_log, _icon_text("×", message, style="red")
+            self.app.emit_log, _icon_text("[-]", message, style="red")
         )
 
     def _bridge_begin_operation(self, title: str, message: str) -> None:

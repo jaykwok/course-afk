@@ -325,23 +325,23 @@ def begin_operation(title: str, message: str) -> None:
 
 def _credential_display(state: ProjectState, metadata) -> Text:
     if not state.has_credential:
-        return Text("×  不存在", style="bold red")
+        return Text("[-] 不存在", style="bold red")
     if state.credential_expired:
-        return Text("!  已过期", style="bold yellow")
+        return Text("[!] 已过期", style="bold yellow")
     if metadata and metadata.expires_at:
         try:
             expires_dt = datetime.fromisoformat(metadata.expires_at)
             now = datetime.now()
             if now.date() >= expires_dt.date():
-                return Text("!  已过期", style="bold yellow")
+                return Text("[!] 已过期", style="bold yellow")
             seconds_left = (expires_dt - now).total_seconds()
             days_left = max(1, math.ceil(seconds_left / 86400))
-            t = Text(f"√  有效至 {expires_dt:%Y-%m-%d}", style="bold green")
+            t = Text(f"[+] 有效至 {expires_dt:%Y-%m-%d}", style="bold green")
             t.append(f"  （还有 {days_left} 天）", style="dim")
             return t
         except ValueError:
             pass
-    return Text("√  有效", style="bold green")
+    return Text("[+] 有效", style="bold green")
 
 
 def _count_display(count: int) -> Text:
@@ -423,7 +423,7 @@ def build_menu_status_renderable(state: ProjectState):
         )
     ):
         if index:
-            counts.append("  ·  ", style="dim")
+            counts.append("  |  ", style="dim")
         counts.append(f"{label} ", style="dim")
         counts.append(str(count), style="bold bright_white" if count else "dim")
     grid.add_row("任务数量", counts)
