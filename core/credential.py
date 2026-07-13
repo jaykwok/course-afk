@@ -13,7 +13,6 @@ from core.config import (
     MYLEARNING_CENTER_HOME_PATTERN,
 )
 from core.page_overlays import (
-    dismiss_topmost_overlays_async,
     dismiss_topmost_overlays_sync,
 )
 
@@ -84,39 +83,6 @@ def extract_account_profile(user_data: dict[str, Any] | None) -> AccountProfile:
         full_name=str(user_data.get("fullName") or "").strip(),
         account_name=str(user_data.get("name") or "").strip(),
     )
-
-
-def extract_account_profile_from_storage(storage_value: str | dict[str, Any] | None) -> AccountProfile:
-    if storage_value is None:
-        return AccountProfile()
-    if isinstance(storage_value, str):
-        try:
-            storage_value = json.loads(storage_value)
-        except json.JSONDecodeError:
-            return AccountProfile(account_name=storage_value.strip())
-    if isinstance(storage_value, dict):
-        return extract_account_profile(storage_value)
-    return AccountProfile()
-
-
-async def extract_account_profile_from_async_context(
-    context,
-    wait_milliseconds: int = 3000,
-    navigation_timeout: int = 30000,
-) -> AccountProfile:
-    page = await context.new_page()
-    try:
-        await page.goto(MYLEARNING_CENTER_HOME, timeout=navigation_timeout)
-        await page.wait_for_url(
-            re.compile(MYLEARNING_CENTER_HOME_PATTERN),
-            timeout=navigation_timeout,
-        )
-        await page.wait_for_timeout(wait_milliseconds)
-        await dismiss_topmost_overlays_async(page)
-        profile_data = await page.evaluate(CENTER_ACCOUNT_PROFILE_SCRIPT)
-        return extract_account_profile(profile_data)
-    finally:
-        await page.close()
 
 
 def extract_account_profile_from_sync_context(

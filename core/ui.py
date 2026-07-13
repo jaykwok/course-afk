@@ -317,6 +317,12 @@ def show_error(message: str) -> None:
     console.print(f"  [bold red]×[/bold red]  [bold red]{escape(message)}[/bold red]")
 
 
+def begin_operation(title: str, message: str) -> None:
+    """显示持续任务状态；CLI 直接输出当前阶段。"""
+    show_title(title)
+    show_info(message)
+
+
 def _credential_display(state: ProjectState, metadata) -> Text:
     if not state.has_credential:
         return Text("×  不存在", style="bold red")
@@ -496,6 +502,17 @@ def prompt_yes_no(message: str, default: str = "N") -> bool:
     return choice.strip().upper() == "Y"
 
 
+def prompt_summary_confirmation(
+    title: str,
+    rows: list[tuple[str, str]],
+    message: str = "确认继续处理？",
+    default: str = "Y",
+) -> bool:
+    """显示链接分类汇总，并确认是否继续。"""
+    show_summary(title, rows)
+    return prompt_yes_no(message, default)
+
+
 def prompt_multiline_input(
     messages: list[str],
     *,
@@ -556,6 +573,31 @@ def build_summary_renderable(title: str, rows: list[tuple[str, str]], *, expand:
 
 def show_summary(title: str, rows: list[tuple[str, str]]) -> None:
     console.print(build_summary_renderable(title, rows))
+
+
+def pause_with_summary(
+    title: str,
+    rows: list[tuple[str, str]],
+    message: str = "查看完成后返回主菜单",
+) -> None:
+    """显示处理结果汇总，等待单次确认后返回。"""
+    handle = prepare_pause_with_summary(title, rows, message)
+    wait_prepared_prompt(handle)
+
+
+def prepare_pause_with_summary(
+    title: str,
+    rows: list[tuple[str, str]],
+    message: str = "查看完成后返回主菜单",
+):
+    """先渲染结果页，返回稍后用于等待确认的句柄。"""
+    show_summary(title, rows)
+    return message
+
+
+def wait_prepared_prompt(handle) -> None:
+    """等待已渲染结果页的最终确认。"""
+    pause(str(handle))
 
 
 async def wait_with_progress(

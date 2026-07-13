@@ -9,7 +9,7 @@ launcher 解析到的 ui.show_menu / controller 传入的 status_callback=ui.sho
 - 输出类 (show_info / show_success / ...)：app.call_from_thread 投递到
   活动日志，不在工作线程上长阻塞。
 - 阻塞提示类 (show_menu / prompt_* / pause)：先 call_from_thread 挂载模态屏，
-  再在 Queue.get 上等待用户 dismiss 的结果，从而复用现有阻塞式控制流。
+  再在 Queue.get 上等待用户选择结果，从而复用现有阻塞式控制流。
 - 日志：接管 setup_logging 默认装的控制台 StreamHandler，改成镜像到活动日志，
   避免它和 Textual 全屏界面抢终端。
 """
@@ -105,13 +105,18 @@ class TuiFrontend:
         "show_success": "_bridge_show_success",
         "show_warning": "_bridge_show_warning",
         "show_error": "_bridge_show_error",
+        "begin_operation": "_bridge_begin_operation",
         "render_dashboard": "_bridge_render_dashboard",
         "show_summary": "_bridge_show_summary",
         "show_menu": "_bridge_show_menu",
         "prompt_choice": "_bridge_prompt_choice",
         "prompt_yes_no": "_bridge_prompt_yes_no",
+        "prompt_summary_confirmation": "_bridge_prompt_summary_confirmation",
         "prompt_multiline_input": "_bridge_prompt_multiline_input",
         "pause": "_bridge_pause",
+        "pause_with_summary": "_bridge_pause_with_summary",
+        "prepare_pause_with_summary": "_bridge_prepare_pause_with_summary",
+        "wait_prepared_prompt": "_bridge_wait_prepared_prompt",
         "wait_with_progress": "_bridge_wait_with_progress",
     }
 
@@ -136,24 +141,31 @@ class TuiFrontend:
         self.app.call_from_thread(self.app.set_title, title, subtitle)
 
     def _bridge_show_info(self, message: str) -> None:
+        self.app.call_from_thread(self.app.set_busy_status, message)
         self.app.call_from_thread(
             self.app.emit_log, _icon_text("·", message, style="cyan")
         )
 
     def _bridge_show_success(self, message: str) -> None:
+        self.app.call_from_thread(self.app.set_busy_status, message)
         self.app.call_from_thread(
             self.app.emit_log, _icon_text("√", message, style="green")
         )
 
     def _bridge_show_warning(self, message: str) -> None:
+        self.app.call_from_thread(self.app.set_busy_status, message)
         self.app.call_from_thread(
             self.app.emit_log, _icon_text("!", message, style="yellow")
         )
 
     def _bridge_show_error(self, message: str) -> None:
+        self.app.call_from_thread(self.app.set_busy_status, message)
         self.app.call_from_thread(
             self.app.emit_log, _icon_text("×", message, style="red")
         )
+
+    def _bridge_begin_operation(self, title: str, message: str) -> None:
+        self.app.call_from_thread(self.app.show_busy, title, message)
 
     def _bridge_show_summary(self, title: str, rows: list[tuple[str, str]]) -> None:
         self.app.call_from_thread(
@@ -169,7 +181,7 @@ class TuiFrontend:
     # ---------------- 阻塞提示类（工作线程在 Queue.get 上等待结果）----------------
     def _prompt(self, screen: Any, *, cancellable: bool = False) -> Any:
         # call_from_thread 阻塞工作线程直到模态屏挂载完成并返回 Queue；
-        # 随后 Queue.get 阻塞直到用户 dismiss（dismiss 回调会把结果 put 进队列）。
+        # 随后 Queue.get 阻塞直到用户操作把结果写入队列。
         queue = self.app.call_from_thread(
             self.app.push_prompt, screen, cancellable=cancellable
         )
@@ -203,8 +215,52 @@ class TuiFrontend:
     def _bridge_prompt_yes_no(self, message: str, default: str = "N") -> bool:
         return self._prompt(YesNoScreen(message, default), cancellable=True)
 
+    def _bridge_prompt_summary_confirmation(
+        self,
+        title: str,
+        rows: list[tuple[str, str]],
+        message: str = "确认继续处理？",
+        default: str = "Y",
+    ) -> bool:
+        details = cli_ui.build_summary_renderable(title, rows, expand=True)
+        return self._prompt(
+            YesNoScreen(message, default, details_renderable=details),
+            cancellable=True,
+        )
+
     def _bridge_pause(self, message: str = "按回车返回主菜单") -> None:
         self._prompt(PauseScreen(message), cancellable=True)
+
+    def _bridge_pause_with_summary(
+        self,
+        title: str,
+        rows: list[tuple[str, str]],
+        message: str = "查看完成后返回主菜单",
+    ) -> None:
+        handle = self._bridge_prepare_pause_with_summary(title, rows, message)
+        self._bridge_wait_prepared_prompt(handle)
+
+    def _bridge_prepare_pause_with_summary(
+        self,
+        title: str,
+        rows: list[tuple[str, str]],
+        message: str = "查看完成后返回主菜单",
+    ):
+        details = cli_ui.build_summary_renderable(title, rows, expand=True)
+        return self.app.call_from_thread(
+            self.app.push_prompt,
+            PauseScreen(
+                message,
+                details_renderable=details,
+                button_label="OK [Enter]",
+            ),
+            cancellable=True,
+        )
+
+    def _bridge_wait_prepared_prompt(self, handle) -> None:
+        result = handle.get()
+        if result is _PROMPT_CANCELLED:
+            raise UserCancelRequested("已取消当前操作，返回主菜单")
 
     def _bridge_prompt_multiline_input(
         self,

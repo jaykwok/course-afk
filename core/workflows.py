@@ -16,7 +16,6 @@ from core.config import (
     COOKIES_FILE,
     EXAM_URLS_FILE,
     LEARNING_URLS_FILE,
-    MANUAL_EXAM_FILE,
     MYLEARNING_HOME,
     is_ai_configured,
 )
@@ -33,7 +32,7 @@ from core.file_ops import (
 )
 from core.learning_queue import append_learning_urls, read_learning_urls
 from core.login import login_and_save_credential
-from core.state import collect_project_state, read_non_empty_lines
+from core.state import collect_project_state
 from core.config import summarize_exception_message
 
 
@@ -114,6 +113,7 @@ def refresh_credential(status_callback: StatusCallback | None = None) -> Account
 async def collect_learning_links_from_entry_urls(
     entry_urls: list[str],
     status_callback: StatusCallback | None = None,
+    before_close_callback: Callable[[tuple[int, int, int]], None] | None = None,
 ) -> tuple[int, int, int]:
     if not entry_urls:
         return 0, 0, 0
@@ -174,7 +174,8 @@ async def collect_learning_links_from_entry_urls(
             await context.add_cookies(cookies)
             auth_page = await context.new_page()
             await auth_page.goto(MYLEARNING_HOME, wait_until="load")
-            await auth_page.close()
+            # 保留主控页直到结果界面完成挂载，避免最后一个任务页关闭后
+            # 浏览器窗口先消失、TUI 又尚未给出反馈。
 
             context.on(
                 "page",
@@ -200,6 +201,14 @@ async def collect_learning_links_from_entry_urls(
 
             if popup_tasks:
                 await asyncio.gather(*tuple(popup_tasks), return_exceptions=True)
+
+            result = (
+                len(collected_urls),
+                new_learning_popup_count,
+                new_exam_popup_count,
+            )
+            if before_close_callback:
+                before_close_callback(result)
         finally:
             if context is not None:
                 try:
@@ -211,17 +220,14 @@ async def collect_learning_links_from_entry_urls(
             except Exception:
                 pass
 
-    return (
-        len(collected_urls),
-        new_learning_popup_count,
-        new_exam_popup_count,
-    )
+    return result
 
 
 async def run_manual_course_selection(
     input_text: str,
     learning_zone_mode: str = "manual",
     status_callback: StatusCallback | None = None,
+    result_ready_callback: Callable[[dict[str, int]], None] | None = None,
 ) -> dict[str, int]:
     urls = parse_manual_selection_input(input_text)
     (
@@ -245,38 +251,85 @@ async def run_manual_course_selection(
     if status_callback and added_exam_urls:
         status_callback(f"已直接写入 {len(added_exam_urls)} 条考试链接")
 
+    result_notified = False
+
+    def build_result(
+        learning_zone_parsed_count: int,
+        manual_record_count: int,
+        manual_exam_record_count: int,
+        manual_entry_urls: list[str],
+    ) -> dict[str, int]:
+        return {
+            "input_url_count": len(urls),
+            "direct_learning_count": len(added_learning),
+            "direct_exam_count": len(added_exam_urls),
+            "learning_zone_url_count": len(learning_zone_urls),
+            "learning_zone_parsed_count": learning_zone_parsed_count,
+            "entry_url_count": len(manual_entry_urls),
+            "manual_record_count": manual_record_count,
+            "manual_exam_record_count": manual_exam_record_count,
+            "learning_total": len(read_learning_urls(LEARNING_URLS_FILE)),
+            "exam_total": len(read_exam_urls(EXAM_URLS_FILE)),
+        }
+
+    def notify_result_ready(result: dict[str, int]) -> None:
+        nonlocal result_notified
+        if result_notified or result_ready_callback is None:
+            return
+        result_notified = True
+        result_ready_callback(result)
+
     learning_zone_parsed_count = 0
     manual_entry_urls = entry_urls
     if learning_zone_urls:
         if learning_zone_mode == "auto":
+            zone_before_close = None
+            if not entry_urls:
+                zone_before_close = lambda parsed_count: notify_result_ready(
+                    build_result(parsed_count, 0, 0, entry_urls)
+                )
+            zone_kwargs = {"status_callback": status_callback}
+            if zone_before_close is not None:
+                zone_kwargs["before_close_callback"] = zone_before_close
             learning_zone_parsed_count = (
                 await collect_learning_links_from_learning_zone_urls(
                     learning_zone_urls,
-                    status_callback=status_callback,
+                    **zone_kwargs,
                 )
             )
         else:
             manual_entry_urls = learning_zone_urls + entry_urls
 
+    def entry_before_close(counts: tuple[int, int, int]) -> None:
+        _, learning_count, exam_count = counts
+        notify_result_ready(
+            build_result(
+                learning_zone_parsed_count,
+                learning_count,
+                exam_count,
+                manual_entry_urls,
+            )
+        )
+
+    entry_kwargs = {"status_callback": status_callback}
+    if manual_entry_urls and result_ready_callback is not None:
+        entry_kwargs["before_close_callback"] = entry_before_close
     (
         _,
         manual_record_count,
         manual_exam_record_count,
     ) = await collect_learning_links_from_entry_urls(
-        manual_entry_urls, status_callback=status_callback
+        manual_entry_urls,
+        **entry_kwargs,
     )
-    return {
-        "input_url_count": len(urls),
-        "direct_learning_count": len(added_learning),
-        "direct_exam_count": len(added_exam_urls),
-        "learning_zone_url_count": len(learning_zone_urls),
-        "learning_zone_parsed_count": learning_zone_parsed_count,
-        "entry_url_count": len(manual_entry_urls),
-        "manual_record_count": manual_record_count,
-        "manual_exam_record_count": manual_exam_record_count,
-        "learning_total": len(read_learning_urls(LEARNING_URLS_FILE)),
-        "exam_total": len(read_exam_urls(EXAM_URLS_FILE)),
-    }
+    result = build_result(
+        learning_zone_parsed_count,
+        manual_record_count,
+        manual_exam_record_count,
+        manual_entry_urls,
+    )
+    notify_result_ready(result)
+    return result
 
 
 async def run_afk_workflow(status_callback: StatusCallback | None = None) -> bool:

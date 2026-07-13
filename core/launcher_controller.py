@@ -16,6 +16,27 @@ _REFERENCE_COLLECTION_PROMPTS = [
 ]
 
 
+def _manual_selection_result_rows(result: dict[str, int]) -> list[tuple[str, str]]:
+    return [
+        ("识别到的输入链接", str(result["input_url_count"])),
+        ("直接写入的学习链接", str(result["direct_learning_count"])),
+        ("直接写入的考试链接", str(result["direct_exam_count"])),
+        ("学习专区链接数量", str(result["learning_zone_url_count"])),
+        ("学习专区自动解析数量", str(result["learning_zone_parsed_count"])),
+        ("需要手动打开的入口链接", str(result["entry_url_count"])),
+        ("浏览器记录的学习链接", str(result["manual_record_count"])),
+        ("浏览器记录的考试链接", str(result["manual_exam_record_count"])),
+        ("当前学习链接总数", str(result["learning_total"])),
+        ("当前考试链接总数", str(result["exam_total"])),
+    ]
+
+
+def _begin_operation(ui, title: str, message: str) -> None:
+    begin = getattr(ui, "begin_operation", None)
+    if callable(begin):
+        begin(title, message)
+
+
 def _prompt_ai_exam_auto_submit(ui) -> bool:
     return ui.prompt_yes_no("AI考试是否自动交卷？", default="N")
 
@@ -116,6 +137,7 @@ def handle_recommended_flow(ui) -> None:
     from core.exam_answers import ExamAiConfigurationError
     from core.workflows import run_recommended_flow
 
+    _begin_operation(ui, "推荐流程", "正在检查登录状态与待处理任务")
     try:
         result = run_async(
             run_recommended_flow(
@@ -141,6 +163,7 @@ def handle_refresh_credential(state, ui) -> None:
 
     if state.has_credential and not state.credential_expired:
         ui.show_warning("当前登录凭证仍有效，继续将覆盖现有登录状态")
+    _begin_operation(ui, "更新登录凭证", "正在打开浏览器，请完成登录")
     try:
         profile = refresh_credential(status_callback=ui.show_info)
     except LoginNotCompletedError as exc:
@@ -175,41 +198,72 @@ def handle_manual_selection(prompts, ui) -> None:
         ui.show_warning(str(exc) or "已取消手动选择课程 / 录入链接")
         ui.pause()
         return
-    _, _, learning_zone_urls, _ = split_manual_selection_urls(
-        parse_manual_selection_input(input_text)
-    )
+
+    parsed_urls = parse_manual_selection_input(input_text)
+    if not parsed_urls:
+        ui.show_warning("输入内容中未识别到有效的 HTTP/HTTPS 链接")
+        ui.pause()
+        return
+
+    (
+        direct_learning_urls,
+        direct_exam_urls,
+        learning_zone_urls,
+        entry_urls,
+    ) = split_manual_selection_urls(parsed_urls)
+    confirmation_rows = [
+        ("有效链接（去重）", str(len(parsed_urls))),
+        ("课程 / 主题链接", str(len(direct_learning_urls))),
+        ("考试链接", str(len(direct_exam_urls))),
+        ("学习专区链接", str(len(learning_zone_urls))),
+        ("其他入口链接", str(len(entry_urls))),
+    ]
+    try:
+        confirmed = ui.prompt_summary_confirmation(
+            "链接解析确认",
+            confirmation_rows,
+            "确认按以上分类继续处理？",
+            default="Y",
+        )
+    except UserCancelRequested as exc:
+        ui.show_warning(str(exc) or "已取消处理本次链接")
+        return
+    if not confirmed:
+        ui.show_warning("已取消处理本次链接")
+        return
+
     learning_zone_mode = choose_learning_zone_mode(
         learning_zone_urls,
         prompt_choice_func=ui.prompt_choice,
     )
+    _begin_operation(ui, "解析课程链接", "正在打开浏览器并处理已确认的链接")
+    prepared_result_handle = None
+
+    def prepare_result_page(result: dict[str, int]) -> None:
+        nonlocal prepared_result_handle
+        prepared_result_handle = ui.prepare_pause_with_summary(
+            "链接解析完成",
+            _manual_selection_result_rows(result),
+            "解析完成，请确认结果",
+        )
+
     result = run_async(
         run_manual_course_selection(
             input_text,
             learning_zone_mode=learning_zone_mode,
             status_callback=ui.show_info,
+            result_ready_callback=prepare_result_page,
         )
     )
-    ui.show_summary(
-        "手动选择课程 / 录入链接结果",
-        [
-            ("识别到的输入链接", str(result["input_url_count"])),
-            ("直接写入的学习链接", str(result["direct_learning_count"])),
-            ("直接写入的考试链接", str(result["direct_exam_count"])),
-            ("学习专区链接数量", str(result["learning_zone_url_count"])),
-            ("学习专区自动解析数量", str(result["learning_zone_parsed_count"])),
-            ("需要手动打开的入口链接", str(result["entry_url_count"])),
-            ("手动点击记录的学习链接", str(result["manual_record_count"])),
-            ("手动点击记录的考试链接", str(result["manual_exam_record_count"])),
-            ("当前学习链接总数", str(result["learning_total"])),
-            ("当前考试链接总数", str(result["exam_total"])),
-        ],
-    )
-    ui.pause()
+    if prepared_result_handle is None:
+        prepare_result_page(result)
+    ui.wait_prepared_prompt(prepared_result_handle)
 
 
 def handle_afk(ui) -> None:
     from core.workflows import run_afk_workflow
 
+    _begin_operation(ui, "课程学习", "正在打开浏览器并处理课程队列")
     has_exam = run_async(run_afk_workflow(status_callback=ui.show_info))
     _maybe_delete_empty_learning_queue_file(ui)
     if has_exam:
@@ -237,6 +291,7 @@ def handle_ai_exam(ui) -> None:
         return
 
     auto_submit = _prompt_ai_exam_auto_submit(ui)
+    _begin_operation(ui, "AI 自动考试", "正在打开浏览器并处理考试队列")
     try:
         manual_count = run_async(
             run_ai_exam_workflow(
@@ -260,6 +315,7 @@ def handle_manual_exam(ui) -> None:
     from core.state import collect_project_state
     from core.workflows import run_manual_exam_workflow
 
+    _begin_operation(ui, "人工考试", "正在打开浏览器并等待人工完成考试")
     count = run_async(run_manual_exam_workflow(status_callback=ui.show_info))
     state = collect_project_state()
     if count and state.manual_exam_count == 0:
@@ -295,6 +351,7 @@ def handle_reference_collection(ui) -> None:
         return
 
     try:
+        _begin_operation(ui, "保存课程资料", "正在打开浏览器并解析课程资料")
         result = run_async(
             run_reference_collection_workflow(
                 urls,

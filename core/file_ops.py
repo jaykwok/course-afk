@@ -46,48 +46,6 @@ def write_text_atomic(path, content: str, *, encoding: str = "utf-8") -> None:
     os.replace(tmp_path, path)
 
 
-def save_to_file(filename, url):
-    """将链接保存到指定文件"""
-
-    with open(filename, "a", encoding="utf-8") as wp:
-        wp.write(f"{url}\n")
-    logging.info(f"写入 {filename} 完毕")
-
-
-def read_unique_lines(filename) -> list[str]:
-    try:
-        with open(filename, "r", encoding="utf-8") as file:
-            lines = [line.strip() for line in file if line.strip()]
-            return list(dict.fromkeys(lines))
-    except FileNotFoundError:
-        return []
-
-
-def write_unique_lines(filename, urls: list[str], *, keep_file: bool = True) -> None:
-    unique_urls = list(dict.fromkeys(url.strip() for url in urls if url and url.strip()))
-    if not unique_urls and not keep_file:
-        del_file(filename)
-        return
-
-    with open(filename, "w", encoding="utf-8") as file:
-        for url in unique_urls:
-            file.write(f"{url}\n")
-
-
-def append_unique_lines(filename, urls: list[str]) -> list[str]:
-    existing = set(read_unique_lines(filename))
-    added: list[str] = []
-    with open(filename, "a", encoding="utf-8") as file:
-        for raw_url in urls:
-            url = raw_url.strip()
-            if not url or url in existing:
-                continue
-            file.write(f"{url}\n")
-            existing.add(url)
-            added.append(url)
-    return added
-
-
 _UUID = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 _BUSINESS_TYPE_MAP = {"1": "course", "2": "subject"}
 

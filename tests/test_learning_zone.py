@@ -76,10 +76,14 @@ class LearningZoneCollectionTests(unittest.IsolatedAsyncioTestCase):
         page = FakeLearningZonePage()
         context = FakeLearningZoneContext(page)
         messages = []
+        lifecycle = {"exited": False, "callback": None}
 
         @asynccontextmanager
         async def fake_browser_context():
-            yield object(), context
+            try:
+                yield object(), context
+            finally:
+                lifecycle["exited"] = True
 
         with (
             patch(
@@ -97,6 +101,9 @@ class LearningZoneCollectionTests(unittest.IsolatedAsyncioTestCase):
             added = await collect_learning_links_from_learning_zone_urls(
                 ["https://cms.mylearning.cn/zone.html"],
                 status_callback=messages.append,
+                before_close_callback=lambda count: lifecycle.update(
+                    callback=(count, lifecycle["exited"])
+                ),
             )
 
         self.assertEqual(added, 1)
@@ -104,6 +111,8 @@ class LearningZoneCollectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(page.closed)
         self.assertTrue(any("已关闭 1 个页面弹窗" in item for item in messages))
         self.assertTrue(any("识别 1 条链接" in item for item in messages))
+        self.assertEqual(lifecycle["callback"], (1, False))
+        self.assertTrue(lifecycle["exited"])
 
 
 if __name__ == "__main__":

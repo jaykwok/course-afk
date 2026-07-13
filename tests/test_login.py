@@ -7,7 +7,6 @@ from unittest.mock import patch
 
 class FakeLoginFrame:
     def __init__(self):
-        self.evaluate_all_calls = []
         self.evaluate_calls = []
 
     @property
@@ -22,12 +21,6 @@ class FakeLoginFrame:
 
     def click(self):
         return None
-
-    def evaluate_all(self, script, data_time=None):
-        self.evaluate_all_calls.append((script, data_time))
-        if data_time is None:
-            return 4
-        return 3
 
     def evaluate(self, script, data_time=None):
         self.evaluate_calls.append((script, data_time))

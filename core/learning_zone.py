@@ -71,6 +71,7 @@ def extract_learning_links_from_learning_zone_html(html_content: str) -> list[st
 async def collect_learning_links_from_learning_zone_urls(
     learning_zone_urls: list[str],
     status_callback=None,
+    before_close_callback=None,
 ) -> int:
     if not learning_zone_urls:
         return 0
@@ -119,5 +120,8 @@ async def collect_learning_links_from_learning_zone_urls(
                         )
             finally:
                 await page.close()
+
+        if before_close_callback:
+            before_close_callback(total_added)
 
     return total_added

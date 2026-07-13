@@ -41,51 +41,6 @@ class LoginNotCompletedError(RuntimeError):
     """Raised when the login browser is closed before credentials are saved."""
 
 
-AUTO_LOGIN_GROUP_SELECTOR = (
-    "#j-auto-group-qr, #j-auto-group, #j-auto-group-sms, #j-auto-group-qk"
-)
-AGREEMENT_CHECKBOX_SELECTOR = '[id^="j-agreement-box"]'
-SELECT_AUTO_LOGIN_DURATION_SCRIPT = """
-(groups, dataTime) => {
-  let selectedCount = 0;
-
-  for (const group of groups) {
-    const option = group.querySelector(
-      `.login-option-list .option[data-time="${dataTime}"]`
-    );
-    if (option) {
-      option.click();
-      selectedCount += 1;
-    }
-
-    const checkbox = group.querySelector('i[id^="j-auto-login"]');
-    if (checkbox && checkbox.getAttribute("data-index") !== "1") {
-      checkbox.click();
-    }
-  }
-
-  return selectedCount;
-}
-"""
-ACCEPT_LOGIN_AGREEMENTS_SCRIPT = """
-checkboxes => {
-  let checkedCount = 0;
-
-  for (const checkbox of checkboxes) {
-    const className = String(checkbox.className || "");
-    const isChecked =
-      checkbox.getAttribute("data-index") === "1" ||
-      className.includes("checkbox-icon2");
-
-    if (!isChecked) {
-      checkbox.click();
-    }
-    checkedCount += 1;
-  }
-
-  return checkedCount;
-}
-"""
 INSTALL_LOGIN_PREFERENCES_WATCHER_SCRIPT = """
 (_body, dataTime) => {
   const AUTO_LOGIN_GROUP_SELECTOR = "#j-auto-group-qr, #j-auto-group, #j-auto-group-sms, #j-auto-group-qk";
@@ -195,21 +150,6 @@ INSTALL_LOGIN_PREFERENCES_WATCHER_SCRIPT = """
 """
 
 
-def select_auto_login_duration(login_frame, data_time: str = AUTO_LOGIN_DATA_TIME) -> int:
-    login_frame.locator("#j-auto-group-qr").wait_for(state="attached")
-    return login_frame.locator(AUTO_LOGIN_GROUP_SELECTOR).evaluate_all(
-        SELECT_AUTO_LOGIN_DURATION_SCRIPT,
-        data_time,
-    )
-
-
-def accept_login_agreements(login_frame) -> int:
-    login_frame.locator("#j-agreement-box-sms").wait_for(state="attached")
-    return login_frame.locator(AGREEMENT_CHECKBOX_SELECTOR).evaluate_all(
-        ACCEPT_LOGIN_AGREEMENTS_SCRIPT
-    )
-
-
 def install_login_preferences_watcher(
     login_frame,
     data_time: str = AUTO_LOGIN_DATA_TIME,
@@ -251,7 +191,7 @@ def login_and_save_credential() -> AccountProfile:
             try:
                 profile = extract_account_profile_from_sync_context(context)
             except PlaywrightTimeoutError as exc:
-                logging.debug(f"读取知学云账号信息超时，继续保存登录凭证: {exc}")
+                logging.debug(f"读取个人中心账号信息超时，继续保存登录凭证: {exc}")
                 profile = AccountProfile()
             save_credential_metadata(
                 saved_at=datetime.now(),

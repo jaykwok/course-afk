@@ -10,34 +10,6 @@ from core.credential import CredentialMetadata
 
 
 class WorkflowStateTests(unittest.TestCase):
-    def test_read_non_empty_lines_deduplicates_while_preserving_order(self):
-        from core.state import read_non_empty_lines
-
-        with TemporaryDirectory() as tmp:
-            file_path = Path(tmp) / "links.txt"
-            file_path.write_text(
-                "\n".join(
-                    [
-                        "https://example.com/exam/1",
-                        "",
-                        "https://example.com/exam/2",
-                        "https://example.com/exam/1",
-                        "https://example.com/exam/3",
-                        "https://example.com/exam/2",
-                    ]
-                ),
-                encoding="utf-8",
-            )
-
-            self.assertEqual(
-                read_non_empty_lines(file_path),
-                [
-                    "https://example.com/exam/1",
-                    "https://example.com/exam/2",
-                    "https://example.com/exam/3",
-                ],
-            )
-
     def test_collect_project_state_counts_unique_links_only(self):
         from core.state import collect_project_state
 

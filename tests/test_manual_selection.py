@@ -59,6 +59,7 @@ class FakeManualSelectionContext:
         self.page_handler = None
         self.popup_urls = list(popup_urls or [])
         self.pages = []
+        self.closed = False
 
     async def add_cookies(self, _cookies):
         return None
@@ -83,7 +84,7 @@ class FakeManualSelectionContext:
         return page
 
     async def close(self):
-        return None
+        self.closed = True
 
 
 class FakeManualSelectionBrowser:
@@ -155,6 +156,7 @@ class ManualSelectionWorkflowTests(unittest.IsolatedAsyncioTestCase):
             exam_file.write_text("[]", encoding="utf-8")
 
             fake_context = FakeManualSelectionContext()
+            callback_states = []
             with mock.patch.object(workflows, "COOKIES_FILE", cookies_file):
                 with mock.patch.object(workflows, "LEARNING_URLS_FILE", learning_file):
                     with mock.patch.object(workflows, "EXAM_URLS_FILE", exam_file):
@@ -164,11 +166,20 @@ class ManualSelectionWorkflowTests(unittest.IsolatedAsyncioTestCase):
                             return_value=FakeAsyncPlaywrightManager(fake_context),
                         ):
                             result = await workflows.collect_learning_links_from_entry_urls(
-                                ["https://example.com/entry"]
+                                ["https://example.com/entry"],
+                                before_close_callback=lambda counts: callback_states.append(
+                                    (
+                                        counts,
+                                        fake_context.closed,
+                                        fake_context.pages[0].closed,
+                                    )
+                                ),
                             )
 
         self.assertEqual(result, (0, 0, 0))
         self.assertEqual(fake_context.pages[0].url, workflows.MYLEARNING_HOME)
+        self.assertEqual(callback_states, [((0, 0, 0), False, False)])
+        self.assertTrue(fake_context.closed)
 
     async def test_collect_learning_links_from_entry_urls_records_noopener_popup(self):
         popup_url = "https://kc.zhixueyun.com/#/study/course/detail/11111111-1111-1111-1111-111111111111"

@@ -379,6 +379,112 @@ class LauncherControllerTests(unittest.TestCase):
         self.assertIn("已取消手动选择课程 / 录入链接", ui.messages)
         self.assertIn("pause", ui.messages)
 
+    def test_handle_manual_selection_confirms_link_categories_before_browser(self):
+        from core.launcher_controller import handle_manual_selection
+
+        class FakeUi:
+            def __init__(self):
+                self.confirmation = None
+                self.messages = []
+
+            def prompt_multiline_input(self, _prompts):
+                return "\n".join(
+                    (
+                        "https://kc.zhixueyun.com/#/study/course/detail/12345678-1234-1234-1234-123456789abc",
+                        "https://kc.zhixueyun.com/#/exam/exam/answer-paper/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                        "https://cms.mylearning.cn/safe/topic/resource/2025/zycp/pc.html",
+                        "https://example.com/entry",
+                    )
+                )
+
+            def prompt_summary_confirmation(
+                self, title, rows, message, *, default
+            ):
+                self.confirmation = (title, dict(rows), message, default)
+                return False
+
+            def show_warning(self, message):
+                self.messages.append(message)
+
+        ui = FakeUi()
+        with patch(
+            "core.workflows.run_manual_course_selection",
+            new=unittest.mock.AsyncMock(),
+        ) as workflow:
+            handle_manual_selection(["请粘贴入口链接。"], ui)
+
+        title, rows, message, default = ui.confirmation
+        self.assertEqual(title, "链接解析确认")
+        self.assertEqual(rows["有效链接（去重）"], "4")
+        self.assertEqual(rows["课程 / 主题链接"], "1")
+        self.assertEqual(rows["考试链接"], "1")
+        self.assertEqual(rows["学习专区链接"], "1")
+        self.assertEqual(rows["其他入口链接"], "1")
+        self.assertIn("继续处理", message)
+        self.assertEqual(default, "Y")
+        workflow.assert_not_awaited()
+
+    def test_handle_manual_selection_shows_ok_summary_after_browser(self):
+        from core.launcher_controller import handle_manual_selection
+
+        class FakeUi:
+            def __init__(self):
+                self.result_summary = None
+                self.waited_handle = None
+
+            def prompt_multiline_input(self, _prompts):
+                return "https://example.com/entry"
+
+            def prompt_summary_confirmation(self, *_args, **_kwargs):
+                return True
+
+            def prompt_choice(self, *_args, **_kwargs):
+                return 2
+
+            def show_info(self, _message):
+                pass
+
+            def prepare_pause_with_summary(self, title, rows, message):
+                self.result_summary = (title, dict(rows), message)
+                return "prepared-result"
+
+            def wait_prepared_prompt(self, handle):
+                self.waited_handle = handle
+
+        ui = FakeUi()
+        result = {
+            "input_url_count": 1,
+            "direct_learning_count": 0,
+            "direct_exam_count": 0,
+            "learning_zone_url_count": 0,
+            "learning_zone_parsed_count": 0,
+            "entry_url_count": 1,
+            "manual_record_count": 2,
+            "manual_exam_record_count": 1,
+            "learning_total": 3,
+            "exam_total": 2,
+        }
+        with patch(
+            "core.workflows.run_manual_course_selection",
+            new=unittest.mock.AsyncMock(return_value=result),
+        ) as workflow:
+            handle_manual_selection(["请粘贴入口链接。"], ui)
+
+        workflow.assert_awaited_once_with(
+            "https://example.com/entry",
+            learning_zone_mode="manual",
+            status_callback=ui.show_info,
+            result_ready_callback=unittest.mock.ANY,
+        )
+        title, rows, message = ui.result_summary
+        self.assertEqual(title, "链接解析完成")
+        self.assertEqual(rows["浏览器记录的学习链接"], "2")
+        self.assertEqual(rows["浏览器记录的考试链接"], "1")
+        self.assertEqual(rows["当前学习链接总数"], "3")
+        self.assertEqual(rows["当前考试链接总数"], "2")
+        self.assertIn("确认结果", message)
+        self.assertEqual(ui.waited_handle, "prepared-result")
+
     def test_handle_reference_collection_cancel_returns_to_menu(self):
         from core.abort import UserCancelRequested
         from core.launcher_controller import handle_reference_collection
