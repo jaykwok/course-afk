@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import sys
 import threading
 from queue import Queue
 from typing import Any
@@ -39,6 +40,51 @@ from textual.widgets.option_list import Option
 # Esc / Ctrl+C 强制取消当前模态提示时使用；桥接层识别后抛
 # UserCancelRequested，让控制流正常返回主菜单（而非直接退出）。
 _PROMPT_CANCELLED: Any = object()
+
+
+def _read_windows_clipboard() -> str:
+    """读取 Windows 系统剪贴板文本（CF_UNICODETEXT），作为 cmd/conhost 粘贴失效的兜底。
+
+    Textual 自带的 Ctrl+V 读的是应用内部剪贴板（默认空），而传统 cmd/conhost 又不会
+    把系统剪贴板作为 paste 事件可靠地发给 TUI；MultilineScreen 因此直接用 Win32 API
+    读系统剪贴板再插入。非 Windows 或读取失败返回空串。
+    """
+    if not sys.platform.startswith("win"):
+        return ""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        cf_unicode_text = 13
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+
+        user32.OpenClipboard.argtypes = [wintypes.HWND]
+        user32.OpenClipboard.restype = wintypes.BOOL
+        user32.GetClipboardData.argtypes = [wintypes.UINT]
+        user32.GetClipboardData.restype = wintypes.HANDLE
+        user32.CloseClipboard.argtypes = []
+        kernel32.GlobalLock.argtypes = [wintypes.HANDLE]
+        kernel32.GlobalLock.restype = ctypes.c_void_p
+        kernel32.GlobalUnlock.argtypes = [wintypes.HANDLE]
+
+        if not user32.OpenClipboard(None):
+            return ""
+        try:
+            handle = user32.GetClipboardData(cf_unicode_text)
+            if not handle:
+                return ""
+            ptr = kernel32.GlobalLock(handle)
+            if not ptr:
+                return ""
+            try:
+                return ctypes.wstring_at(ptr)
+            finally:
+                kernel32.GlobalUnlock(handle)
+        finally:
+            user32.CloseClipboard()
+    except Exception:
+        return ""
 
 
 class OptionScreen(ModalScreen[int]):
@@ -170,7 +216,13 @@ class MultilineScreen(ModalScreen[tuple[str, Any]]):
     BINDINGS = [
         # 支持增强键盘协议的 ctrl+enter，也兼容传统终端将其编码为 LF / ctrl+j。
         Binding("ctrl+enter,ctrl+j", "submit", "提交", priority=True),
-    ]
+    ] + (
+        # conhost(cmd) 不会把系统剪贴板作为 paste 事件发给 TUI，Textual 自带 Ctrl+V
+        # 又只读应用内部剪贴板；这里劫持 Ctrl+V 直接读 Windows 系统剪贴板再插入。
+        [Binding("ctrl+v", "paste_clipboard", "粘贴", priority=True)]
+        if sys.platform.startswith("win")
+        else []
+    )
 
     def __init__(
         self,
@@ -192,7 +244,7 @@ class MultilineScreen(ModalScreen[tuple[str, Any]]):
             Static(instruction_lines, id="ml-instr"),
             TextArea(id="ml-text"),
             Static(
-                "Enter 换行 | 右键 / Ctrl+V 粘贴 | Ctrl+Enter 提交 | ESC 返回",
+                "Enter 换行 | Ctrl+V 粘贴 | Ctrl+Enter 提交 | ESC 返回",
                 id="ml-hint",
             ),
             Horizontal(
@@ -209,6 +261,11 @@ class MultilineScreen(ModalScreen[tuple[str, Any]]):
     def action_submit(self) -> None:
         text = self.query_one("#ml-text", TextArea).text
         self.app.resolve_prompt(self, ("ok", text))
+
+    def action_paste_clipboard(self) -> None:
+        text = _read_windows_clipboard()
+        if text:
+            self.query_one("#ml-text", TextArea).insert(text)
 
     def action_cancel(self) -> None:
         self.app.resolve_prompt(self, ("cancel", None))
