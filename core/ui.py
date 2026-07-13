@@ -339,6 +339,15 @@ def begin_operation(title: str, message: str) -> None:
     show_info(message)
 
 
+def prepare_menu_loading() -> None:
+    """主菜单重新加载前的过渡占位。
+
+    用于填满“结果页确认 → 主菜单挂载”之间的 held-screen 间隙：TUI 下由桥接层
+    替换为忙碌状态，慢机器上不再像卡住；CLI 同步顺序输出、无此间隙，故为空操作。
+    """
+    return None
+
+
 def _credential_display(state: ProjectState, metadata) -> Text:
     if not state.has_credential:
         return Text("[-] 不存在", style="bold red")

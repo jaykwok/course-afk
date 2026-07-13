@@ -115,6 +115,7 @@ class TuiFrontend:
         "prompt_multiline_input": "_bridge_prompt_multiline_input",
         "pause": "_bridge_pause",
         "pause_with_summary": "_bridge_pause_with_summary",
+        "prepare_menu_loading": "_bridge_prepare_menu_loading",
         "prepare_pause_with_summary": "_bridge_prepare_pause_with_summary",
         "wait_prepared_prompt": "_bridge_wait_prepared_prompt",
         "wait_with_progress": "_bridge_wait_with_progress",
@@ -166,6 +167,10 @@ class TuiFrontend:
 
     def _bridge_begin_operation(self, title: str, message: str) -> None:
         self.app.call_from_thread(self.app.show_busy, title, message)
+
+    def _bridge_prepare_menu_loading(self) -> None:
+        # 用忙碌状态顶掉持有的结果页，填满“结果页确认 → 主菜单挂载”的间隙。
+        self.app.call_from_thread(self.app.show_busy, "主菜单", "正在加载主菜单…")
 
     def _bridge_show_summary(self, title: str, rows: list[tuple[str, str]]) -> None:
         self.app.call_from_thread(

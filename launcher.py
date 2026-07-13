@@ -81,7 +81,11 @@ def main() -> int:
     from core.state import collect_project_state
 
     try:
+        first_loop = True
         while True:
+            if not first_loop:
+                ui.prepare_menu_loading()
+            first_loop = False
             state = collect_project_state()
             ui.show_title("课程自动化工具", "登录、学习、考试统一入口")
             ui.render_dashboard(state)
