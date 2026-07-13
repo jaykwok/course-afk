@@ -25,7 +25,7 @@ from core.config import (
     PAPER_EXAM_ATTEMPT_THRESHOLD,
     validate_ai_base_url,
 )
-from core.exam_engine import ai_exam, wait_for_finish_test
+from core.exam_flow import ai_exam, wait_for_finish_test
 from core.exam_answers import ExamAiConfigurationError
 from core.exam_queue import (
     has_ai_failed_model_config,

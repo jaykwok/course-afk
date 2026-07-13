@@ -237,15 +237,3 @@ async def extract_options_with_selector(locator, question_type: str) -> tuple[li
         return await _extract_judge_options(locator)
 
     return await _extract_choice_options(locator, CHOICE_OPTION_SPECS)
-
-
-async def extract_options(locator, question_type: str) -> list[dict]:
-    """
-    从题目容器中提取选项列表。
-
-    Args:
-        locator: 题目容器的 Playwright Locator(单题模式为 page, 多题模式为 question_item)
-        question_type: 题目类型字符串
-    """
-    options, _ = await extract_options_with_selector(locator, question_type)
-    return options

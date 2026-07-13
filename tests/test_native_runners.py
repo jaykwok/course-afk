@@ -1400,6 +1400,114 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
                 any("考试次数限制" in call.args[0] for call in mock_info.call_args_list)
             )
 
+    async def test_run_course_ai_exam_routes_to_manual_when_remaining_attempts_unparseable(self):
+        from core import exam_runner
+
+        class FakeLocator:
+            def __init__(self, *, count=0, text=""):
+                self._count = count
+                self._text = text
+
+            async def count(self):
+                return self._count
+
+            async def inner_text(self):
+                return self._text
+
+        class FakePage:
+            def __init__(self):
+                self.url = "https://kc.zhixueyun.com/#/study/course/detail/test-course"
+                self._locators = {
+                    ".btn.new-radius": FakeLocator(count=1, text="继续考试（剩余次数未知）"),
+                    ".neer-status": FakeLocator(count=0),
+                }
+
+            def locator(self, selector):
+                return self._locators[selector]
+
+        page = FakePage()
+
+        with TemporaryDirectory() as tmp:
+            manual_file = Path(tmp) / "manual.json"
+            with (
+                patch("core.exam_runner.MANUAL_EXAM_FILE", manual_file),
+                patch("core.exam_runner._open_course_exam_tab", new=AsyncMock()),
+            ):
+                await exam_runner._run_course_ai_exam(page, page.url, object(), "test-model")
+
+            self.assertEqual(
+                _read_manual_exam_queue(manual_file),
+                [
+                    {
+                        "url": page.url,
+                        "reason": "attempt_unknown",
+                        "reason_text": "无法解析剩余次数, 转为人工考试处理",
+                        "remaining_attempts": None,
+                        "threshold": exam_runner.COURSE_EXAM_ATTEMPT_THRESHOLD,
+                        "ai_failed_model_configs": [],
+                    }
+                ],
+            )
+
+    async def test_run_ai_exam_batch_routes_unknown_url_to_manual_exam(self):
+        from core.exam_runner import run_ai_exam_batch
+
+        class FakePage:
+            async def goto(self, url):
+                return None
+
+            async def wait_for_load_state(self, state):
+                return None
+
+            async def close(self):
+                return None
+
+        class FakeContext:
+            async def new_page(self):
+                return FakePage()
+
+        class FakeBrowserContextManager:
+            async def __aenter__(self):
+                return None, FakeContext()
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        unknown_url = "https://kc.zhixueyun.com/#/study/unknown/test-resource"
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            exam_file = root / "exam.json"
+            manual_file = root / "manual.json"
+            _write_exam_queue_fixture(exam_file, [unknown_url])
+
+            with (
+                patch("core.exam_runner.EXAM_URLS_FILE", exam_file),
+                patch("core.exam_runner.MANUAL_EXAM_FILE", manual_file),
+                patch(
+                    "core.exam_runner.create_browser_context",
+                    return_value=FakeBrowserContextManager(),
+                ),
+                patch("core.exam_runner._build_exam_client", return_value=(object(), "test-model")),
+            ):
+                manual_count = await run_ai_exam_batch()
+
+            self.assertEqual(manual_count, 1)
+            self.assertEqual(_read_exam_queue_urls(exam_file), [])
+            self.assertEqual(
+                _read_manual_exam_queue(manual_file),
+                [
+                    {
+                        "url": unknown_url,
+                        "reason": "unknown_url_type",
+                        "reason_text": "未知考试链接类型",
+                        "remaining_attempts": None,
+                        "threshold": None,
+                        "ai_failed_model_configs": [],
+                    }
+                ],
+            )
+
     async def test_run_manual_exam_batch_deletes_manual_exam_file_when_all_processed(self):
         from core.exam_runner import run_manual_exam_batch
 
