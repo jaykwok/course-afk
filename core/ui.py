@@ -8,7 +8,7 @@ import time
 from datetime import datetime
 
 from rich.align import Align
-from rich.box import DOUBLE_EDGE, HEAVY_HEAD, ROUNDED, SIMPLE_HEAVY
+from rich.box import ASCII, DOUBLE_EDGE, HEAVY_HEAD, ROUNDED, SIMPLE_HEAVY
 from rich.console import Console
 from rich.markup import escape
 from rich.panel import Panel
@@ -32,6 +32,22 @@ def _detect_legacy_windows_mode() -> bool | None:
     if sys.platform.startswith("win") and os.environ.get("WT_SESSION"):
         return False
     return None
+
+
+def _is_legacy_windows_console() -> bool:
+    """纯 cmd / conhost（未设置 WT_SESSION）。
+
+    这类控制台搭配 CJK 字体时，box-drawing 字符（╭╮╰╯─│ 等，East Asian Ambiguous）
+    按全角 2 格渲染，而 Rich 按半角 1 格计算，导致表格/面板边框在角落错位断裂。
+    """
+    return sys.platform.startswith("win") and not os.environ.get("WT_SESSION")
+
+
+def _rich_box(default_box):
+    """Rich 表格/面板边框：Windows Terminal 用原花式边框，纯 cmd 退化为 ASCII。"""
+    if _is_legacy_windows_console():
+        return ASCII
+    return default_box
 
 
 console = Console(emoji=False, legacy_windows=_detect_legacy_windows_mode())
@@ -294,7 +310,7 @@ def show_title(title: str, subtitle: str | None = None) -> None:
                 expand=False,
                 border_style="bright_cyan",
                 padding=(1, 6),
-                box=DOUBLE_EDGE,
+                box=_rich_box(DOUBLE_EDGE),
             )
         )
     )
@@ -368,7 +384,7 @@ def build_dashboard_renderable(state: ProjectState, *, expand: bool = False):
 
     table = Table(
         show_header=False,
-        box=ROUNDED,
+        box=_rich_box(ROUNDED),
         border_style="bright_black",
         title="[bold white]当前状态[/bold white]",
         title_style="bold white",
@@ -437,6 +453,7 @@ def build_menu_status_renderable(state: ProjectState):
         title="[bold cyan]账号与任务状态[/bold cyan]",
         border_style="cyan",
         padding=(0, 1),
+        box=_rich_box(ROUNDED),
     )
 
 
@@ -448,7 +465,7 @@ def render_dashboard(state: ProjectState) -> None:
 def show_menu(options: list[str]) -> int:
     table = Table(
         show_header=False,
-        box=HEAVY_HEAD,
+        box=_rich_box(HEAVY_HEAD),
         border_style="bright_black",
         title="[bold white]主菜单[/bold white]",
         title_style="bold white",
@@ -469,7 +486,7 @@ def show_menu(options: list[str]) -> int:
 def prompt_choice(title: str, options: list[str], prompt: str = "请选择") -> int:
     table = Table(
         show_header=False,
-        box=ROUNDED,
+        box=_rich_box(ROUNDED),
         border_style="bright_black",
         title=f"[bold white]{title}[/bold white]",
         title_style="bold white",
@@ -534,7 +551,7 @@ def prompt_multiline_input(
                 instruction,
                 title=f"[bold white]{title}[/bold white]",
                 border_style="cyan",
-                box=ROUNDED,
+                box=_rich_box(ROUNDED),
                 width=76,
                 padding=(1, 2),
             )
@@ -556,7 +573,7 @@ def build_summary_renderable(title: str, rows: list[tuple[str, str]], *, expand:
     """构造汇总渲染对象（CLI 与 TUI 共用）。expand=True 时铺满宽度（TUI 用）。"""
     table = Table(
         show_header=False,
-        box=SIMPLE_HEAVY,
+        box=_rich_box(SIMPLE_HEAVY),
         border_style="bright_black",
         title=f"[bold white]{title}[/bold white]",
         title_style="bold white",
