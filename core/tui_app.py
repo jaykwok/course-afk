@@ -192,7 +192,7 @@ class MultilineScreen(ModalScreen[tuple[str, Any]]):
             Static(instruction_lines, id="ml-instr"),
             TextArea(id="ml-text"),
             Static(
-                "Enter 换行 · Ctrl+Enter 提交 · ESC 返回",
+                "Enter 换行 | Ctrl+Shift+V 粘贴 | Ctrl+Enter 提交 | ESC 返回",
                 id="ml-hint",
             ),
             Horizontal(

@@ -550,7 +550,7 @@ def prompt_multiline_input(
         instruction.append(f"  {index}. ", style="bold cyan")
         instruction.append(f"{message}\n", style="white")
     instruction.append(
-        "\n  按 Enter 换行，输入完成后按 Ctrl+Enter 提交",
+        "\n  按 Enter 换行，Ctrl+Shift+V 粘贴，输入完成后按 Ctrl+Enter 提交",
         style="bold yellow",
     )
     instruction.append("\n  输入过程中可按 ESC 取消并返回主菜单", style="bold yellow")
