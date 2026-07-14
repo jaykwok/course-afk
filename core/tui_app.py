@@ -27,7 +27,6 @@ from textual.screen import ModalScreen
 from textual.theme import Theme
 from textual.widgets import (
     Button,
-    Footer,
     Header,
     LoadingIndicator,
     OptionList,
@@ -37,7 +36,7 @@ from textual.widgets import (
 )
 from textual.widgets.option_list import Option
 
-from core.palette import CYAN, CYAN_BRIGHT, CYAN_DEEP, ERROR, SUCCESS, WARNING
+from core.palette import GREEN, GREEN_BRIGHT, GREEN_DEEP, ERROR, SUCCESS, WARNING
 
 
 # Esc / Ctrl+C 强制取消当前模态提示时使用；桥接层识别后抛
@@ -88,6 +87,16 @@ def _read_windows_clipboard() -> str:
             user32.CloseClipboard()
     except Exception:
         return ""
+
+
+def _format_duration(seconds: int) -> str:
+    """把秒数格式化为 m:ss 或 h:mm:ss，用于进度条「剩余时间」。"""
+    seconds = max(0, int(seconds))
+    hours, remainder = divmod(seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
 
 
 class OptionScreen(ModalScreen[int]):
@@ -331,56 +340,30 @@ class PauseScreen(ModalScreen[None]):
             self.action_continue()
 
 
-class BusyScreen(ModalScreen[None]):
-    """浏览器及后台任务运行期间持续显示的状态界面。"""
-
-    AUTO_FOCUS = ""
-
-    def __init__(self, title: str, message: str) -> None:
-        super().__init__()
-        self._title = title
-        self._message = message
-
-    def compose(self) -> ComposeResult:
-        yield Vertical(
-            Static(self._title, id="busy-title"),
-            LoadingIndicator(id="busy-indicator"),
-            Static(self._message, id="busy-message"),
-            Static("任务执行期间可按 ESC 取消并返回主菜单", id="busy-hint"),
-            id="busy-dialog",
-        )
-
-    def on_mount(self) -> None:
-        self.app.set_main_content_visible(True)
-
-    def update_status(self, message: str) -> None:
-        self.query_one("#busy-message", Static).update(message)
-
-
 # ---------------------------------------------------------------------------
-# 主题：统一为青色调，让「选中焦点 / 焦点边框 / 主按钮」与标题、状态图标的
-# 亮青色一致。Textual 默认 textual-dark 的 primary 是蓝色、accent 是橙色，
-# 与本应用的青色基调冲突，焦点高亮因此显得突兀。
+# 主题：统一为翡翠绿色调，让「选中焦点 / 焦点边框 / 主按钮」与标题、状态图标的
+# 亮绿色一致。Textual 默认 textual-dark 的 primary 是蓝色、accent 是橙色，
+# 与本应用的绿色基调冲突，焦点高亮因此显得突兀。
 #
 # 焦点链路全部由设计令牌派生：菜单光标 = block-cursor-background、
 # 列表/文本框聚焦边框 = border、-primary 按钮 = primary，故改一个主题即可全改。
-# 亮青底配深色字，保证选中项的可读对比度。
+# 亮绿底配深色字，保证选中项的可读对比度。
 # ---------------------------------------------------------------------------
 COURSE_THEME = Theme(
-    name="course-cyan",
-    primary=CYAN,        # 主色：选中高亮 / 焦点边框 / 主按钮
-    secondary=CYAN_DEEP, # 深青：次级层次
-    accent=CYAN_BRIGHT,  # 亮青：仪表盘/日志边框（CSS 里再降到 50~60%）
+    name="course-green",
+    primary=GREEN,        # 主色：选中高亮 / 焦点边框 / 主按钮
+    secondary=GREEN_DEEP, # 深绿：次级层次
+    accent=GREEN_BRIGHT,  # 亮绿：仪表盘/日志边框（CSS 里再降到 50~60%）
     warning=WARNING,
     error=ERROR,
     success=SUCCESS,
     foreground="#E2E8F0",
     dark=True,
     variables={
-        # 亮青底配深色字，保证选中项 / 主按钮文字的对比度
+        # 亮绿底配深色字，保证选中项 / 主按钮文字的对比度
         # （默认 block-cursor-foreground / button-color-foreground 是浅色字，对比不足）
-        "block-cursor-foreground": "#052432",
-        "button-color-foreground": "#052432",
+        "block-cursor-foreground": "#052e26",
+        "button-color-foreground": "#052e26",
         # 聚焦用加粗，不用 reverse：变体按钮(是/否/提交)是亮底深字，
         # reverse 会把它们反转为黑底，看起来像坏掉的光标。
         "button-focus-text-style": "bold",
@@ -397,14 +380,50 @@ class CourseTuiApp(App):
     }
 
     #main {
+        /* 常驻外壳：始终可见。菜单 / 确认 / 结果页是叠在上面的不透明模态，会遮住它；
+           长任务（挂课/考试）期间不弹模态，于是仪表盘 / 进度条 / 活动日志 + 顶部状态条
+           一起作为布局里的若干行平铺显示，互不遮挡。 */
         layout: vertical;
-        visibility: hidden;
+    }
+
+    /* 操作状态条：长任务期间「当前在做什么」常驻顶部一行。它是布局里的一块（不是浮动
+       模态），所以和仪表盘 / 进度条 / 日志各占一行，永远不会互相遮挡或文字叠字。
+       空闲时 display:none 不占位；set_operation_status 时加 .active 显示。 */
+    #status-bar {
+        height: 1;
+        margin: 0 0 1 0;
+        padding: 0 1;
+        display: none;
+    }
+
+    #status-bar.active {
+        display: block;
+    }
+
+    #status-spinner {
+        height: 1;
+        width: 2;
+        margin: 0 1 0 0;
+        color: $accent;
+    }
+
+    #status-text {
+        height: 1;
+        width: 1fr;
+        color: $text;
+    }
+
+    /* 快捷键常驻状态条右侧（顶部、醒目），不再埋在左下角 Footer。 */
+    #status-keys {
+        height: 1;
+        color: $accent;
+        text-style: bold;
     }
 
     #dashboard {
+        /* 不再外加 Textual 边框：内层 Rich Table 自带绿色边框即卡片，避免双框。 */
         height: auto;
         max-height: 16;
-        border: round $accent 60%;
         padding: 0 1;
         margin: 1 0 0 0;
         color: $text;
@@ -425,21 +444,21 @@ class CourseTuiApp(App):
     }
 
     /* ---------- 模态屏 ---------- */
-    OptionScreen, YesNoScreen, MultilineScreen, PauseScreen, BusyScreen {
+    OptionScreen, YesNoScreen, MultilineScreen, PauseScreen {
         align: center middle;
     }
 
-    #opt-dialog, #yn-dialog, #ml-dialog, #pause-dialog, #busy-dialog {
+    #opt-dialog, #yn-dialog, #ml-dialog, #pause-dialog {
         width: 80;
         height: auto;
         max-width: 94%;
         max-height: 96%;
-        border: heavy $primary;
+        border: round $primary;
         background: $panel;
         padding: 1 2;
     }
 
-    #opt-title, #ml-title, #yn-msg, #busy-title {
+    #opt-title, #ml-title, #yn-msg {
         text-style: bold;
         color: $text;
         margin-bottom: 1;
@@ -450,8 +469,7 @@ class CourseTuiApp(App):
         padding-bottom: 1;
     }
 
-    #opt-hint, #yn-hint, #ml-instr, #ml-hint, #pause-msg, #pause-hint,
-    #busy-message, #busy-hint {
+    #opt-hint, #yn-hint, #ml-instr, #ml-hint, #pause-msg, #pause-hint {
         color: $text-muted;
         margin-bottom: 1;
     }
@@ -465,16 +483,6 @@ class CourseTuiApp(App):
         height: 1fr;
         min-height: 3;
         overflow-y: auto;
-        margin-bottom: 1;
-    }
-
-    #busy-dialog {
-        height: auto;
-        max-height: 18;
-    }
-
-    #busy-indicator {
-        height: 3;
         margin-bottom: 1;
     }
 
@@ -548,16 +556,25 @@ class CourseTuiApp(App):
         self._active_prompt_queue: Queue | None = None
         self._active_prompt_screen: ModalScreen | None = None
         self._held_prompt_screen: ModalScreen | None = None
+        # 是否处于长任务中（begin_operation 起、返回主菜单止）。仅在此期间，
+        # show_info/show_success 这类状态更新才会退掉 held 的子提示——避免「退出」
+        # 这种独立 show_success 误伤 held 主菜单。
+        self._operation_active: bool = False
 
     def compose(self) -> ComposeResult:
         yield Header()
         yield Vertical(
+            Horizontal(
+                LoadingIndicator(id="status-spinner"),
+                Static(id="status-text"),
+                Static("ESC 取消  |  Ctrl+C 退出", id="status-keys"),
+                id="status-bar",
+            ),
             Static(id="dashboard"),
             Static(id="progress"),
             RichLog(id="log", markup=True, auto_scroll=True),
             id="main",
         )
-        yield Footer()
 
     def on_mount(self) -> None:
         self.register_theme(COURSE_THEME)
@@ -612,9 +629,45 @@ class CourseTuiApp(App):
         main_content = self.query_one("#main", Vertical)
         main_content.styles.visibility = "visible" if visible else "hidden"
 
+    def set_operation_status(self, title: str, message: str) -> None:
+        """长任务开始：先退掉残留的 held 模态（如刚选完的主菜单 / 结果页），再点亮
+        顶部状态条。held 模态原本要等「下一个模态挂载」才会被原位替换；而长任务现在
+        不再弹模态，若不主动退掉，它会一直盖住 #main（状态条 / 仪表盘 / 日志全看不到）。"""
+        self._operation_active = True
+        self._dismiss_held_modal()
+        label = f"{title} — {message}" if title and message else (title or message)
+        self.query_one("#status-text", Static).update(label)
+        self.query_one("#status-bar").add_class("active")
+
+    def _dismiss_held_modal(self) -> None:
+        """退掉 held 模态（菜单 / 结果页），露出常驻 #main 外壳。"""
+        held = self._held_prompt_screen
+        if held is None:
+            return
+        self._held_prompt_screen = None
+        if self.screen is held:
+            self.pop_screen()
+
     def set_busy_status(self, message: str) -> None:
-        if isinstance(self.screen, BusyScreen):
-            self.screen.update_status(message)
+        """长任务期间持续刷新状态条文本（show_info / success / ... 经此更新当前进度）。
+        仅在「操作中」才顺手退掉 held 模态：推荐流程里 ask_auto_submit 这类「操作中途的
+        是/否」答完后，若不主动退掉，held 提示会一直盖住 #main。独立消息（如「退出」的
+        show_success）不在操作中，不动 held，避免误伤主菜单的 held 帧。"""
+        if self._operation_active:
+            self._dismiss_held_modal()
+        self.query_one("#status-text", Static).update(message)
+        self.query_one("#status-bar").add_class("active")
+
+    def clear_operation_status(self) -> None:
+        """弹出模态（菜单 / 子提示 / 结果页）时收起状态条显示（不动「操作中」标记：
+        子提示并不结束长任务）。"""
+        self.query_one("#status-bar").remove_class("active")
+        self.query_one("#status-text", Static).update("")
+
+    def end_operation(self) -> None:
+        """返回主菜单：长任务真正结束，收起状态条并清除「操作中」标记。"""
+        self._operation_active = False
+        self.clear_operation_status()
 
     def set_title(self, title: str, subtitle: str | None) -> None:
         if title:
@@ -627,15 +680,17 @@ class CourseTuiApp(App):
         ratio = max(0, min(1, completed / total))
         bar_width = 20
         filled = int(ratio * bar_width)
+        remaining = max(0, total - completed)
         from rich.text import Text
 
         # ASCII 进度条：方块字符是 East-Asian ambiguous 宽度，cmd 下会错位；
-        # 已完成用亮青 #、剩余用 dim -，外加方括号。
+        # 已完成用亮青 #、剩余用 dim -，外加方括号；末尾给出剩余挂课时间（对标 CLI 的 ETA）。
         bar = Text()
-        bar.append(f"  {description}  [", style=CYAN)
-        bar.append("#" * filled, style=f"bold {CYAN_BRIGHT}")
+        bar.append(f"  {description}  [", style=GREEN)
+        bar.append("#" * filled, style=f"bold {GREEN_BRIGHT}")
         bar.append("-" * (bar_width - filled), style="dim")
-        bar.append(f"] {completed}/{total}s ({ratio * 100:>3.0f}%)", style=CYAN)
+        bar.append(f"] {completed}/{total}s ({ratio * 100:>3.0f}%)", style=GREEN)
+        bar.append(f"  剩余 {_format_duration(remaining)}", style=f"bold {GREEN_BRIGHT}")
         self.query_one("#progress", Static).update(bar)
 
     def clear_progress(self) -> None:
@@ -674,6 +729,9 @@ class CourseTuiApp(App):
     async def push_prompt(
         self, screen: ModalScreen, *, cancellable: bool = False
     ) -> Queue:
+        # 挂载任何模态（菜单 / 确认 / 结果）前收起操作状态条：模态会遮住 #main，
+        # 状态条无须再显示；下一次 begin_operation 会重新点亮。
+        self.clear_operation_status()
         queue: Queue = Queue()
         previous_screen = self._held_prompt_screen
         self._held_prompt_screen = None
@@ -693,19 +751,6 @@ class CourseTuiApp(App):
         else:
             await self.push_screen(screen)
         return queue
-
-    async def show_busy(self, title: str, message: str) -> None:
-        """原位切换到任务状态页，并保持到结果提示挂载。"""
-        screen = BusyScreen(title, message)
-        previous_screen = self._held_prompt_screen
-        self._active_prompt_queue = None
-        self._active_prompt_screen = None
-        self._cancellable_prompt_queue = None
-        self._held_prompt_screen = screen
-        if previous_screen is not None and self.screen is previous_screen:
-            self.switch_screen(screen)
-        else:
-            await self.push_screen(screen)
 
     def resolve_prompt(self, screen: ModalScreen, result: Any) -> None:
         """提交当前提示结果，但保持画面直到下一个提示完成原位替换。"""

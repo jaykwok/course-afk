@@ -25,7 +25,7 @@ from rich.text import Text
 
 from core.abort import UserCancelRequested
 from core.credential import load_credential_metadata
-from core.palette import CYAN, CYAN_BRIGHT, ERROR, SUCCESS, WARNING
+from core.palette import GREEN, GREEN_BRIGHT, ERROR, SUCCESS, WARNING
 from core.state import ProjectState, recommend_next_step
 
 # 输出图标约定（全 ASCII，cmd/conhost 宽度稳定；CLI 与 TUI 日志一致）。
@@ -295,7 +295,7 @@ def _ask_choice_number(prompt: str, *, min_value: int, max_value: int) -> int:
     choices_text = f" [{min_value}-{max_value}]: "
     while True:
         prompt_text = Text("  ")
-        prompt_text.append(prompt, style=f"bold {CYAN}")
+        prompt_text.append(prompt, style=f"bold {GREEN}")
         prompt_text.append(choices_text, style="dim")
         raw_choice = _read_console_line(prompt_text).strip()
         if raw_choice.isdigit():
@@ -308,7 +308,7 @@ def _ask_choice_number(prompt: str, *, min_value: int, max_value: int) -> int:
 def show_title(title: str, subtitle: str | None = None) -> None:
     console.print()
     title_text = Text(justify="center")
-    title_text.append(title, style=f"bold {CYAN_BRIGHT}")
+    title_text.append(title, style=f"bold {GREEN_BRIGHT}")
     if subtitle:
         title_text.append(f"\n{subtitle}", style="dim white")
     console.print(
@@ -316,7 +316,7 @@ def show_title(title: str, subtitle: str | None = None) -> None:
             Panel(
                 title_text,
                 expand=False,
-                border_style=CYAN_BRIGHT,
+                border_style=GREEN_BRIGHT,
                 padding=(1, 6),
                 box=_rich_box(DOUBLE_EDGE),
             )
@@ -326,7 +326,7 @@ def show_title(title: str, subtitle: str | None = None) -> None:
 
 
 def show_info(message: str) -> None:
-    console.print(f"  [{CYAN}]{ICON_INFO:<3}[/]  {escape(message)}")
+    console.print(f"  [{GREEN}]{ICON_INFO:<3}[/]  {escape(message)}")
 
 
 def show_success(message: str) -> None:
@@ -402,22 +402,34 @@ def build_dashboard_renderable(state: ProjectState, *, expand: bool = False):
     table = Table(
         show_header=False,
         box=_rich_box(ROUNDED),
-        border_style="bright_black",
-        title="[bold white]当前状态[/bold white]",
-        title_style="bold white",
+        border_style=GREEN,
+        title=f"[bold {GREEN_BRIGHT}]当前状态[/]",
+        title_style=f"bold {GREEN_BRIGHT}",
         min_width=54,
         padding=(0, 1),
         expand=expand,
     )
     table.add_column("项目", style="dim white", min_width=10, justify="right", no_wrap=True)
-    table.add_column("值", overflow="fold", min_width=40, ratio=1)
+    table.add_column("值", overflow="fold", min_width=24, ratio=1)
 
     table.add_row("当前账号", Text(account_label, style="bold white"))
     table.add_row("账号有效期", _credential_display(state, metadata))
-    table.add_row("课程链接", _count_display(state.learning_count))
-    table.add_row("挂课失败", _count_display(state.learning_failure_count))
-    table.add_row("考试链接", _count_display(state.exam_count))
-    table.add_row("人工考试", _count_display(state.manual_exam_count))
+
+    counts = Text()
+    for index, (label, count) in enumerate(
+        (
+            ("课程", state.learning_count),
+            ("挂课失败", state.learning_failure_count),
+            ("考试", state.exam_count),
+            ("人工考试", state.manual_exam_count),
+        )
+    ):
+        if index:
+            counts.append("   ", style="dim")
+        counts.append(f"{label} ", style="dim white")
+        counts.append(str(count), style="bold bright_white" if count else "dim")
+    table.add_row("任务数量", counts)
+
     table.add_row(
         "建议操作",
         Text(f"->  {recommended}", style=f"bold {WARNING}"),
@@ -467,8 +479,8 @@ def build_menu_status_renderable(state: ProjectState):
 
     return Panel(
         grid,
-        title=f"[bold {CYAN_BRIGHT}]账号与任务状态[/]",
-        border_style=CYAN,
+        title=f"[bold {GREEN_BRIGHT}]账号与任务状态[/]",
+        border_style=GREEN,
         padding=(0, 1),
         box=_rich_box(ROUNDED),
     )
@@ -483,13 +495,13 @@ def show_menu(options: list[str]) -> int:
     table = Table(
         show_header=False,
         box=_rich_box(HEAVY_HEAD),
-        border_style="bright_black",
-        title="[bold white]主菜单[/bold white]",
-        title_style="bold white",
+        border_style=GREEN,
+        title=f"[bold {GREEN_BRIGHT}]主菜单[/]",
+        title_style=f"bold {GREEN_BRIGHT}",
         min_width=54,
         padding=(0, 1),
     )
-    table.add_column("序号", justify="right", style=f"bold {CYAN}", width=4)
+    table.add_column("序号", justify="right", style=f"bold {GREEN}", width=4)
     table.add_column("功能", min_width=44)
     for index, option in enumerate(options, start=1):
         if index == len(options):
@@ -504,13 +516,13 @@ def prompt_choice(title: str, options: list[str], prompt: str = "请选择") -> 
     table = Table(
         show_header=False,
         box=_rich_box(ROUNDED),
-        border_style="bright_black",
-        title=f"[bold white]{title}[/bold white]",
-        title_style="bold white",
+        border_style=GREEN,
+        title=f"[bold {GREEN_BRIGHT}]{title}[/]",
+        title_style=f"bold {GREEN_BRIGHT}",
         min_width=54,
         padding=(0, 1),
     )
-    table.add_column("序号", justify="right", style=f"bold {CYAN}", width=4)
+    table.add_column("序号", justify="right", style=f"bold {GREEN}", width=4)
     table.add_column("选项", min_width=44)
     for index, option in enumerate(options, start=1):
         table.add_row(str(index), option)
@@ -524,7 +536,7 @@ def prompt_yes_no(message: str, default: str = "N") -> bool:
         normalized_default = "N"
     while True:
         prompt_text = Text("  ")
-        prompt_text.append(message, style=f"bold {CYAN}")
+        prompt_text.append(message, style=f"bold {GREEN}")
         prompt_text.append(f" [Y/N，默认 {normalized_default}]: ", style="dim")
         choice = _read_console_line(prompt_text).strip()
         if not choice:
@@ -555,7 +567,7 @@ def prompt_multiline_input(
 ) -> str:
     instruction = Text()
     for index, message in enumerate(messages, start=1):
-        instruction.append(f"  {index}. ", style=f"bold {CYAN}")
+        instruction.append(f"  {index}. ", style=f"bold {GREEN}")
         instruction.append(f"{message}\n", style="white")
     instruction.append(
         "\n  按 Enter 换行，右键 / Ctrl+V 粘贴，输入完成后按 Ctrl+Enter 提交",
@@ -567,7 +579,7 @@ def prompt_multiline_input(
             Panel(
                 instruction,
                 title=f"[bold white]{title}[/bold white]",
-                border_style=CYAN,
+                border_style=GREEN,
                 box=_rich_box(ROUNDED),
                 width=76,
                 padding=(1, 2),
@@ -591,9 +603,9 @@ def build_summary_renderable(title: str, rows: list[tuple[str, str]], *, expand:
     table = Table(
         show_header=False,
         box=_rich_box(SIMPLE_HEAVY),
-        border_style="bright_black",
-        title=f"[bold white]{title}[/bold white]",
-        title_style="bold white",
+        border_style=GREEN,
+        title=f"[bold {GREEN_BRIGHT}]{title}[/]",
+        title_style=f"bold {GREEN_BRIGHT}",
         min_width=54,
         padding=(0, 1),
         expand=expand,
@@ -647,7 +659,7 @@ async def wait_with_progress(
         SpinnerColumn(spinner_name="dots"),
         TextColumn("[progress.description]{task.description}"),
         BarColumn(bar_width=28),
-        TextColumn(f"[{CYAN}]{{task.completed}}[/][dim]/{{task.total}}s[/dim]"),
+        TextColumn(f"[{GREEN}]{{task.completed}}[/][dim]/{{task.total}}s[/dim]"),
         TextColumn("[dim]([/dim][bold]{task.percentage:>3.0f}%[/bold][dim])[/dim]"),
         TimeRemainingColumn(),
         console=console,

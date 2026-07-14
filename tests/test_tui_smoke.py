@@ -21,7 +21,6 @@ from textual.widgets import Button, OptionList, Static, TextArea
 import core.ui as cli_ui
 from core.abort import UserCancelRequested
 from core.tui_app import (
-    BusyScreen,
     CourseTuiApp,
     MultilineScreen,
     OptionScreen,
@@ -79,19 +78,23 @@ class _PromptApp(CourseTuiApp):
 
 
 class TuiSmokeTests(unittest.TestCase):
-    def test_busy_screen_persists_and_updates_until_result_prompt(self):
-        """浏览器任务期间保持状态页，随后无空档交接到结果提示。"""
+    def test_operation_status_bar_shows_and_updates_until_result_prompt(self):
+        """长任务期间顶部状态条显示并随 show_info 刷新；结果提示挂载时收起。
+        关键：操作期间不再有居中模态遮挡——#main（仪表盘/进度条/日志）平铺可见。"""
 
         async def scenario() -> None:
-            release = threading.Event()
+            gate1 = threading.Event()
+            gate2 = threading.Event()
             outcome = {}
 
             def caller() -> None:
                 try:
                     cli_ui.begin_operation("课程学习", "正在打开浏览器")
-                    outcome["busy_mounted"] = True
-                    release.wait(timeout=8.0)
+                    outcome["status_set"] = True
+                    gate1.wait(timeout=8.0)
                     cli_ui.show_info("正在汇总处理结果")
+                    outcome["info_sent"] = True
+                    gate2.wait(timeout=8.0)
                     cli_ui.pause("处理完成")
                     outcome["done"] = True
                 except BaseException as exc:  # noqa: BLE001
@@ -105,22 +108,42 @@ class TuiSmokeTests(unittest.TestCase):
                 try:
                     async with app.run_test(size=(90, 22)) as pilot:
                         worker.start()
+
+                        # begin_operation 点亮状态条；#main 平铺可见（无遮挡模态）。
                         self.assertTrue(
                             await _wait_for(
-                                lambda: isinstance(app.screen, BusyScreen), pilot
+                                lambda: outcome.get("status_set"), pilot
                             )
                         )
-                        self.assertTrue(outcome.get("busy_mounted"))
-                        self.assertIsNone(app.focused)
-                        release.set()
+                        status_bar = app.query_one("#status-bar")
+                        self.assertIn("active", status_bar.classes)
+                        self.assertIn(
+                            "课程学习",
+                            str(app.query_one("#status-text", Static).render()),
+                        )
+                        self.assertEqual(
+                            app.query_one("#main").styles.visibility, "visible"
+                        )
+                        gate1.set()
 
-                        # BusyScreen 保持到 PauseScreen 原位替换，不能露出底层。
-                        loop = asyncio.get_event_loop()
-                        deadline = loop.time() + 8.0
-                        while not isinstance(app.screen, PauseScreen):
-                            self.assertIsInstance(app.screen, BusyScreen)
-                            self.assertLess(loop.time(), deadline)
-                            await pilot.pause()
+                        # show_info 刷新状态条文本。
+                        self.assertTrue(
+                            await _wait_for(
+                                lambda: outcome.get("info_sent"), pilot
+                            )
+                        )
+                        self.assertIn(
+                            "正在汇总处理结果",
+                            str(app.query_one("#status-text", Static).render()),
+                        )
+                        gate2.set()
+
+                        # 结果提示挂载（push_prompt 已收起状态条）。
+                        self.assertTrue(
+                            await _wait_for(
+                                lambda: isinstance(app.screen, PauseScreen), pilot
+                            )
+                        )
                         await pilot.press("enter")
                         self.assertTrue(
                             await _wait_for(
@@ -128,12 +151,212 @@ class TuiSmokeTests(unittest.TestCase):
                             )
                         )
                 finally:
-                    release.set()
+                    gate1.set()
+                    gate2.set()
                     frontend.restore()
 
             self.assertTrue(outcome.get("done"), outcome)
 
         asyncio.run(asyncio.wait_for(scenario(), timeout=30.0))
+
+    def test_operation_dismisses_held_menu_modal(self):
+        """从主菜单进入长任务时，held 的主菜单模态必须被退掉，露出 #main 外壳。
+
+        回归：重构后 begin_operation 不再弹模态，若不主动退掉选完即 held 的主菜单，
+        它会一直盖住 #main（用户表现为「点了仅挂课，界面无变化」）。"""
+
+        async def scenario() -> None:
+            gate = threading.Event()
+            outcome: dict = {}
+
+            def caller() -> None:
+                try:
+                    outcome["choice"] = cli_ui.show_menu(["仅挂课", "退出"])
+                    cli_ui.begin_operation("课程学习", "正在打开浏览器")
+                    outcome["began"] = True
+                    gate.wait(timeout=8.0)
+                    cli_ui.pause("完成")
+                    outcome["done"] = True
+                except BaseException as exc:  # noqa: BLE001
+                    outcome["error"] = repr(exc)
+
+            worker = threading.Thread(target=caller, daemon=True)
+            with patch("core.config.setup_logging"):
+                app = _PromptApp()
+                frontend = TuiFrontend(app)
+                frontend.install()
+                try:
+                    async with app.run_test(size=(100, 28)) as pilot:
+                        worker.start()
+                        self.assertTrue(
+                            await _wait_for(
+                                lambda: isinstance(app.screen, OptionScreen), pilot
+                            )
+                        )
+                        await pilot.press("enter")  # 选第一项「仅挂课」
+
+                        # begin_operation 必须退掉 held 主菜单，露出 #main + 状态条。
+                        self.assertTrue(
+                            await _wait_for(lambda: outcome.get("began"), pilot)
+                        )
+                        self.assertNotIsInstance(app.screen, OptionScreen)
+                        self.assertIn("active", app.query_one("#status-bar").classes)
+                        gate.set()
+
+                        self.assertTrue(
+                            await _wait_for(
+                                lambda: isinstance(app.screen, PauseScreen), pilot
+                            )
+                        )
+                        await pilot.press("enter")
+                        self.assertTrue(
+                            await _wait_for(
+                                lambda: not worker.is_alive(), pilot, timeout=8.0
+                            )
+                        )
+                finally:
+                    gate.set()
+                    frontend.restore()
+
+            self.assertEqual(outcome.get("choice"), 1)
+            self.assertTrue(outcome.get("done"), outcome)
+
+        asyncio.run(asyncio.wait_for(scenario(), timeout=30.0))
+
+    def test_sub_prompt_during_operation_is_dismissed_on_resume(self):
+        """长任务中途弹出的子提示（如推荐流程的「自动交卷？」）答完后，held 提示必须
+        被退掉、露出 #main——与主菜单进入任务同一个坑的变体。"""
+
+        async def scenario() -> None:
+            gate1 = threading.Event()
+            gate2 = threading.Event()
+            outcome: dict = {}
+
+            def caller() -> None:
+                try:
+                    cli_ui.begin_operation("推荐流程", "正在检查登录状态")
+                    outcome["began"] = True
+                    gate1.wait(timeout=8.0)
+                    outcome["answered"] = cli_ui.prompt_yes_no("自动交卷？", default="N")
+                    cli_ui.show_info("继续处理考试队列")
+                    outcome["resumed"] = True
+                    gate2.wait(timeout=8.0)
+                    cli_ui.pause("完成")
+                    outcome["done"] = True
+                except BaseException as exc:  # noqa: BLE001
+                    outcome["error"] = repr(exc)
+
+            worker = threading.Thread(target=caller, daemon=True)
+            with patch("core.config.setup_logging"):
+                app = _PromptApp()
+                frontend = TuiFrontend(app)
+                frontend.install()
+                try:
+                    async with app.run_test(size=(100, 28)) as pilot:
+                        worker.start()
+                        self.assertTrue(
+                            await _wait_for(lambda: outcome.get("began"), pilot)
+                        )
+                        self.assertIn("active", app.query_one("#status-bar").classes)
+                        gate1.set()
+
+                        # 子提示（是/否）挂载并作答
+                        self.assertTrue(
+                            await _wait_for(
+                                lambda: isinstance(app.screen, YesNoScreen), pilot
+                            )
+                        )
+                        await pilot.press("n")  # 否
+
+                        # show_info 恢复操作 -> 应退掉 held 的子提示
+                        self.assertTrue(
+                            await _wait_for(lambda: outcome.get("resumed"), pilot)
+                        )
+                        self.assertNotIsInstance(app.screen, YesNoScreen)
+                        self.assertIn(
+                            "继续处理",
+                            str(app.query_one("#status-text", Static).render()),
+                        )
+                        gate2.set()
+
+                        self.assertTrue(
+                            await _wait_for(
+                                lambda: isinstance(app.screen, PauseScreen), pilot
+                            )
+                        )
+                        await pilot.press("enter")
+                        self.assertTrue(
+                            await _wait_for(
+                                lambda: not worker.is_alive(), pilot, timeout=8.0
+                            )
+                        )
+                finally:
+                    gate1.set()
+                    gate2.set()
+                    frontend.restore()
+
+            self.assertFalse(outcome.get("answered"))  # 选了「否」
+            self.assertTrue(outcome.get("done"), outcome)
+
+        asyncio.run(asyncio.wait_for(scenario(), timeout=30.0))
+
+    def test_status_message_refreshes_dashboard_counts(self):
+        """每条状态消息后重读队列文件刷新仪表盘：计数随任务完成实时变化。
+        show_info 必须从工作线程调用（与真实桥接一致），call_from_thread 才不会自死锁。"""
+
+        async def scenario() -> None:
+            from core.state import ProjectState
+
+            gate1 = threading.Event()
+            gate2 = threading.Event()
+            outcome: dict = {}
+
+            def caller() -> None:
+                try:
+                    with patch(
+                        "core.state.collect_project_state",
+                        return_value=ProjectState(True, False, 24, 0, 0, 0),
+                    ):
+                        cli_ui.show_info("挂课 1/24: https://x.cn/c/1")
+                    outcome["first"] = True
+                    gate1.wait(timeout=8.0)
+                    with patch(
+                        "core.state.collect_project_state",
+                        return_value=ProjectState(True, False, 23, 0, 0, 0),
+                    ):
+                        cli_ui.show_info("挂课 2/24: https://x.cn/c/2")
+                    outcome["second"] = True
+                    gate2.wait(timeout=8.0)
+                except BaseException as exc:  # noqa: BLE001
+                    outcome["error"] = repr(exc)
+
+            worker = threading.Thread(target=caller, daemon=True)
+            with patch("core.config.setup_logging"):
+                app = _PromptApp()
+                frontend = TuiFrontend(app)
+                frontend.install()
+                try:
+                    async with app.run_test(size=(100, 28)) as pilot:
+                        worker.start()
+                        self.assertTrue(
+                            await _wait_for(lambda: outcome.get("first"), pilot)
+                        )
+                        # 第一条状态后重读队列 -> 仪表盘计数刷新成 24
+                        self.assertEqual(frontend._latest_state.learning_count, 24)
+                        gate1.set()
+                        self.assertTrue(
+                            await _wait_for(lambda: outcome.get("second"), pilot)
+                        )
+                        # 一门完成后队列减一 -> 计数刷新成 23
+                        self.assertEqual(frontend._latest_state.learning_count, 23)
+                        gate2.set()
+                        self.assertNotIn("error", outcome, outcome)
+                finally:
+                    gate1.set()
+                    gate2.set()
+                    frontend.restore()
+
+        asyncio.run(asyncio.wait_for(scenario(), timeout=20.0))
 
     def test_link_confirmation_and_result_summary_screens(self):
         """浏览器前显示分类确认，浏览器后显示单按钮结果页。"""

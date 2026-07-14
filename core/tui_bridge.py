@@ -26,7 +26,7 @@ from textual.widgets import RichLog
 import core.ui as cli_ui
 from core.abort import UserCancelRequested
 from core.config import LOG_FORMAT, _get_console_log_level, setup_logging
-from core.palette import CYAN, ERROR, SUCCESS, WARNING
+from core.palette import GREEN, ERROR, SUCCESS, WARNING
 from core.tui_app import (
     CourseTuiApp,
     MultilineScreen,
@@ -144,35 +144,41 @@ class TuiFrontend:
         self.app.call_from_thread(self.app.set_title, title, subtitle)
 
     def _bridge_show_info(self, message: str) -> None:
+        self._refresh_dashboard()
         self.app.call_from_thread(self.app.set_busy_status, message)
         self.app.call_from_thread(
-            self.app.emit_log, _icon_text(cli_ui.ICON_INFO, message, style=CYAN)
+            self.app.emit_log, _icon_text(cli_ui.ICON_INFO, message, style=GREEN)
         )
 
     def _bridge_show_success(self, message: str) -> None:
+        self._refresh_dashboard()
         self.app.call_from_thread(self.app.set_busy_status, message)
         self.app.call_from_thread(
             self.app.emit_log, _icon_text(cli_ui.ICON_SUCCESS, message, style=SUCCESS)
         )
 
     def _bridge_show_warning(self, message: str) -> None:
+        self._refresh_dashboard()
         self.app.call_from_thread(self.app.set_busy_status, message)
         self.app.call_from_thread(
             self.app.emit_log, _icon_text(cli_ui.ICON_WARNING, message, style=WARNING)
         )
 
     def _bridge_show_error(self, message: str) -> None:
+        self._refresh_dashboard()
         self.app.call_from_thread(self.app.set_busy_status, message)
         self.app.call_from_thread(
             self.app.emit_log, _icon_text(cli_ui.ICON_FAILURE, message, style=ERROR)
         )
 
     def _bridge_begin_operation(self, title: str, message: str) -> None:
-        self.app.call_from_thread(self.app.show_busy, title, message)
+        # 不再弹居中模态：点亮顶部状态条（布局里的一行），让仪表盘/进度条/日志平铺不遮挡。
+        self.app.call_from_thread(self.app.set_operation_status, title, message)
 
     def _bridge_prepare_menu_loading(self) -> None:
-        # 用忙碌状态顶掉持有的结果页，填满“结果页确认 → 主菜单挂载”的间隙。
-        self.app.call_from_thread(self.app.show_busy, "主菜单", "正在加载主菜单…")
+        # 返回主菜单：长任务结束，收起状态条并清除「操作中」标记。
+        # 结果页 held-screen 会保留到主菜单挂载，无空档。
+        self.app.call_from_thread(self.app.end_operation)
 
     def _bridge_show_summary(self, title: str, rows: list[tuple[str, str]]) -> None:
         self.app.call_from_thread(
@@ -183,6 +189,18 @@ class TuiFrontend:
         self._latest_state = state
         self.app.call_from_thread(
             self.app.set_dashboard, cli_ui.build_dashboard_renderable(state, expand=True)
+        )
+
+    def _refresh_dashboard(self) -> None:
+        """重读队列文件刷新仪表盘数字。挂课/考试期间每条状态消息后调用一次：
+        队列文件随每门课完成而更新，于是「课程 N」会跟着实时递减（24→23→…→0）。
+        与状态回调同在工作线程，文件读写无并发问题；读的是小 JSON，开销可忽略。"""
+        from core.state import collect_project_state
+
+        self._latest_state = collect_project_state()
+        self.app.call_from_thread(
+            self.app.set_dashboard,
+            cli_ui.build_dashboard_renderable(self._latest_state, expand=True),
         )
 
     # ---------------- 阻塞提示类（工作线程在 Queue.get 上等待结果）----------------
