@@ -101,6 +101,40 @@ class LinkParsingTests(unittest.TestCase):
             "12345678-1234-1234-1234-123456789abc",
         )
 
+    def test_normalize_url_maps_training_class_business_type(self):
+        raw_url = (
+            "https://kc.zhixueyun.com/app/wechat/#/qrScan?businessType=6&"
+            "businessId=e8d1e9b6-f9cf-4960-bf0f-57cd34dc0ca9&"
+            "organization=f32e65d0-fe3b-40d3-a025-4480a1808746&isThirdUrl=1"
+        )
+
+        self.assertEqual(
+            normalize_url(raw_url),
+            "https://kc.zhixueyun.com/#/train-new/class-detail/"
+            "e8d1e9b6-f9cf-4960-bf0f-57cd34dc0ca9",
+        )
+
+    def test_training_class_link_is_routed_as_manual_entry(self):
+        training_url = (
+            "https://kc.zhixueyun.com/app/wechat/#/qrScan?businessType=6&"
+            "businessId=e8d1e9b6-f9cf-4960-bf0f-57cd34dc0ca9"
+        )
+
+        learning_urls, exam_urls, learning_zone_urls, entry_urls = (
+            split_manual_selection_urls([training_url])
+        )
+
+        self.assertEqual(learning_urls, [])
+        self.assertEqual(exam_urls, [])
+        self.assertEqual(learning_zone_urls, [])
+        self.assertEqual(
+            entry_urls,
+            [
+                "https://kc.zhixueyun.com/#/train-new/class-detail/"
+                "e8d1e9b6-f9cf-4960-bf0f-57cd34dc0ca9"
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

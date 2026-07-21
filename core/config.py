@@ -426,6 +426,7 @@ MYLEARNING_CENTER_HOME = "https://center.mylearning.cn/PC/home"
 MYLEARNING_CENTER_HOME_PATTERN = r"https://center\.mylearning\.cn/PC/home(?:\?.*)?$"
 ZHIXUEYUN_COURSE_PREFIX = "https://kc.zhixueyun.com/#/study/course/detail/"
 ZHIXUEYUN_SUBJECT_PREFIX = "https://kc.zhixueyun.com/#/study/subject/detail/"
+ZHIXUEYUN_TRAIN_CLASS_PREFIX = "https://kc.zhixueyun.com/#/train-new/class-detail/"
 ZHIXUEYUN_EXAM_PREFIX = "https://kc.zhixueyun.com/#/exam/exam/answer-paper/"
 
 # ============================================================
