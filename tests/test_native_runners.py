@@ -101,8 +101,8 @@ class TargetClosedError(Exception):
     """模块级复用：模拟 Playwright 的 TargetClosedError（类名匹配 is_target_closed_exception）。"""
 
 
-class _AfkWorkerPage:
-    """挂课同批复用页：is_closed / close 供 finally 与 _ensure_worker_page 使用。"""
+class _AfkCoursePage:
+    """挂课一门一页：is_closed / close / goto 供 _process_url 使用。"""
 
     def __init__(self):
         self.closed = False
@@ -124,16 +124,9 @@ class _AfkWorkerPage:
         self.closed = True
 
 
-async def _fake_ensure_worker_page(_context, worker_page):
-    """测试用：不碰真实 ensure_controller_page，仅保证有可用工作页。"""
-    if worker_page is not None and not worker_page.is_closed():
-        return worker_page
-    return _AfkWorkerPage()
-
-
-async def _recheck_return_page(_context, page=None):
-    """复查 mock：原样返回工作页，避免 finally 丢引用导致未 close。"""
-    return page
+async def _recheck_noop(_context):
+    """复查 mock：无操作。"""
+    return None
 
 
 class AfkBatchPreparationTests(unittest.TestCase):
@@ -223,14 +216,10 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                 ),
                 patch("core.afk_runner.normalize_urls", side_effect=lambda urls: list(urls or [])),
                 patch("core.afk_runner.is_compliant_url_regex", return_value=True),
-                patch(
-                    "core.afk_runner._ensure_worker_page",
-                    new=AsyncMock(side_effect=_fake_ensure_worker_page),
-                ),
                 patch("core.afk_runner._process_url", new=AsyncMock(return_value=False)),
                 patch(
                     "core.afk_runner._recheck_url_type_links",
-                    new=AsyncMock(side_effect=_recheck_return_page),
+                    new=AsyncMock(side_effect=_recheck_noop),
                 ),
             ):
                 await run_afk_once()
@@ -279,16 +268,12 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                 patch("core.afk_runner.normalize_urls", side_effect=lambda urls: list(urls or [])),
                 patch("core.afk_runner.is_compliant_url_regex", return_value=True),
                 patch(
-                    "core.afk_runner._ensure_worker_page",
-                    new=AsyncMock(side_effect=_fake_ensure_worker_page),
-                ),
-                patch(
                     "core.afk_runner._process_url",
                     new=AsyncMock(side_effect=[True, False]),
                 ),
                 patch(
                     "core.afk_runner._recheck_url_type_links",
-                    new=AsyncMock(side_effect=_recheck_return_page),
+                    new=AsyncMock(side_effect=_recheck_noop),
                 ),
             ):
                 await run_afk_once()
@@ -301,6 +286,12 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
         from core.afk_runner import _process_url
 
         class FakePage:
+            def __init__(self):
+                self.closed = False
+
+            def is_closed(self):
+                return self.closed
+
             async def evaluate(self, _script):
                 return None
 
@@ -311,18 +302,19 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                 return None
 
             async def close(self):
-                return None
+                self.closed = True
+
+        page = FakePage()
 
         class FakeContext:
             async def new_page(self):
-                self.fail("同批应复用 page，不应再 new_page")
+                return page
 
         async def failing_handler(_page):
             raise RuntimeError("boom")
 
         with TemporaryDirectory() as tmp:
             failures_file = Path(tmp) / "failures.json"
-            page = FakePage()
 
             with (
                 patch("core.afk_runner.LEARNING_FAILURES_FILE", failures_file),
@@ -332,10 +324,10 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                     FakeContext(),
                     "https://kc.zhixueyun.com/#/study/course/detail/a",
                     failing_handler,
-                    page,
                 )
 
             self.assertTrue(keep_pending)
+            self.assertTrue(page.closed)
             self.assertEqual(
                 _read_learning_failures(failures_file),
                 [
@@ -348,8 +340,8 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                 ],
             )
 
-    async def test_run_afk_once_reuses_single_worker_page_across_urls(self):
-        """同批连续课程只开一个工作页，靠 goto 切换。"""
+    async def test_run_afk_once_opens_new_page_per_url_and_closes(self):
+        """一门一页：每门 new_page，处理完 close，避免同页 goto 触发 errors 限流。"""
         from core.afk_runner import AfkBatch, run_afk_once
 
         class FakeContext:
@@ -359,7 +351,7 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
 
             async def new_page(self):
                 self.new_page_count += 1
-                page = _AfkWorkerPage()
+                page = _AfkCoursePage()
                 self.pages.append(page)
                 return page
 
@@ -396,14 +388,22 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                 patch("core.afk_runner.course_learning", new=AsyncMock()),
                 patch(
                     "core.afk_runner._recheck_url_type_links",
-                    new=AsyncMock(side_effect=_recheck_return_page),
+                    new=AsyncMock(side_effect=_recheck_noop),
                 ),
             ):
                 await run_afk_once()
 
-        self.assertEqual(context.new_page_count, 1)
-        self.assertEqual(len(context.pages[0].gotos), 3)
-        self.assertTrue(context.pages[0].closed)
+        self.assertEqual(context.new_page_count, 3)
+        self.assertEqual(len(context.pages), 3)
+        self.assertTrue(all(page.closed for page in context.pages))
+        self.assertEqual(
+            [page.gotos for page in context.pages],
+            [
+                ["https://kc.zhixueyun.com/#/study/course/detail/a"],
+                ["https://kc.zhixueyun.com/#/study/course/detail/b"],
+                ["https://kc.zhixueyun.com/#/study/course/detail/c"],
+            ],
+        )
 
     async def test_run_afk_once_saves_current_and_remaining_urls_on_keyboard_interrupt(self):
         from core.abort import UserAbortRequested
@@ -438,10 +438,6 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                 ),
                 patch("core.afk_runner.normalize_urls", side_effect=lambda urls: list(urls or [])),
                 patch("core.afk_runner.is_compliant_url_regex", return_value=True),
-                patch(
-                    "core.afk_runner._ensure_worker_page",
-                    new=AsyncMock(side_effect=_fake_ensure_worker_page),
-                ),
                 patch(
                     "core.afk_runner._process_url",
                     new=AsyncMock(side_effect=[True, KeyboardInterrupt()]),
@@ -505,10 +501,6 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                 ),
                 patch("core.afk_runner.normalize_urls", side_effect=lambda urls: list(urls or [])),
                 patch("core.afk_runner.is_compliant_url_regex", return_value=True),
-                patch(
-                    "core.afk_runner._ensure_worker_page",
-                    new=AsyncMock(side_effect=_fake_ensure_worker_page),
-                ),
                 patch(
                     "core.afk_runner._process_url",
                     new=AsyncMock(
@@ -599,7 +591,7 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                 ),
                 patch(
                     "core.afk_runner._recheck_url_type_links",
-                    new=AsyncMock(side_effect=_recheck_return_page),
+                    new=AsyncMock(side_effect=_recheck_noop),
                 ),
                 patch("core.afk_runner.logging.warning") as mock_warning,
             ):
@@ -685,10 +677,10 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(_read_learning_queue_urls(learning_file), batch.urls)
             mock_warning.assert_not_called()
 
-    async def test_ensure_worker_page_returns_to_menu_when_browser_closed_before_new_page(self):
+    async def test_open_course_page_returns_to_menu_when_browser_closed_before_new_page(self):
         """浏览器在 new_page 阶段被关闭时，应返回主菜单而非裸异常退出。"""
         from core.abort import UserCancelRequested
-        from core.afk_runner import _ensure_worker_page
+        from core.afk_runner import _open_course_page
 
         class FakeBrowser:
             def is_connected(self):
@@ -705,7 +697,7 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
 
         with patch("core.afk_runner.ensure_controller_page", new=AsyncMock()):
             with self.assertRaises(UserCancelRequested) as ctx:
-                await _ensure_worker_page(FakeContext(), None)
+                await _open_course_page(FakeContext())
 
         self.assertIn("返回主菜单", str(ctx.exception))
 
@@ -780,10 +772,6 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                 ),
                 patch("core.afk_runner.normalize_urls", side_effect=lambda urls: list(urls or [])),
                 patch("core.afk_runner.is_compliant_url_regex", return_value=True),
-                patch(
-                    "core.afk_runner._ensure_worker_page",
-                    new=AsyncMock(side_effect=_fake_ensure_worker_page),
-                ),
                 patch(
                     "core.afk_runner._process_url",
                     new=AsyncMock(side_effect=[True, asyncio.CancelledError()]),
