@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -11,6 +12,12 @@ from urllib.parse import urlparse
 from core.browser import create_browser_context
 from core.config import REFERENCE_OUTPUT_DIR
 from core.file_ops import normalize_url
+from core.page_auth import fetch_json, get_authorization_header
+from core.page_overlays import prepare_page_after_navigation_async
+from core.subject_parse import (
+    collect_course_links_from_subject_page,
+    extract_subject_id,
+)
 
 
 GUIDE_STUDY_API = (
@@ -42,11 +49,6 @@ class SectionResource:
     section_type: int | None = None
     guide_study_flag: bool = False
     total_time: int | None = None
-
-
-def extract_subject_id(url: str) -> str | None:
-    match = re.search(r"/study/subject/detail/([0-9a-fA-F-]{36})", normalize_url(url))
-    return match.group(1) if match else None
 
 
 def safe_filename(value: str, *, max_length: int = 120) -> str:
@@ -166,19 +168,33 @@ def collect_section_resources(course_infos: list[dict]) -> list[SectionResource]
     return resources
 
 
-async def _get_authorization_header(page) -> str:
-    return await page.evaluate(
-        """() => {
-            const cookie = (document.cookie.match(/(?:^|; )authorization=([^;]+)/) || [])[1];
-            if (cookie) return decodeURIComponent(cookie);
-            const token = JSON.parse(localStorage.getItem("token") || "{}").access_token;
-            return token ? `Bearer__${token}` : "";
-        }"""
-    )
-
-
 async def _collect_courses_from_subject_page(page, subject_url: str) -> list[SubjectCourse]:
+    """优先 chapter-progress API（与 class 同款鉴权+请求），失败再扫 DOM studyBtn。"""
+    unique: dict[str, SubjectCourse] = {}
+    try:
+        course_links = await collect_course_links_from_subject_page(page, subject_url)
+        for link in course_links:
+            match = re.search(
+                r"/study/course/detail/([0-9a-fA-F-]{36})",
+                link,
+                re.IGNORECASE,
+            )
+            if not match:
+                continue
+            course_id = match.group(1)
+            unique.setdefault(
+                course_id,
+                SubjectCourse(course_id=course_id, title=course_id, topic=""),
+            )
+    except Exception:
+        unique = {}
+
+    if unique:
+        return list(unique.values())
+
+    # DOM 兜底：API 未取到课程时，从页面 studyBtn 提取
     await page.goto(subject_url, wait_until="load")
+    await prepare_page_after_navigation_async(page)
     await page.wait_for_timeout(1500)
     courses = await page.evaluate(
         """() => Array.from(document.querySelectorAll('[id*="studyBtn-"]'))
@@ -192,8 +208,7 @@ async def _collect_courses_from_subject_page(page, subject_url: str) -> list[Sub
             })
             .filter(Boolean)"""
     )
-    unique: dict[str, SubjectCourse] = {}
-    for course in courses:
+    for course in courses or []:
         unique.setdefault(
             course["course_id"],
             SubjectCourse(
@@ -203,14 +218,6 @@ async def _collect_courses_from_subject_page(page, subject_url: str) -> list[Sub
             ),
         )
     return list(unique.values())
-
-
-async def _fetch_json(page, url: str, *, headers: dict[str, str]) -> object:
-    response = await page.context.request.get(url, headers=headers)
-    if not response.ok:
-        body = await response.text()
-        raise RuntimeError(f"请求失败 {response.status}: {body[:200]}")
-    return await response.json()
 
 
 async def _fetch_course_infos(
@@ -230,7 +237,7 @@ async def _fetch_course_infos(
     for index, course in enumerate(courses, start=1):
         if status_callback:
             status_callback(f"正在读取课程详情 {index}/{len(courses)}：{course.title}")
-        data = await _fetch_json(
+        data = await fetch_json(
             page,
             f"{COURSE_INFO_API.format(course_id=course.course_id)}"
             f"?type=6&sourceId={subject_id}",
@@ -259,7 +266,7 @@ async def _download_document_resource(
         "Version": "12.1.1",
         "Accept": "application/json, text/plain, */*",
     }
-    preview = await _fetch_json(
+    preview = await fetch_json(
         page,
         f"{FILE_PREVIEW_API}?id={resource.attachment_id}",
         headers=headers,
@@ -398,7 +405,7 @@ async def collect_reference_materials(
                 courses = await _collect_courses_from_subject_page(page, subject_url)
                 if status_callback:
                     status_callback(f"识别到 {len(courses)} 门课程")
-                auth_header = await _get_authorization_header(page)
+                auth_header = await get_authorization_header(page)
                 course_infos = await _fetch_course_infos(
                     page,
                     courses,

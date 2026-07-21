@@ -377,12 +377,6 @@ def _credential_display(state: ProjectState, metadata) -> Text:
     return Text(f"{ICON_SUCCESS} 有效", style=f"bold {SUCCESS}")
 
 
-def _count_display(count: int) -> Text:
-    if count == 0:
-        return Text("0", style="dim")
-    return Text(str(count), style="bold bright_white")
-
-
 def build_dashboard_renderable(state: ProjectState, *, expand: bool = False):
     """构造仪表盘渲染对象（CLI 与 TUI 共用，避免两处重复实现漂移）。
 

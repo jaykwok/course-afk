@@ -144,6 +144,12 @@ class BrowserControllerPageTests(unittest.IsolatedAsyncioTestCase):
             async def goto(self, url, wait_until="load"):
                 self.goto_calls.append((url, wait_until))
 
+            async def evaluate(self, _script):
+                return None
+
+            async def wait_for_timeout(self, _milliseconds):
+                return None
+
             def is_closed(self):
                 return self.closed
 
@@ -187,6 +193,12 @@ class BrowserControllerPageTests(unittest.IsolatedAsyncioTestCase):
 
             async def goto(self, url, wait_until="load"):
                 self.goto_calls.append((url, wait_until))
+
+            async def evaluate(self, _script):
+                return None
+
+            async def wait_for_timeout(self, _milliseconds):
+                return None
 
             def is_closed(self):
                 return self.closed

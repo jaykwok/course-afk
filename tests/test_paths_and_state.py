@@ -20,23 +20,23 @@ class PathConfigTests(unittest.TestCase):
             str(config.CREDENTIAL_META_FILE).endswith("credential_meta.json")
         )
 
-    def test_core_package_does_not_eagerly_import_learning_module(self):
+    def test_core_package_does_not_eagerly_import_learning_flows(self):
         import core
 
-        sys.modules.pop("core.learning", None)
+        sys.modules.pop("core.learning_flows", None)
         importlib.reload(core)
 
-        self.assertNotIn("core.learning", sys.modules)
+        self.assertNotIn("core.learning_flows", sys.modules)
 
     def test_launcher_controller_does_not_eagerly_import_workflows(self):
         import core.launcher_controller as launcher_controller
 
         sys.modules.pop("core.workflows", None)
-        sys.modules.pop("core.learning", None)
+        sys.modules.pop("core.learning_flows", None)
         importlib.reload(launcher_controller)
 
         self.assertNotIn("core.workflows", sys.modules)
-        self.assertNotIn("core.learning", sys.modules)
+        self.assertNotIn("core.learning_flows", sys.modules)
 
 
 if __name__ == "__main__":

@@ -6,6 +6,71 @@ from unittest.mock import patch
 
 
 class LauncherControllerTests(unittest.TestCase):
+    def test_handle_show_output_state_groups_failures_and_can_requeue(self):
+        from core.launcher_controller import handle_show_output_state
+        from core.learning_queue import (
+            read_learning_failures,
+            read_learning_urls,
+            record_learning_failure,
+            write_learning_urls,
+        )
+
+        class FakeUi:
+            def __init__(self):
+                self.summaries = []
+                self.messages = []
+                self.paused = 0
+
+            def show_summary(self, title, rows):
+                self.summaries.append((title, list(rows)))
+
+            def prompt_yes_no(self, _message, default="N"):
+                return True
+
+            def show_success(self, message):
+                self.messages.append(message)
+
+            def pause(self):
+                self.paused += 1
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            learning = root / "课程链接.json"
+            exam = root / "考试链接.json"
+            manual = root / "人工考试链接.json"
+            failures = root / "挂课失败链接.json"
+            write_learning_urls([], file_path=learning)
+            exam.write_text("[]", encoding="utf-8")
+            manual.write_text("[]", encoding="utf-8")
+            record_learning_failure(
+                "https://kc.zhixueyun.com/#/study/course/detail/"
+                "11111111-1111-1111-1111-111111111111",
+                reason="retryable_error",
+                reason_text="失败",
+                file_path=failures,
+            )
+            record_learning_failure(
+                "https://example.com/x",
+                reason="no_permission",
+                reason_text="无权限",
+                file_path=failures,
+            )
+
+            ui = FakeUi()
+            with patch(
+                "core.config.LEARNING_FAILURES_FILE",
+                failures,
+            ):
+                handle_show_output_state(exam, learning, manual, ui)
+
+            self.assertEqual(ui.paused, 1)
+            self.assertTrue(ui.summaries)
+            labels = [row[0] for row in ui.summaries[0][1]]
+            self.assertIn("失败·可重试错误", labels)
+            self.assertEqual(len(read_learning_urls(file_path=learning)), 1)
+            self.assertEqual(len(read_learning_failures(file_path=failures)), 1)
+            self.assertTrue(any("重新加入" in m for m in ui.messages))
+
     def test_choose_learning_zone_mode_returns_manual_when_no_learning_zone_urls(self):
         from core.launcher_controller import choose_learning_zone_mode
 
@@ -175,6 +240,7 @@ class LauncherControllerTests(unittest.TestCase):
             ui = FakeUi()
             with (
                 patch("core.config.EXAM_URLS_FILE", exam_file),
+                patch("core.config.is_ai_configured", return_value=True),
                 patch(
                     "core.workflows.run_ai_exam_workflow",
                     new=unittest.mock.AsyncMock(return_value=0),
@@ -242,6 +308,7 @@ class LauncherControllerTests(unittest.TestCase):
             ui = FakeUi()
             with (
                 patch("core.config.EXAM_URLS_FILE", exam_file),
+                patch("core.config.is_ai_configured", return_value=True),
                 patch(
                     "core.workflows.run_ai_exam_workflow",
                     new=unittest.mock.AsyncMock(return_value=0),
@@ -294,6 +361,7 @@ class LauncherControllerTests(unittest.TestCase):
             ui = FakeUi()
             with (
                 patch("core.config.EXAM_URLS_FILE", exam_file),
+                patch("core.config.is_ai_configured", return_value=True),
                 patch(
                     "core.workflows.run_ai_exam_workflow",
                     new=unittest.mock.AsyncMock(return_value=0),
@@ -419,6 +487,7 @@ class LauncherControllerTests(unittest.TestCase):
         self.assertEqual(rows["课程 / 主题链接"], "1")
         self.assertEqual(rows["考试链接"], "1")
         self.assertEqual(rows["学习专区链接"], "1")
+        self.assertEqual(rows["培训班链接（自动解析）"], "0")
         self.assertEqual(rows["其他入口链接"], "1")
         self.assertIn("继续处理", message)
         self.assertEqual(default, "Y")
@@ -458,6 +527,8 @@ class LauncherControllerTests(unittest.TestCase):
             "direct_exam_count": 0,
             "learning_zone_url_count": 0,
             "learning_zone_parsed_count": 0,
+            "train_class_url_count": 0,
+            "train_class_parsed_count": 0,
             "entry_url_count": 1,
             "manual_record_count": 2,
             "manual_exam_record_count": 1,

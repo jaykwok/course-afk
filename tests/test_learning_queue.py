@@ -136,6 +136,64 @@ class LearningQueueTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 read_learning_failures(file_path=failures_file)
 
+    def test_group_and_requeue_retryable_learning_failures(self):
+        from core.learning_queue import (
+            group_learning_failures_by_reason,
+            read_learning_failures,
+            read_learning_urls,
+            record_learning_failure,
+            requeue_retryable_learning_failures,
+        )
+
+        with TemporaryDirectory() as tmp:
+            failures_file = Path(tmp) / "failures.json"
+            learning_file = Path(tmp) / "learning.json"
+            learning_file.write_text("[]", encoding="utf-8")
+
+            record_learning_failure(
+                "https://example.com/course/1",
+                reason="retryable_error",
+                reason_text="临时失败",
+                file_path=failures_file,
+            )
+            record_learning_failure(
+                "https://example.com/course/2",
+                reason="no_permission",
+                reason_text="无权限",
+                file_path=failures_file,
+            )
+            record_learning_failure(
+                "https://example.com/course/3",
+                reason="retryable_error",
+                reason_text="又失败",
+                file_path=failures_file,
+            )
+
+            groups = group_learning_failures_by_reason(file_path=failures_file)
+            self.assertEqual(
+                [(reason, count) for reason, count, _label in groups],
+                [("retryable_error", 2), ("no_permission", 1)],
+            )
+
+            requeued = requeue_retryable_learning_failures(
+                failures_file=failures_file,
+                learning_file=learning_file,
+            )
+            self.assertEqual(
+                requeued,
+                [
+                    "https://example.com/course/1",
+                    "https://example.com/course/3",
+                ],
+            )
+            self.assertEqual(
+                read_learning_urls(file_path=learning_file),
+                requeued,
+            )
+            remaining = read_learning_failures(file_path=failures_file)
+            self.assertEqual(len(remaining), 1)
+            self.assertEqual(remaining[0].reason, "no_permission")
+
 
 if __name__ == "__main__":
     unittest.main()

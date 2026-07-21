@@ -6,22 +6,13 @@ from pathlib import Path
 
 from core.config import EXAM_URLS_FILE
 from core.file_ops import del_file, write_text_atomic
+from core.links import unique_urls
 
 
 @dataclass(frozen=True)
 class ExamQueueEntry:
     url: str
     ai_failed_model_configs: list[dict[str, object]]
-
-
-def _unique_clean_strings(values) -> list[str]:
-    return list(
-        dict.fromkeys(
-            value.strip()
-            for value in values
-            if isinstance(value, str) and value.strip()
-        )
-    )
 
 
 def _normalize_model_config(raw_config) -> dict[str, object] | None:
@@ -162,7 +153,7 @@ def append_exam_urls(
     *,
     file_path: Path = EXAM_URLS_FILE,
 ) -> list[str]:
-    normalized_urls = _unique_clean_strings(urls)
+    normalized_urls = unique_urls(urls)
     if not normalized_urls:
         return []
 
@@ -206,7 +197,7 @@ def write_exam_urls(
                 ExamQueueEntry(url=url, ai_failed_model_configs=[]),
             ).ai_failed_model_configs,
         )
-        for url in _unique_clean_strings(urls)
+        for url in unique_urls(urls)
     ]
     write_exam_queue(entries, file_path=file_path, keep_file=keep_file)
 

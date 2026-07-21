@@ -26,6 +26,9 @@ htmlcov/
 build/
 dist/
 
+# Local capture / reverse-engineering experiments (do not upload)
+_capture/
+
 # Generated workflow output files
 课程链接.json
 挂课失败链接.json

@@ -12,9 +12,7 @@ from core.config import (
     MYLEARNING_CENTER_HOME,
     MYLEARNING_CENTER_HOME_PATTERN,
 )
-from core.page_overlays import (
-    dismiss_topmost_overlays_sync,
-)
+from core.page_overlays import prepare_page_after_navigation_sync
 
 
 CENTER_ACCOUNT_PROFILE_SCRIPT = """
@@ -98,7 +96,7 @@ def extract_account_profile_from_sync_context(
             timeout=navigation_timeout,
         )
         page.wait_for_timeout(wait_milliseconds)
-        dismiss_topmost_overlays_sync(page)
+        prepare_page_after_navigation_sync(page)
         profile_data = page.evaluate(CENTER_ACCOUNT_PROFILE_SCRIPT)
         return extract_account_profile(profile_data)
     finally:

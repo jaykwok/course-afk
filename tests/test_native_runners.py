@@ -8,6 +8,8 @@ from tempfile import TemporaryDirectory
 from unittest.mock import AsyncMock, patch
 
 
+
+
 def _model_config(
     model="test-model",
     *,
@@ -99,6 +101,41 @@ class TargetClosedError(Exception):
     """模块级复用：模拟 Playwright 的 TargetClosedError（类名匹配 is_target_closed_exception）。"""
 
 
+class _AfkWorkerPage:
+    """挂课同批复用页：is_closed / close 供 finally 与 _ensure_worker_page 使用。"""
+
+    def __init__(self):
+        self.closed = False
+        self.gotos = []
+
+    def is_closed(self):
+        return self.closed
+
+    async def evaluate(self, _script):
+        return None
+
+    async def wait_for_timeout(self, _milliseconds):
+        return None
+
+    async def goto(self, url, **kwargs):
+        self.gotos.append(url)
+
+    async def close(self):
+        self.closed = True
+
+
+async def _fake_ensure_worker_page(_context, worker_page):
+    """测试用：不碰真实 ensure_controller_page，仅保证有可用工作页。"""
+    if worker_page is not None and not worker_page.is_closed():
+        return worker_page
+    return _AfkWorkerPage()
+
+
+async def _recheck_return_page(_context, page=None):
+    """复查 mock：原样返回工作页，避免 finally 丢引用导致未 close。"""
+    return page
+
+
 class AfkBatchPreparationTests(unittest.TestCase):
     def test_prepare_afk_batch_reads_pending_learning_json_queue(self):
         from core.afk_runner import prepare_afk_batch
@@ -114,12 +151,30 @@ class AfkBatchPreparationTests(unittest.TestCase):
             batch = prepare_afk_batch(
                 learning_file=learning_file,
             )
-
-            self.assertFalse(batch.is_retry)
             self.assertEqual(
                 batch.urls,
                 ["https://a.example.com/1", "https://b.example.com/2"],
             )
+
+    def test_prepare_afk_batch_deduplicates_normalized_urls(self):
+        from core.afk_runner import prepare_afk_batch
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            learning_file = root / "learning.json"
+            course = (
+                "https://kc.zhixueyun.com/#/study/course/detail/"
+                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+            )
+            _write_learning_queue_fixture(
+                learning_file,
+                [course, course + "?x=1", "  " + course + "  ", course],
+            )
+
+            batch = prepare_afk_batch(learning_file=learning_file)
+
+            self.assertEqual(batch.urls, [course])
+            self.assertEqual(_read_learning_queue_urls(learning_file), [course])
 
     def test_prepare_afk_batch_rejects_legacy_text_learning_file(self):
         from core.afk_runner import prepare_afk_batch
@@ -157,7 +212,6 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
             )
             batch = AfkBatch(
                 urls=["https://kc.zhixueyun.com/#/study/course/detail/a"],
-                is_retry=False,
             )
 
             with (
@@ -167,14 +221,19 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                     "core.afk_runner.create_browser_context",
                     return_value=FakeBrowserContextManager(),
                 ),
-                patch("core.afk_runner.normalize_url", side_effect=lambda url: url),
+                patch("core.afk_runner.normalize_urls", side_effect=lambda urls: list(urls or [])),
                 patch("core.afk_runner.is_compliant_url_regex", return_value=True),
+                patch(
+                    "core.afk_runner._ensure_worker_page",
+                    new=AsyncMock(side_effect=_fake_ensure_worker_page),
+                ),
                 patch("core.afk_runner._process_url", new=AsyncMock(return_value=False)),
-                patch("core.afk_runner._recheck_url_type_links", new=AsyncMock()),
+                patch(
+                    "core.afk_runner._recheck_url_type_links",
+                    new=AsyncMock(side_effect=_recheck_return_page),
+                ),
             ):
-                needs_retry = await run_afk_once()
-
-            self.assertFalse(needs_retry)
+                await run_afk_once()
             self.assertTrue(learning_file.exists())
             self.assertEqual(json.loads(learning_file.read_text(encoding="utf-8")), [])
 
@@ -207,7 +266,6 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                     "https://kc.zhixueyun.com/#/study/course/detail/a",
                     "https://kc.zhixueyun.com/#/study/course/detail/b",
                 ],
-                is_retry=False,
             )
 
             with (
@@ -218,14 +276,22 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                     "core.afk_runner.create_browser_context",
                     return_value=FakeBrowserContextManager(),
                 ),
-                patch("core.afk_runner.normalize_url", side_effect=lambda url: url),
+                patch("core.afk_runner.normalize_urls", side_effect=lambda urls: list(urls or [])),
                 patch("core.afk_runner.is_compliant_url_regex", return_value=True),
-                patch("core.afk_runner._process_url", new=AsyncMock(side_effect=[True, False])),
-                patch("core.afk_runner._recheck_url_type_links", new=AsyncMock()),
+                patch(
+                    "core.afk_runner._ensure_worker_page",
+                    new=AsyncMock(side_effect=_fake_ensure_worker_page),
+                ),
+                patch(
+                    "core.afk_runner._process_url",
+                    new=AsyncMock(side_effect=[True, False]),
+                ),
+                patch(
+                    "core.afk_runner._recheck_url_type_links",
+                    new=AsyncMock(side_effect=_recheck_return_page),
+                ),
             ):
-                needs_retry = await run_afk_once()
-
-            self.assertFalse(needs_retry)
+                await run_afk_once()
             self.assertEqual(
                 _read_learning_queue_urls(learning_file),
                 ["https://kc.zhixueyun.com/#/study/course/detail/a"],
@@ -235,7 +301,13 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
         from core.afk_runner import _process_url
 
         class FakePage:
-            async def goto(self, _url):
+            async def evaluate(self, _script):
+                return None
+
+            async def wait_for_timeout(self, _milliseconds):
+                return None
+
+            async def goto(self, _url, **kwargs):
                 return None
 
             async def close(self):
@@ -243,13 +315,14 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
 
         class FakeContext:
             async def new_page(self):
-                return FakePage()
+                self.fail("同批应复用 page，不应再 new_page")
 
         async def failing_handler(_page):
             raise RuntimeError("boom")
 
         with TemporaryDirectory() as tmp:
             failures_file = Path(tmp) / "failures.json"
+            page = FakePage()
 
             with (
                 patch("core.afk_runner.LEARNING_FAILURES_FILE", failures_file),
@@ -259,6 +332,7 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                     FakeContext(),
                     "https://kc.zhixueyun.com/#/study/course/detail/a",
                     failing_handler,
+                    page,
                 )
 
             self.assertTrue(keep_pending)
@@ -273,6 +347,63 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                     }
                 ],
             )
+
+    async def test_run_afk_once_reuses_single_worker_page_across_urls(self):
+        """同批连续课程只开一个工作页，靠 goto 切换。"""
+        from core.afk_runner import AfkBatch, run_afk_once
+
+        class FakeContext:
+            def __init__(self):
+                self.new_page_count = 0
+                self.pages = []
+
+            async def new_page(self):
+                self.new_page_count += 1
+                page = _AfkWorkerPage()
+                self.pages.append(page)
+                return page
+
+        class FakeBrowserContextManager:
+            def __init__(self, context):
+                self.context = context
+
+            async def __aenter__(self):
+                return None, self.context
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        context = FakeContext()
+        with TemporaryDirectory() as tmp:
+            learning_file = Path(tmp) / "learning.json"
+            urls = [
+                "https://kc.zhixueyun.com/#/study/course/detail/a",
+                "https://kc.zhixueyun.com/#/study/course/detail/b",
+                "https://kc.zhixueyun.com/#/study/course/detail/c",
+            ]
+            batch = AfkBatch(urls=urls)
+
+            with (
+                patch("core.afk_runner.LEARNING_URLS_FILE", learning_file),
+                patch("core.afk_runner.prepare_afk_batch", return_value=batch),
+                patch(
+                    "core.afk_runner.create_browser_context",
+                    return_value=FakeBrowserContextManager(context),
+                ),
+                patch("core.afk_runner.normalize_urls", side_effect=lambda urls: list(urls or [])),
+                patch("core.afk_runner.is_compliant_url_regex", return_value=True),
+                patch("core.afk_runner.ensure_controller_page", new=AsyncMock()),
+                patch("core.afk_runner.course_learning", new=AsyncMock()),
+                patch(
+                    "core.afk_runner._recheck_url_type_links",
+                    new=AsyncMock(side_effect=_recheck_return_page),
+                ),
+            ):
+                await run_afk_once()
+
+        self.assertEqual(context.new_page_count, 1)
+        self.assertEqual(len(context.pages[0].gotos), 3)
+        self.assertTrue(context.pages[0].closed)
 
     async def test_run_afk_once_saves_current_and_remaining_urls_on_keyboard_interrupt(self):
         from core.abort import UserAbortRequested
@@ -296,7 +427,6 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                     "https://kc.zhixueyun.com/#/study/course/detail/b",
                     "https://kc.zhixueyun.com/#/study/course/detail/c",
                 ],
-                is_retry=False,
             )
 
             with (
@@ -306,11 +436,15 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                     "core.afk_runner.create_browser_context",
                     return_value=FakeBrowserContextManager(),
                 ),
-                patch("core.afk_runner.normalize_url", side_effect=lambda url: url),
+                patch("core.afk_runner.normalize_urls", side_effect=lambda urls: list(urls or [])),
                 patch("core.afk_runner.is_compliant_url_regex", return_value=True),
                 patch(
+                    "core.afk_runner._ensure_worker_page",
+                    new=AsyncMock(side_effect=_fake_ensure_worker_page),
+                ),
+                patch(
                     "core.afk_runner._process_url",
-                    side_effect=[True, KeyboardInterrupt()],
+                    new=AsyncMock(side_effect=[True, KeyboardInterrupt()]),
                 ),
             ):
                 with self.assertRaises(UserAbortRequested) as ctx:
@@ -360,7 +494,6 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                     "https://kc.zhixueyun.com/#/study/course/detail/b",
                     "https://kc.zhixueyun.com/#/study/course/detail/c",
                 ],
-                is_retry=False,
             )
 
             with (
@@ -370,14 +503,20 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                     "core.afk_runner.create_browser_context",
                     return_value=FakeBrowserContextManager(),
                 ),
-                patch("core.afk_runner.normalize_url", side_effect=lambda url: url),
+                patch("core.afk_runner.normalize_urls", side_effect=lambda urls: list(urls or [])),
                 patch("core.afk_runner.is_compliant_url_regex", return_value=True),
                 patch(
+                    "core.afk_runner._ensure_worker_page",
+                    new=AsyncMock(side_effect=_fake_ensure_worker_page),
+                ),
+                patch(
                     "core.afk_runner._process_url",
-                    side_effect=[
-                        False,
-                        UserAbortRequested("已保存当前和剩余学习链接，程序退出"),
-                    ],
+                    new=AsyncMock(
+                        side_effect=[
+                            False,
+                            UserAbortRequested("已保存当前和剩余学习链接，程序退出"),
+                        ]
+                    ),
                 ),
             ):
                 with self.assertRaises(UserAbortRequested):
@@ -399,6 +538,12 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                 return True
 
         class FakePage:
+            async def evaluate(self, _script):
+                return None
+
+            async def wait_for_timeout(self, _milliseconds):
+                return None
+
             async def goto(self, url, **kwargs):
                 return None
 
@@ -429,7 +574,6 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                     "https://kc.zhixueyun.com/#/study/course/detail/a",
                     "https://kc.zhixueyun.com/#/study/course/detail/b",
                 ],
-                is_retry=False,
             )
 
             with (
@@ -439,8 +583,9 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                     "core.afk_runner.create_browser_context",
                     return_value=FakeBrowserContextManager(),
                 ),
-                patch("core.afk_runner.normalize_url", side_effect=lambda url: url),
+                patch("core.afk_runner.normalize_urls", side_effect=lambda urls: list(urls or [])),
                 patch("core.afk_runner.is_compliant_url_regex", return_value=True),
+                patch("core.afk_runner.ensure_controller_page", new=AsyncMock()),
                 patch(
                     "core.afk_runner.course_learning",
                     new=AsyncMock(
@@ -452,12 +597,13 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                         ]
                     ),
                 ),
-                patch("core.afk_runner._recheck_url_type_links", new=AsyncMock()),
+                patch(
+                    "core.afk_runner._recheck_url_type_links",
+                    new=AsyncMock(side_effect=_recheck_return_page),
+                ),
                 patch("core.afk_runner.logging.warning") as mock_warning,
             ):
-                needs_retry = await run_afk_once()
-
-            self.assertFalse(needs_retry)
+                await run_afk_once()
             self.assertEqual(
                 _read_learning_queue_urls(learning_file),
                 ["https://kc.zhixueyun.com/#/study/course/detail/a"],
@@ -473,6 +619,12 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                 return False
 
         class FakePage:
+            async def evaluate(self, _script):
+                return None
+
+            async def wait_for_timeout(self, _milliseconds):
+                return None
+
             async def goto(self, url, **kwargs):
                 return None
 
@@ -503,7 +655,6 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                     "https://kc.zhixueyun.com/#/study/course/detail/a",
                     "https://kc.zhixueyun.com/#/study/course/detail/b",
                 ],
-                is_retry=False,
             )
 
             with (
@@ -513,8 +664,9 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                     "core.afk_runner.create_browser_context",
                     return_value=FakeBrowserContextManager(),
                 ),
-                patch("core.afk_runner.normalize_url", side_effect=lambda url: url),
+                patch("core.afk_runner.normalize_urls", side_effect=lambda urls: list(urls or [])),
                 patch("core.afk_runner.is_compliant_url_regex", return_value=True),
+                patch("core.afk_runner.ensure_controller_page", new=AsyncMock()),
                 patch(
                     "core.afk_runner.course_learning",
                     new=AsyncMock(
@@ -533,10 +685,10 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(_read_learning_queue_urls(learning_file), batch.urls)
             mock_warning.assert_not_called()
 
-    async def test_process_url_returns_to_menu_when_browser_closed_before_new_page(self):
-        """回归：浏览器在 new_page 阶段被关闭（曾被挡在 try 外导致报错退出）。"""
+    async def test_ensure_worker_page_returns_to_menu_when_browser_closed_before_new_page(self):
+        """浏览器在 new_page 阶段被关闭时，应返回主菜单而非裸异常退出。"""
         from core.abort import UserCancelRequested
-        from core.afk_runner import _process_url
+        from core.afk_runner import _ensure_worker_page
 
         class FakeBrowser:
             def is_connected(self):
@@ -551,21 +703,14 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                     "Target page, context or browser has been closed"
                 )
 
-        async def handler(_page):
-            self.fail("浏览器已关闭，handler 不应被调用")
-
         with patch("core.afk_runner.ensure_controller_page", new=AsyncMock()):
             with self.assertRaises(UserCancelRequested) as ctx:
-                await _process_url(
-                    FakeContext(),
-                    "https://kc.zhixueyun.com/#/study/course/detail/a",
-                    handler,
-                )
+                await _ensure_worker_page(FakeContext(), None)
 
         self.assertIn("返回主菜单", str(ctx.exception))
 
     async def test_run_afk_once_returns_to_menu_when_browser_closed_during_setup(self):
-        """watchdog 未启动阶段（浏览器认证/打开主控页时）被关闭，也返回主菜单。"""
+        """浏览器启动/认证阶段被关闭时，也返回主菜单。"""
         from core.abort import UserCancelRequested
         from core.afk_runner import AfkBatch, run_afk_once
 
@@ -582,7 +727,6 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
             learning_file = Path(tmp) / "learning.json"
             batch = AfkBatch(
                 urls=["https://kc.zhixueyun.com/#/study/course/detail/a"],
-                is_retry=False,
             )
 
             with (
@@ -592,7 +736,7 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                     "core.afk_runner.create_browser_context",
                     return_value=FakeBrowserContextManager(),
                 ),
-                patch("core.afk_runner.normalize_url", side_effect=lambda url: url),
+                patch("core.afk_runner.normalize_urls", side_effect=lambda urls: list(urls or [])),
             ):
                 with self.assertRaises(UserCancelRequested) as ctx:
                     await run_afk_once()
@@ -625,7 +769,6 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                     "https://kc.zhixueyun.com/#/study/course/detail/a",
                     "https://kc.zhixueyun.com/#/study/course/detail/b",
                 ],
-                is_retry=False,
             )
 
             with (
@@ -635,11 +778,15 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                     "core.afk_runner.create_browser_context",
                     return_value=FakeBrowserContextManager(),
                 ),
-                patch("core.afk_runner.normalize_url", side_effect=lambda url: url),
+                patch("core.afk_runner.normalize_urls", side_effect=lambda urls: list(urls or [])),
                 patch("core.afk_runner.is_compliant_url_regex", return_value=True),
                 patch(
+                    "core.afk_runner._ensure_worker_page",
+                    new=AsyncMock(side_effect=_fake_ensure_worker_page),
+                ),
+                patch(
                     "core.afk_runner._process_url",
-                    side_effect=[True, asyncio.CancelledError()],
+                    new=AsyncMock(side_effect=[True, asyncio.CancelledError()]),
                 ),
             ):
                 with self.assertRaises(UserCancelRequested) as ctx:
@@ -713,6 +860,12 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
                 return self._text
 
         class FakePage:
+            async def evaluate(self, _script):
+                return None
+
+            async def wait_for_timeout(self, _milliseconds):
+                return None
+
             def __init__(self):
                 self.url = "https://kc.zhixueyun.com/#/study/course/detail/test-course"
                 self.status_text = "考试中"
@@ -756,6 +909,12 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
                 return self._text
 
         class FakePage:
+            async def evaluate(self, _script):
+                return None
+
+            async def wait_for_timeout(self, _milliseconds):
+                return None
+
             def __init__(self):
                 self.url = "https://kc.zhixueyun.com/#/study/course/detail/test-course"
                 self._exam_button = FakeLocator(count=1, text="继续考试 剩余2次")
@@ -812,7 +971,13 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
         from core.exam_runner import run_ai_exam_batch
 
         class FakePage:
-            async def goto(self, url):
+            async def evaluate(self, _script):
+                return None
+
+            async def wait_for_timeout(self, _milliseconds):
+                return None
+
+            async def goto(self, url, **kwargs):
                 return None
 
             async def wait_for_load_state(self, state):
@@ -863,7 +1028,13 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
         from core.exam_runner import run_ai_exam_batch
 
         class FakePage:
-            async def goto(self, url):
+            async def evaluate(self, _script):
+                return None
+
+            async def wait_for_timeout(self, _milliseconds):
+                return None
+
+            async def goto(self, url, **kwargs):
                 return None
 
             async def wait_for_load_state(self, state):
@@ -942,6 +1113,12 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
                 return self._text
 
         class FakePage:
+            async def evaluate(self, _script):
+                return None
+
+            async def wait_for_timeout(self, _milliseconds):
+                return None
+
             def __init__(self):
                 self.url = "https://kc.zhixueyun.com/#/exam/exam/answer-paper/test-paper"
                 self._locators = {
@@ -1002,6 +1179,12 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
                 return self._text
 
         class FakePage:
+            async def evaluate(self, _script):
+                return None
+
+            async def wait_for_timeout(self, _milliseconds):
+                return None
+
             def __init__(self):
                 self.url = "https://kc.zhixueyun.com/#/exam/exam/answer-paper/test-paper"
                 self._locators = {
@@ -1068,10 +1251,16 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
         from core.exam_runner import run_ai_exam_batch
 
         class FakePage:
+            async def evaluate(self, _script):
+                return None
+
+            async def wait_for_timeout(self, _milliseconds):
+                return None
+
             def __init__(self):
                 self.url = "https://kc.zhixueyun.com/#/exam/exam/answer-paper/test-paper"
 
-            async def goto(self, url):
+            async def goto(self, url, **kwargs):
                 return None
 
             async def wait_for_load_state(self, state):
@@ -1126,7 +1315,13 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
         from core.exam_runner import run_ai_exam_batch
 
         class FakePage:
-            async def goto(self, url):
+            async def evaluate(self, _script):
+                return None
+
+            async def wait_for_timeout(self, _milliseconds):
+                return None
+
+            async def goto(self, url, **kwargs):
                 return None
 
             async def wait_for_load_state(self, state):
@@ -1224,7 +1419,13 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
         from core.exam_runner import run_ai_exam_batch
 
         class FakePage:
-            async def goto(self, url):
+            async def evaluate(self, _script):
+                return None
+
+            async def wait_for_timeout(self, _milliseconds):
+                return None
+
+            async def goto(self, url, **kwargs):
                 return None
 
             async def wait_for_load_state(self, state):
@@ -1279,7 +1480,13 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
                 return True
 
         class FakePage:
-            async def goto(self, url):
+            async def evaluate(self, _script):
+                return None
+
+            async def wait_for_timeout(self, _milliseconds):
+                return None
+
+            async def goto(self, url, **kwargs):
                 return None
 
             async def wait_for_load_state(self, state):
@@ -1353,6 +1560,12 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
                 return self._text
 
         class FakePage:
+            async def evaluate(self, _script):
+                return None
+
+            async def wait_for_timeout(self, _milliseconds):
+                return None
+
             def __init__(self):
                 self.url = "https://kc.zhixueyun.com/#/study/course/detail/test-course"
                 self._locators = {
@@ -1415,6 +1628,12 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
                 return self._text
 
         class FakePage:
+            async def evaluate(self, _script):
+                return None
+
+            async def wait_for_timeout(self, _milliseconds):
+                return None
+
             def __init__(self):
                 self.url = "https://kc.zhixueyun.com/#/study/course/detail/test-course"
                 self._locators = {
@@ -1453,7 +1672,13 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
         from core.exam_runner import run_ai_exam_batch
 
         class FakePage:
-            async def goto(self, url):
+            async def evaluate(self, _script):
+                return None
+
+            async def wait_for_timeout(self, _milliseconds):
+                return None
+
+            async def goto(self, url, **kwargs):
                 return None
 
             async def wait_for_load_state(self, state):
@@ -1512,7 +1737,13 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
         from core.exam_runner import run_manual_exam_batch
 
         class FakePage:
-            async def goto(self, url):
+            async def evaluate(self, _script):
+                return None
+
+            async def wait_for_timeout(self, _milliseconds):
+                return None
+
+            async def goto(self, url, **kwargs):
                 return None
 
             async def wait_for_load_state(self, state):
@@ -1555,7 +1786,13 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
         from core.exam_runner import run_manual_exam_batch
 
         class FakePage:
-            async def goto(self, url):
+            async def evaluate(self, _script):
+                return None
+
+            async def wait_for_timeout(self, _milliseconds):
+                return None
+
+            async def goto(self, url, **kwargs):
                 return None
 
             async def wait_for_load_state(self, state):
@@ -1596,7 +1833,13 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
         from core.exam_runner import run_manual_exam_batch
 
         class FakePage:
-            async def goto(self, url):
+            async def evaluate(self, _script):
+                return None
+
+            async def wait_for_timeout(self, _milliseconds):
+                return None
+
+            async def goto(self, url, **kwargs):
                 return None
 
             async def wait_for_load_state(self, state):

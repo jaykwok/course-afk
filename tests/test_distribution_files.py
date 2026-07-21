@@ -76,6 +76,7 @@ class DistributionFilesTests(unittest.TestCase):
         self.assertIn("挂课失败链接.json", ignored_lines)
         self.assertIn("考试链接.json", ignored_lines)
         self.assertIn("人工考试链接.json", ignored_lines)
+        self.assertIn("_capture/", ignored_lines)
         self.assertNotIn("课程链接.txt", ignored_lines)
         self.assertNotIn("剩余未看课程链接.txt", ignored_lines)
         self.assertNotIn("考试次数超限链接.txt", ignored_lines)

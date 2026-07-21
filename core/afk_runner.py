@@ -12,6 +12,7 @@ from core.browser import (
     create_browser_context,
     ensure_controller_page,
     is_browser_connected,
+    is_page_browser_connected,
     is_target_closed_exception,
 )
 from core.config import (
@@ -21,9 +22,12 @@ from core.config import (
 )
 from core.file_ops import (
     is_compliant_url_regex,
-    normalize_url,
+    is_course_detail_url,
+    is_subject_detail_url,
 )
-from core.learning import course_learning, is_subject_url_completed, subject_learning
+from core.links import normalize_urls
+from core.learning_exam import is_subject_url_completed
+from core.learning_flows import course_learning, subject_learning
 from core.learning_queue import (
     read_learning_failures,
     read_learning_urls,
@@ -31,6 +35,7 @@ from core.learning_queue import (
     remove_learning_failure,
     write_learning_urls,
 )
+from core.page_overlays import goto_and_prepare_async
 
 
 StatusCallback = Callable[[str], None]
@@ -39,7 +44,6 @@ StatusCallback = Callable[[str], None]
 @dataclass
 class AfkBatch:
     urls: list[str]
-    is_retry: bool
 
 
 def _write_learning_queue(urls: list[str], *, learning_file: Path | None = None) -> None:
@@ -49,35 +53,69 @@ def _write_learning_queue(urls: list[str], *, learning_file: Path | None = None)
         write_learning_urls(urls, file_path=learning_file)
 
 
+def _is_page_open(page) -> bool:
+    """工作页是否仍可用（未 close）。"""
+    if page is None:
+        return False
+    is_closed = getattr(page, "is_closed", None)
+    try:
+        if callable(is_closed):
+            return not bool(is_closed())
+    except Exception:
+        return False
+    return True
+
+
 def prepare_afk_batch(
     *,
     learning_file: Path | None = None,
 ) -> AfkBatch:
     if learning_file is None:
         learning_file = LEARNING_URLS_FILE
-    learning_urls = read_learning_urls(file_path=learning_file)
+    learning_urls = normalize_urls(read_learning_urls(file_path=learning_file))
     _write_learning_queue(learning_urls, learning_file=learning_file)
-    return AfkBatch(urls=learning_urls, is_retry=False)
+    return AfkBatch(urls=learning_urls)
 
 
-async def _process_url(context, url: str, handler) -> bool:
-    """处理单条学习链接，返回是否需要保留在待学习队列。"""
-
-    page = None
+async def _ensure_worker_page(context, worker_page):
+    """确保存在可用的挂课工作页；浏览器已关则抛取消。"""
+    await ensure_controller_page(context)
+    if _is_page_open(worker_page):
+        return worker_page
     try:
-        # new_page 也放进 try：浏览器窗口被关闭时这里会抛 TargetClosedError，
-        # 必须一并捕获，否则会直接报错退出。
+        return await context.new_page()
+    except Exception as exc:
+        if is_target_closed_exception(exc):
+            if is_browser_connected(context):
+                # 少见：context 仍在但 new_page 失败，上抛让外层处理
+                raise
+            raise UserCancelRequested(
+                "浏览器窗口已关闭，已保留剩余学习链接，返回主菜单"
+            ) from None
+        raise
+
+
+async def _process_url(context, url: str, handler, page) -> bool:
+    """
+    在已有工作页上处理单条学习链接（goto 复用，不关闭 page）。
+
+    返回是否需要保留在待学习队列。
+    """
+    try:
         await ensure_controller_page(context)
-        page = await context.new_page()
-        await page.goto(url)
+        await goto_and_prepare_async(page, url)
         await handler(page)
         return False
     except Exception as exc:
         if is_target_closed_exception(exc):
-            if is_browser_connected(context):
+            if is_browser_connected(context) and is_page_browser_connected(page):
+                # 页面可能仍在；保守保留链接
                 logging.info(f"当前课程标签页已关闭，保留当前学习链接: {url}")
                 return True
-            # 浏览器窗口被关闭（如网络异常用户主动关掉浏览器）：保留剩余链接，返回主菜单
+            if is_browser_connected(context):
+                # 仅工作页挂了、浏览器还在：保留链接，由调用方重建 page
+                logging.info(f"当前课程标签页已关闭，保留当前学习链接: {url}")
+                return True
             raise UserCancelRequested(
                 "浏览器窗口已关闭，已保留剩余学习链接，返回主菜单"
             ) from None
@@ -98,30 +136,40 @@ async def _process_url(context, url: str, handler) -> bool:
             file_path=LEARNING_FAILURES_FILE,
         )
         return True
-    finally:
-        if page is not None:
-            try:
-                await page.close()
-            except Exception:
-                pass
 
 
-async def _recheck_url_type_links(context) -> None:
+async def _recheck_url_type_links(context, page=None):
+    """
+    复查 url_type_pending；可复用工作页，避免每条新开标签。
+
+    返回当前工作页（供调用方统一关闭）；无待复查时原样返回 page。
+    """
     url_type_links = [
         entry
         for entry in read_learning_failures(file_path=LEARNING_FAILURES_FILE)
         if entry.reason == "url_type_pending"
     ]
     if not url_type_links:
-        return
+        return page
 
+    worker = page
     for entry in url_type_links:
         url = entry.url
-        await ensure_controller_page(context)
-        page = await context.new_page()
         try:
-            await page.goto(url)
-            if await is_subject_url_completed(page):
+            worker = await _ensure_worker_page(context, worker)
+        except UserCancelRequested:
+            raise
+        except Exception as exc:
+            if is_target_closed_exception(exc) and not is_browser_connected(context):
+                raise UserCancelRequested(
+                    "浏览器窗口已关闭，已保留剩余学习链接，返回主菜单"
+                ) from None
+            logging.error(f"复查 URL 类型链接无法打开页面: {exc}")
+            continue
+
+        try:
+            await goto_and_prepare_async(worker, url)
+            if await is_subject_url_completed(worker):
                 logging.info(f"URL类型链接学习完成: {url}")
                 remove_learning_failure(
                     url,
@@ -138,6 +186,10 @@ async def _recheck_url_type_links(context) -> None:
                     file_path=LEARNING_FAILURES_FILE,
                 )
         except Exception as exc:
+            if is_target_closed_exception(exc) and not is_browser_connected(context):
+                raise UserCancelRequested(
+                    "浏览器窗口已关闭，已保留剩余学习链接，返回主菜单"
+                ) from None
             logging.error(f"复查 URL 类型链接失败: {exc}")
             logging.error(traceback.format_exc())
             record_learning_failure(
@@ -147,95 +199,123 @@ async def _recheck_url_type_links(context) -> None:
                 detail=entry.detail,
                 file_path=LEARNING_FAILURES_FILE,
             )
-        finally:
-            try:
-                await page.close()
-            except Exception:
-                pass
+            if not _is_page_open(worker):
+                worker = None
+    return worker
 
 
-async def run_afk_once(status_callback: StatusCallback | None = None) -> bool:
+async def run_afk_once(status_callback: StatusCallback | None = None) -> None:
     batch = prepare_afk_batch()
     if not batch.urls:
         if status_callback:
             status_callback("未检测到可处理的学习链接")
-        return False
+        return
 
-    normalized_urls = list(dict.fromkeys(normalize_url(raw_url.strip()) for raw_url in batch.urls))
+    # prepare 已去重；此处再 normalize 一次以防外部注入 batch
+    normalized_urls = normalize_urls(batch.urls)
     pending_learning_urls = list(normalized_urls)
     _write_learning_queue(pending_learning_urls)
 
     try:
         async with create_browser_context(slow_mo=AFK_SLOW_MO) as (_, context):
-            for index, url in enumerate(normalized_urls, start=1):
-                if status_callback:
-                    status_callback(f"挂课 {index}/{len(normalized_urls)}: {url}")
-                logging.info(f"({index}/{len(normalized_urls)})当前学习链接为: {url}")
-
-                if not is_compliant_url_regex(url):
-                    logging.info("不合规链接，已记录到挂课失败链接")
-                    record_learning_failure(
-                        url,
-                        reason="non_compliant_url",
-                        reason_text="学习链接不符合课程或主题链接格式",
-                        file_path=LEARNING_FAILURES_FILE,
+            # 同批复用一个工作页：连续课/主题只 goto，不反复 new_page/close
+            worker_page = None
+            try:
+                for index, url in enumerate(normalized_urls, start=1):
+                    if status_callback:
+                        status_callback(
+                            f"挂课 {index}/{len(normalized_urls)}: {url}"
+                        )
+                    logging.info(
+                        f"({index}/{len(normalized_urls)})当前学习链接为: {url}"
                     )
-                    if url in pending_learning_urls:
+
+                    if not is_compliant_url_regex(url):
+                        logging.info("不合规链接，已记录到挂课失败链接")
+                        record_learning_failure(
+                            url,
+                            reason="non_compliant_url",
+                            reason_text="学习链接不符合课程或主题链接格式",
+                            file_path=LEARNING_FAILURES_FILE,
+                        )
+                        if url in pending_learning_urls:
+                            pending_learning_urls.remove(url)
+                            _write_learning_queue(pending_learning_urls)
+                        continue
+
+                    if is_subject_detail_url(url) or "/study/subject/detail/" in url:
+                        handler = subject_learning
+                    elif is_course_detail_url(url) or "/study/course/detail/" in url:
+                        handler = course_learning
+                    else:
+                        logging.info(f"无法识别的学习链接类型: {url}")
+                        record_learning_failure(
+                            url,
+                            reason="unknown_learning_type",
+                            reason_text="无法识别该学习链接类型",
+                            file_path=LEARNING_FAILURES_FILE,
+                        )
+                        if url in pending_learning_urls:
+                            pending_learning_urls.remove(url)
+                            _write_learning_queue(pending_learning_urls)
+                        continue
+
+                    try:
+                        worker_page = await _ensure_worker_page(context, worker_page)
+                    except UserCancelRequested:
+                        raise
+                    except Exception as exc:
+                        if is_target_closed_exception(exc):
+                            if not is_browser_connected(context):
+                                raise UserCancelRequested(
+                                    "浏览器窗口已关闭，已保留剩余学习链接，返回主菜单"
+                                ) from None
+                        raise
+
+                    keep_pending = await _process_url(
+                        context, url, handler, worker_page
+                    )
+
+                    # 工作页被关（仅关标签）：下轮新开，当前链保留
+                    if keep_pending and not _is_page_open(worker_page):
+                        worker_page = None
+
+                    if not keep_pending and url in pending_learning_urls:
                         pending_learning_urls.remove(url)
                         _write_learning_queue(pending_learning_urls)
-                    continue
 
-                if "subject" in url:
-                    keep_pending = await _process_url(context, url, subject_learning)
-                elif "course" in url:
-                    keep_pending = await _process_url(context, url, course_learning)
-                else:
-                    logging.info(f"无法识别的学习链接类型: {url}")
-                    record_learning_failure(
-                        url,
-                        reason="unknown_learning_type",
-                        reason_text="无法识别该学习链接类型",
-                        file_path=LEARNING_FAILURES_FILE,
-                    )
-                    if url in pending_learning_urls:
-                        pending_learning_urls.remove(url)
-                        _write_learning_queue(pending_learning_urls)
-                    continue
-
-                if not keep_pending and url in pending_learning_urls:
-                    pending_learning_urls.remove(url)
-                    _write_learning_queue(pending_learning_urls)
-
-            await _recheck_url_type_links(context)
-            _write_learning_queue(pending_learning_urls)
+                worker_page = await _recheck_url_type_links(
+                    context, page=worker_page
+                )
+                _write_learning_queue(pending_learning_urls)
+            finally:
+                if worker_page is not None and _is_page_open(worker_page):
+                    try:
+                        await worker_page.close()
+                    except Exception:
+                        pass
     except BaseException as exc:
         if isinstance(exc, (SystemExit, GeneratorExit)):
-            # 进程退出/生成器退出不应被吞掉，原样上抛
             raise
         if isinstance(exc, asyncio.CancelledError):
-            # TUI Ctrl+C / 任务取消：保存剩余链接，返回主菜单
             _write_learning_queue(pending_learning_urls)
             logging.debug("挂课流程被取消，已保存剩余学习链接，返回主菜单")
             raise UserCancelRequested(
                 "已中断挂课，已保存剩余学习链接，返回主菜单"
             ) from None
         if isinstance(exc, KeyboardInterrupt):
-            # 命令行 Ctrl+C：保存当前和剩余链接，退出
             _write_learning_queue(pending_learning_urls)
             logging.debug("收到 Ctrl+C，已保存当前和剩余学习链接，程序退出")
             raise UserAbortRequested(
                 "已收到 Ctrl+C，已保存当前和剩余学习链接，程序退出"
             ) from None
         if is_target_closed_exception(exc):
-            # 浏览器窗口在启动阶段（认证/打开主控页）或复查阶段被关闭：
-            # 此时 _process_url 的保护还没接管，统一在这里兜底，保留链接并返回主菜单
             _write_learning_queue(pending_learning_urls)
             logging.debug("浏览器窗口已关闭，已保存剩余学习链接，返回主菜单")
             raise UserCancelRequested(
                 "浏览器窗口已关闭，已保留剩余学习链接，返回主菜单"
             ) from None
         if isinstance(exc, UserCancelRequested):
-            # 浏览器关闭等取消：保存剩余链接，返回主菜单
             _write_learning_queue(pending_learning_urls)
             logging.debug("挂课流程被取消，已保存剩余学习链接，返回主菜单")
             raise
@@ -252,8 +332,3 @@ async def run_afk_once(status_callback: StatusCallback | None = None) -> bool:
         raise
 
     logging.info("本轮自动挂课完成")
-    return False
-
-
-async def run_afk_until_complete(status_callback: StatusCallback | None = None) -> None:
-    await run_afk_once(status_callback=status_callback)

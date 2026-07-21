@@ -13,6 +13,7 @@ from core.config import (
     MYLEARNING_HOME,
 )
 from core.file_ops import load_cookies
+from core.page_overlays import prepare_page_after_navigation_async
 
 
 _CONTROLLER_PAGES: dict[int, object] = {}
@@ -194,6 +195,8 @@ async def _open_controller_page(context, *, headless: bool = False):
     page = await context.new_page()
     await maximize_browser_window_for_page(page, headless=headless)
     await page.goto(MYLEARNING_HOME, wait_until="load")
+    # 主控页也常被推广弹窗挡住，先关掉再挂着
+    await prepare_page_after_navigation_async(page)
     return page
 
 
@@ -240,6 +243,14 @@ async def ensure_controller_page(context):
     )
     _remember_controller_page(context, controller_page)
     return controller_page
+
+
+def is_controller_page(context, page) -> bool:
+    """是否为该 context 的常驻主控页（含恢复后的实例）。"""
+    if page is None:
+        return False
+    controller = _CONTROLLER_PAGES.get(id(context))
+    return controller is not None and page is controller
 
 
 def release_controller_page(context) -> None:

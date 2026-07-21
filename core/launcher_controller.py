@@ -23,6 +23,8 @@ def _manual_selection_result_rows(result: dict[str, int]) -> list[tuple[str, str
         ("直接写入的考试链接", str(result["direct_exam_count"])),
         ("学习专区链接数量", str(result["learning_zone_url_count"])),
         ("学习专区自动解析数量", str(result["learning_zone_parsed_count"])),
+        ("培训班链接数量", str(result.get("train_class_url_count", 0))),
+        ("培训班自动解析数量", str(result.get("train_class_parsed_count", 0))),
         ("需要手动打开的入口链接", str(result["entry_url_count"])),
         ("浏览器记录的学习链接", str(result["manual_record_count"])),
         ("浏览器记录的考试链接", str(result["manual_exam_record_count"])),
@@ -209,6 +211,7 @@ def handle_manual_selection(prompts, ui) -> None:
         direct_learning_urls,
         direct_exam_urls,
         learning_zone_urls,
+        train_class_urls,
         entry_urls,
     ) = split_manual_selection_urls(parsed_urls)
     confirmation_rows = [
@@ -216,6 +219,7 @@ def handle_manual_selection(prompts, ui) -> None:
         ("课程 / 主题链接", str(len(direct_learning_urls))),
         ("考试链接", str(len(direct_exam_urls))),
         ("学习专区链接", str(len(learning_zone_urls))),
+        ("培训班链接（自动解析）", str(len(train_class_urls))),
         ("其他入口链接", str(len(entry_urls))),
     ]
     try:
@@ -378,17 +382,46 @@ def handle_reference_collection(ui) -> None:
 
 
 def handle_show_output_state(exam_urls_file, learning_urls_file, manual_exam_file, ui) -> None:
+    from core.config import LEARNING_FAILURES_FILE
     from core.exam_queue import read_exam_urls
-    from core.learning_queue import read_learning_failures, read_learning_urls
+    from core.learning_queue import (
+        group_learning_failures_by_reason,
+        read_learning_failures,
+        read_learning_urls,
+        requeue_retryable_learning_failures,
+        RETRIABLE_LEARNING_FAILURE_REASONS,
+    )
     from core.manual_exam_queue import read_manual_exam_urls
 
-    ui.show_summary(
-        "当前输出文件状态",
-        [
-            ("课程链接", str(len(read_learning_urls(learning_urls_file)))),
-            ("挂课失败链接", str(len(read_learning_failures()))),
-            ("考试链接", str(len(read_exam_urls(exam_urls_file)))),
-            ("人工考试链接", str(len(read_manual_exam_urls(manual_exam_file)))),
-        ],
+    failures_file = LEARNING_FAILURES_FILE
+    failures = read_learning_failures(file_path=failures_file)
+    rows: list[tuple[str, str]] = [
+        ("课程链接", str(len(read_learning_urls(learning_urls_file)))),
+        ("挂课失败链接", str(len(failures))),
+        ("考试链接", str(len(read_exam_urls(exam_urls_file)))),
+        ("人工考试链接", str(len(read_manual_exam_urls(manual_exam_file)))),
+    ]
+    for reason, count, label in group_learning_failures_by_reason(
+        file_path=failures_file
+    ):
+        rows.append((f"失败·{label}", str(count)))
+
+    ui.show_summary("当前输出文件状态", rows)
+
+    retryable_count = sum(
+        1 for entry in failures if entry.reason in RETRIABLE_LEARNING_FAILURE_REASONS
     )
+    if retryable_count > 0 and ui.prompt_yes_no(
+        f"检测到 {retryable_count} 条可重试挂课失败，是否重新加入课程链接？",
+        default="N",
+    ):
+        requeued = requeue_retryable_learning_failures(
+            failures_file=failures_file,
+            learning_file=learning_urls_file,
+        )
+        ui.show_success(
+            f"已将 {len(requeued)} 条可重试失败链接重新加入课程链接"
+            f"（当前课程链接 {len(read_learning_urls(learning_urls_file))} 条）"
+        )
+
     ui.pause()

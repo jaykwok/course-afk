@@ -9,12 +9,12 @@ from core.reference_collector import (
     build_resource_output_name,
     collect_reference_materials,
     decode_preview_bytes,
-    extract_subject_id,
     full_preview_url,
     is_trusted_preview_host,
     render_video_guides_markdown,
     safe_filename,
 )
+from core.subject_parse import extract_subject_id
 
 
 class ReferenceCollectorTests(unittest.IsolatedAsyncioTestCase):
@@ -140,7 +140,7 @@ class ReferenceCollectorTests(unittest.IsolatedAsyncioTestCase):
                     new=AsyncMock(return_value=[object()]),
                 ),
                 patch(
-                    "core.reference_collector._get_authorization_header",
+                    "core.reference_collector.get_authorization_header",
                     new=AsyncMock(return_value="Bearer__token"),
                 ),
                 patch(

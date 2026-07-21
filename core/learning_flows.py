@@ -34,8 +34,56 @@ async def handle_subject_exam_item(learn_item) -> str | None:
     return exam_url
 
 
+async def is_subject_item_completed(learn_item) -> bool:
+    """
+    主题小节是否已学完。
+
+    实勘（subject/detail，含课/考/URL）：
+    - 已完成课程/URL：操作区文案「重新学习」+ `.iconfont.m-right.icon-reload`
+    - 已完成考试：操作区文案「考试记录」+ 同上 reload 图标；
+      `span.finished-status` 常见「已完成」「成绩：xx」
+    - 未完成：操作区「开始学习」/「继续学习」（无 reload 图标）
+
+    优先看 reload 图标；再兜底操作文案与 finished-status。
+    """
+    if await learn_item.locator(".iconfont.m-right.icon-reload").count() > 0:
+        return True
+
+    try:
+        status_texts = [
+            status.strip()
+            for status in await learn_item.locator(
+                "span.finished-status"
+            ).all_inner_texts()
+            if status.strip()
+        ]
+        if any("已完成" in status for status in status_texts):
+            return True
+    except Exception:
+        pass
+
+    operation = learn_item.locator(".inline-block.operation")
+    try:
+        if await operation.count() == 0:
+            return False
+        text = (await operation.inner_text() or "").replace("\n", " ").strip()
+    except Exception:
+        return False
+    # 课程/URL 完成；考试完成显示「考试记录」而非「重新学习」
+    return "重新学习" in text or "考试记录" in text
+
+
 async def subject_learning(page):
-    """主题内容学习"""
+    """
+    主题内容学习（DOM 文案分流：课程 / URL / 考试 / 调研…）。
+
+    注意：主题页 section-type 文案与课程内 data-sectiontype 数字是两套体系，
+    切勿混用。主题 API 侧（chapter-progress）见 core.subject_parse：
+    10=课、9=考、3=外链 URL。
+
+    已学完小节（「重新学习」）直接跳过；残留主题走 DOM 时，先前已挂完的课/考
+    通常已是「重新学习」，不会二次全挂。
+    """
     await page.wait_for_load_state("networkidle")
 
     if not await check_permission(page.main_frame):
@@ -49,7 +97,8 @@ async def subject_learning(page):
 
     for i in range(learn_count):
         learn_item = learn_locator.nth(i)
-        if await learn_item.locator(".iconfont.m-right.icon-reload").count() > 0:
+        if await is_subject_item_completed(learn_item):
+            logging.info("主题小节已完成（重新学习），跳过")
             continue
 
         section_type = await learn_item.locator(".section-type").inner_text()
@@ -170,6 +219,8 @@ async def course_learning(page_detail, learn_item=None):
         logging.info("所有章节已学习完毕, 跳过该课程")
         return
 
+    # 课程内 data-sectiontype（与主题 chapter-progress 的 sectionType 数字含义不同）:
+    # 1/2/3=文档网页, 4=H5, 5/6=视频, 9=课程内考试。主题外链 URL 的 API 类型 3 不在此列。
     has_failed_box = False
     for count in range(chapter_count):
         box = chapter_locator.nth(count)

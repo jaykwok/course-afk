@@ -134,5 +134,97 @@ class SubjectLearningFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(page.closed for page in popup_pages))
 
 
+class SubjectItemCompletedTests(unittest.IsolatedAsyncioTestCase):
+    async def test_completed_by_reload_icon(self):
+        from core.learning_flows import is_subject_item_completed
+
+        class Loc:
+            def __init__(self, *, count_value=0, texts=None, inner=""):
+                self._count = count_value
+                self._texts = texts or []
+                self._inner = inner
+
+            async def count(self):
+                return self._count
+
+            async def all_inner_texts(self):
+                return list(self._texts)
+
+            async def inner_text(self):
+                return self._inner
+
+        class Item:
+            def locator(self, selector):
+                if selector == ".iconfont.m-right.icon-reload":
+                    return Loc(count_value=1)
+                if selector == "span.finished-status":
+                    return Loc(texts=[])
+                if selector == ".inline-block.operation":
+                    return Loc(count_value=1, inner="重新学习")
+                raise AssertionError(selector)
+
+        self.assertTrue(await is_subject_item_completed(Item()))
+
+    async def test_completed_exam_by_record_text_without_reload(self):
+        from core.learning_flows import is_subject_item_completed
+
+        class Loc:
+            def __init__(self, *, count_value=0, texts=None, inner=""):
+                self._count = count_value
+                self._texts = texts or []
+                self._inner = inner
+
+            async def count(self):
+                return self._count
+
+            async def all_inner_texts(self):
+                return list(self._texts)
+
+            async def inner_text(self):
+                return self._inner
+
+        class Item:
+            def locator(self, selector):
+                if selector == ".iconfont.m-right.icon-reload":
+                    return Loc(count_value=0)
+                if selector == "span.finished-status":
+                    return Loc(texts=["成绩：80", "已完成"])
+                if selector == ".inline-block.operation":
+                    return Loc(count_value=1, inner="考试记录")
+                raise AssertionError(selector)
+
+        self.assertTrue(await is_subject_item_completed(Item()))
+
+    async def test_incomplete_start_learning(self):
+        from core.learning_flows import is_subject_item_completed
+
+        class Loc:
+            def __init__(self, *, count_value=0, texts=None, inner=""):
+                self._count = count_value
+                self._texts = texts or []
+                self._inner = inner
+
+            async def count(self):
+                return self._count
+
+            async def all_inner_texts(self):
+                return list(self._texts)
+
+            async def inner_text(self):
+                return self._inner
+
+        class Item:
+            def locator(self, selector):
+                if selector == ".iconfont.m-right.icon-reload":
+                    return Loc(count_value=0)
+                if selector == "span.finished-status":
+                    return Loc(texts=[])
+                if selector == ".inline-block.operation":
+                    return Loc(count_value=1, inner="开始学习")
+                raise AssertionError(selector)
+
+        self.assertFalse(await is_subject_item_completed(Item()))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -145,7 +145,13 @@ async def timer(
 
 
 async def get_course_url(learn_item, section_type="course"):
-    """根据学习项构造课程或考试URL"""
+    """
+    根据学习项 DOM 构造课程或考试 URL。
+
+    考试：data-resource-id 对应试卷 UUID（与主题 chapter-progress sectionType=9
+    的 resourceId 一致，写入 answer-paper；勿用主题小节 id）。
+    课程：data-resource-id / 课程详情 id。
+    """
     course_id = await learn_item.get_attribute("data-resource-id")
     if section_type == "exam":
         prefix = ZHIXUEYUN_EXAM_PREFIX

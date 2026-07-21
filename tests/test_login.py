@@ -42,6 +42,12 @@ class FakeLoginPage:
             raise TargetClosedError("Target page, context or browser has been closed")
         return None
 
+    def evaluate(self, _script):
+        return None
+
+    def wait_for_timeout(self, _milliseconds):
+        return None
+
     def locator(self, _selector):
         return self.frame
 

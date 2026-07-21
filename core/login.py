@@ -26,6 +26,7 @@ from core.credential import (
     extract_account_profile_from_sync_context,
     save_credential_metadata,
 )
+from core.page_overlays import prepare_page_after_navigation_sync
 
 
 def _clear_readonly(path) -> None:
@@ -180,6 +181,8 @@ def login_and_save_credential() -> AccountProfile:
             )
 
             page.wait_for_url(MYLEARNING_HOME, timeout=0)
+            # 登录回首页后常有推广弹窗，先关掉再读个人中心/写 cookies
+            prepare_page_after_navigation_sync(page)
             # 防止网盘同步等外部工具把 cookies.json 设为只读，导致覆盖写入时 PermissionError。
             # 注意：Path.chmod 在 Windows 上对权限位基本无效，改用 os.chmod 清除只读位。
             if COOKIES_FILE.exists():

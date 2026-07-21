@@ -5,7 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from core.config import LEARNING_FAILURES_FILE, LEARNING_URLS_FILE
-from core.file_ops import del_file, write_text_atomic
+from core.file_ops import del_file, normalize_text, write_text_atomic
+from core.links import unique_urls
 
 
 @dataclass(frozen=True)
@@ -21,22 +22,8 @@ class LearningFailureEntry:
     detail: dict[str, object]
 
 
-def _normalize_text(value) -> str:
-    return str(value or "").strip()
-
-
 def _normalize_detail(value) -> dict[str, object]:
     return value if isinstance(value, dict) else {}
-
-
-def _unique_clean_strings(values) -> list[str]:
-    return list(
-        dict.fromkeys(
-            value.strip()
-            for value in values
-            if isinstance(value, str) and value.strip()
-        )
-    )
 
 
 def _normalize_queue_entries(raw_entries) -> list[LearningQueueEntry]:
@@ -46,7 +33,7 @@ def _normalize_queue_entries(raw_entries) -> list[LearningQueueEntry]:
     entries_by_url: dict[str, LearningQueueEntry] = {}
     for raw_entry in raw_entries:
         if isinstance(raw_entry, dict):
-            url = _normalize_text(raw_entry.get("url"))
+            url = normalize_text(raw_entry.get("url"))
         else:
             url = ""
         if url:
@@ -62,9 +49,9 @@ def _normalize_failure_entry(raw_entry) -> LearningFailureEntry | None:
     if not isinstance(raw_entry, dict):
         return None
 
-    url = _normalize_text(raw_entry.get("url"))
-    reason = _normalize_text(raw_entry.get("reason"))
-    reason_text = _normalize_text(raw_entry.get("reason_text"))
+    url = normalize_text(raw_entry.get("url"))
+    reason = normalize_text(raw_entry.get("reason"))
+    reason_text = normalize_text(raw_entry.get("reason_text"))
     if not url or not reason:
         return None
 
@@ -136,7 +123,7 @@ def write_learning_queue(
 
 
 def append_learning_url(url: str, *, file_path: Path = LEARNING_URLS_FILE) -> bool:
-    normalized_url = _normalize_text(url)
+    normalized_url = normalize_text(url)
     if not normalized_url:
         return False
 
@@ -157,7 +144,7 @@ def append_learning_urls(
     entries = read_learning_queue(file_path=file_path)
     existing = {entry.url for entry in entries}
     added: list[str] = []
-    for url in _unique_clean_strings(urls):
+    for url in unique_urls(urls):
         if url in existing:
             continue
         entries.append(LearningQueueEntry(url=url))
@@ -183,7 +170,7 @@ def write_learning_urls(
     file_path: Path = LEARNING_URLS_FILE,
     keep_file: bool = True,
 ) -> None:
-    entries = [LearningQueueEntry(url=url) for url in _unique_clean_strings(urls)]
+    entries = [LearningQueueEntry(url=url) for url in unique_urls(urls)]
     write_learning_queue(entries, file_path=file_path, keep_file=keep_file)
 
 
@@ -230,15 +217,15 @@ def record_learning_failure(
     detail: dict[str, object] | None = None,
     file_path: Path = LEARNING_FAILURES_FILE,
 ) -> None:
-    normalized_url = _normalize_text(url)
-    normalized_reason = _normalize_text(reason)
+    normalized_url = normalize_text(url)
+    normalized_reason = normalize_text(reason)
     if not normalized_url or not normalized_reason:
         return
 
     incoming = LearningFailureEntry(
         url=normalized_url,
         reason=normalized_reason,
-        reason_text=_normalize_text(reason_text),
+        reason_text=normalize_text(reason_text),
         detail=_normalize_detail(detail),
     )
     entries = read_learning_failures(file_path=file_path)
@@ -259,7 +246,7 @@ def remove_learning_failure(
     file_path: Path = LEARNING_FAILURES_FILE,
     keep_file: bool = True,
 ) -> None:
-    normalized_url = _normalize_text(url)
+    normalized_url = normalize_text(url)
     if not normalized_url:
         return
 
@@ -273,3 +260,78 @@ def remove_learning_failure(
 
 def count_learning_failures(file_path: Path = LEARNING_FAILURES_FILE) -> int:
     return len(read_learning_failures(file_path=file_path))
+
+
+# 可重新入队学习队列的失败原因（无权限/不合规/待复查等不自动重试）
+RETRIABLE_LEARNING_FAILURE_REASONS: frozenset[str] = frozenset(
+    {
+        "retryable_error",
+    }
+)
+
+# 展示用：reason → 中文说明
+LEARNING_FAILURE_REASON_LABELS: dict[str, str] = {
+    "retryable_error": "可重试错误",
+    "no_permission": "无权限",
+    "non_compliant_url": "不合规链接",
+    "unknown_learning_type": "未知类型",
+    "url_type_pending": "URL 待复查",
+    "survey_manual_required": "调研需人工",
+    "other_learning_type": "其它类型",
+}
+
+
+def group_learning_failures_by_reason(
+    file_path: Path = LEARNING_FAILURES_FILE,
+) -> list[tuple[str, int, str]]:
+    """
+    按 reason 分组统计失败条目。
+
+    返回 [(reason, count, label), ...]，按数量降序、reason 升序。
+    """
+    counts: dict[str, int] = {}
+    for entry in read_learning_failures(file_path=file_path):
+        counts[entry.reason] = counts.get(entry.reason, 0) + 1
+    rows = [
+        (
+            reason,
+            count,
+            LEARNING_FAILURE_REASON_LABELS.get(reason, reason),
+        )
+        for reason, count in counts.items()
+    ]
+    rows.sort(key=lambda item: (-item[1], item[0]))
+    return rows
+
+
+def requeue_retryable_learning_failures(
+    *,
+    failures_file: Path = LEARNING_FAILURES_FILE,
+    learning_file: Path = LEARNING_URLS_FILE,
+    reasons: frozenset[str] | None = None,
+) -> list[str]:
+    """
+    将可重试失败链接重新写入学习队列，并从失败队列移除。
+
+    默认仅 retryable_error。返回从失败队列移出并尝试入队的 URL（去重保序）。
+    """
+    allowed = reasons if reasons is not None else RETRIABLE_LEARNING_FAILURE_REASONS
+    failures = read_learning_failures(file_path=failures_file)
+    if not failures:
+        return []
+
+    requeue_urls: list[str] = []
+    remaining: list[LearningFailureEntry] = []
+    for entry in failures:
+        if entry.reason in allowed and entry.url:
+            requeue_urls.append(entry.url)
+        else:
+            remaining.append(entry)
+
+    unique_requeue = unique_urls(requeue_urls)
+    if not unique_requeue:
+        return []
+
+    append_learning_urls(unique_requeue, file_path=learning_file)
+    write_learning_failures(remaining, file_path=failures_file, keep_file=True)
+    return unique_requeue

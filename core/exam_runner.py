@@ -33,15 +33,14 @@ from core.exam_queue import (
     record_ai_failed_model_config,
     write_exam_urls,
 )
-from core.learning import check_exam_passed, handle_rating_popup
+from core.learning_exam import check_exam_passed
+from core.learning_popups import handle_rating_popup
 from core.manual_exam_queue import (
     ManualExamEntry,
     append_manual_exam_entry,
     read_manual_exam_queue,
     write_manual_exam_queue,
 )
-
-
 StatusCallback = Callable[[str], None]
 
 COURSE_EXAM_BUTTON = ".btn.new-radius"
@@ -210,6 +209,7 @@ async def _open_course_exam_tab(page) -> None:
 
 
 async def _handle_exam_result(page) -> None:
+    # 考试结果页勿跑通用顶层关闭：交卷确认/结果弹窗可能被误关
     await page.reload(wait_until="load")
     await page.wait_for_timeout(1500)
     if await handle_rating_popup(page):
@@ -379,6 +379,7 @@ async def run_ai_exam_batch(
                     if status_callback:
                         status_callback(f"AI 考试 {index}/{len(urls)}: {url}")
                     logging.info(f"当前考试链接为: {url}")
+                    # 考试全流程不接入通用顶层弹窗关闭，避免误关交卷/提示框
                     await page.goto(url)
                     await page.wait_for_load_state("load")
 
@@ -491,6 +492,7 @@ async def _run_manual_course_exam(page, url: str) -> None:
             logging.info(f"开始手动课程考试: {url}")
             await _wait_for_manual_course_test(page)
 
+        # 考试结果 reload 后同样不跑通用关闭
         await page.reload(wait_until="load")
         await page.wait_for_timeout(1500)
         if await handle_rating_popup(page):

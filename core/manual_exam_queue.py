@@ -6,7 +6,7 @@ from pathlib import Path
 
 from core.config import MANUAL_EXAM_FILE
 from core.exam_queue import normalize_model_config, unique_model_configs
-from core.file_ops import del_file, write_text_atomic
+from core.file_ops import del_file, normalize_optional_text, write_text_atomic
 
 
 @dataclass(frozen=True)
@@ -28,13 +28,6 @@ def _normalize_int(value) -> int | None:
         return None
 
 
-def _normalize_text(value) -> str | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    return text or None
-
-
 def _normalize_entry(raw_entry) -> ManualExamEntry | None:
     if not isinstance(raw_entry, dict):
         return None
@@ -45,8 +38,8 @@ def _normalize_entry(raw_entry) -> ManualExamEntry | None:
 
     return ManualExamEntry(
         url=url,
-        reason=_normalize_text(raw_entry.get("reason")),
-        reason_text=_normalize_text(raw_entry.get("reason_text")),
+        reason=normalize_optional_text(raw_entry.get("reason")),
+        reason_text=normalize_optional_text(raw_entry.get("reason_text")),
         remaining_attempts=_normalize_int(raw_entry.get("remaining_attempts")),
         threshold=_normalize_int(raw_entry.get("threshold")),
         ai_failed_model_configs=unique_model_configs(
