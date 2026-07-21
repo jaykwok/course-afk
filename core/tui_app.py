@@ -20,6 +20,7 @@ import threading
 from queue import Queue
 from typing import Any
 
+from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
@@ -36,6 +37,12 @@ from textual.widgets import (
 )
 from textual.widgets.option_list import Option
 
+from core.menu_keys import (
+    ensure_menu_option_count,
+    menu_key_for_index,
+    menu_keys_hint,
+    parse_menu_key,
+)
 from core.palette import GREEN, GREEN_BRIGHT, GREEN_DEEP, ERROR, SUCCESS, WARNING
 
 
@@ -102,11 +109,17 @@ def _format_duration(seconds: int) -> str:
 class OptionScreen(ModalScreen[int]):
     """菜单 / 多选一。提交值为 1-based 序号。
 
-    交互：方向键移动高亮、回车选中，或鼠标直接点击选项即可（不需要单独的确认按钮）。
-    提示文字避免 ↑↓ 等 East-Asian ambiguous 宽度字符，防止某些控制台字体下错位。
+    交互：数字键 1-9/0 直接选中、方向键移动高亮、回车或鼠标点击确认。
+    每页最多 10 项；第 10 项键位为 0。提示文字避免 ↑↓ 等 ambiguous 宽度字符。
     """
 
     AUTO_FOCUS = "#opt-list"
+
+    # 数字快捷键优先于 OptionList 的首字母搜索，否则按 1 只会高亮「1. …」不确认。
+    BINDINGS = [
+        Binding(str(digit), f"pick_{digit}", show=False, priority=True)
+        for digit in "1234567890"
+    ]
 
     def __init__(
         self,
@@ -117,24 +130,30 @@ class OptionScreen(ModalScreen[int]):
     ) -> None:
         super().__init__()
         self._title = title
-        self._options = options
+        self._options = list(options)
+        ensure_menu_option_count(len(self._options))
         self._prompt = prompt
         self._status_renderable = status_renderable
 
     def compose(self) -> ComposeResult:
         escape_hint = "ESC 退出" if self._status_renderable is not None else "ESC 返回"
+        total = len(self._options)
+        keys_hint = menu_keys_hint(total)
         content = [Static(self._title, id="opt-title")]
         if self._status_renderable is not None:
             content.append(Static(self._status_renderable, id="opt-status"))
         content.extend(
             (
                 Static(
-                    f"{self._prompt}（方向键移动，回车或点击确认 | {escape_hint}）",
+                    f"{self._prompt}（数字键 {keys_hint} 直选 | 方向键移动，回车或点击确认 | {escape_hint}）",
                     id="opt-hint",
                 ),
                 OptionList(
                     *(
-                        Option(f"{idx}. {opt}", id=str(idx))
+                        Option(
+                            f"{menu_key_for_index(idx, total)}. {opt}",
+                            id=f"opt-{idx}",
+                        )
                         for idx, opt in enumerate(self._options, start=1)
                     ),
                     id="opt-list",
@@ -149,6 +168,51 @@ class OptionScreen(ModalScreen[int]):
     def on_mount(self) -> None:
         # 等模态层挂载完成后再显示底层内容，避免切换时漏出日志或账号卡片。
         self.app.set_main_content_visible(True)
+
+    def _pick_digit(self, digit: str) -> None:
+        choice = parse_menu_key(digit, len(self._options))
+        if choice is not None:
+            self.app.resolve_prompt(self, choice)
+
+    def action_pick_1(self) -> None:
+        self._pick_digit("1")
+
+    def action_pick_2(self) -> None:
+        self._pick_digit("2")
+
+    def action_pick_3(self) -> None:
+        self._pick_digit("3")
+
+    def action_pick_4(self) -> None:
+        self._pick_digit("4")
+
+    def action_pick_5(self) -> None:
+        self._pick_digit("5")
+
+    def action_pick_6(self) -> None:
+        self._pick_digit("6")
+
+    def action_pick_7(self) -> None:
+        self._pick_digit("7")
+
+    def action_pick_8(self) -> None:
+        self._pick_digit("8")
+
+    def action_pick_9(self) -> None:
+        self._pick_digit("9")
+
+    def action_pick_0(self) -> None:
+        self._pick_digit("0")
+
+    def on_key(self, event: events.Key) -> None:
+        # 兜底：部分终端把数字键送到 on_key 而非 Binding。
+        char = event.character or ""
+        if char in "0123456789":
+            choice = parse_menu_key(char, len(self._options))
+            if choice is not None:
+                event.stop()
+                event.prevent_default()
+                self.app.resolve_prompt(self, choice)
 
     def on_option_list_option_selected(
         self, event: OptionList.OptionSelected
@@ -372,7 +436,7 @@ COURSE_THEME = Theme(
 
 
 class CourseTuiApp(App):
-    """课程自动化工具的 Textual 主应用。"""
+    """中国电信网上大学自动化工具的 Textual 主应用。"""
 
     CSS = """
     Screen {
@@ -538,7 +602,7 @@ class CourseTuiApp(App):
     }
     """
 
-    TITLE = "课程自动化工具"
+    TITLE = "中国电信网上大学自动化工具"
     SUB_TITLE = "登录 | 学习 | 考试 统一入口"
 
     # Esc 在任何界面都表示返回；主菜单没有上一级，因此返回即退出。

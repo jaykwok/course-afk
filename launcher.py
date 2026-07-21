@@ -87,7 +87,7 @@ def main() -> int:
                 ui.prepare_menu_loading()
             first_loop = False
             state = collect_project_state()
-            ui.show_title("课程自动化工具", "登录、学习、考试统一入口")
+            ui.show_title("中国电信网上大学自动化工具", "登录、学习、考试统一入口")
             ui.render_dashboard(state)
             choice = ui.show_menu(MENU_OPTIONS)
 

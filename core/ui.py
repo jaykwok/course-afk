@@ -291,18 +291,19 @@ def _read_multiline_console_input(cancel_message: str) -> str:
     return _read_posix_multiline_input(cancel_message)
 
 
-def _ask_choice_number(prompt: str, *, min_value: int, max_value: int) -> int:
-    choices_text = f" [{min_value}-{max_value}]: "
+def _ask_choice_number(prompt: str, *, option_count: int) -> int:
+    from core.menu_keys import menu_keys_hint, parse_menu_key
+
+    choices_text = f" [{menu_keys_hint(option_count)}]: "
     while True:
         prompt_text = Text("  ")
         prompt_text.append(prompt, style=f"bold {GREEN}")
         prompt_text.append(choices_text, style="dim")
         raw_choice = _read_console_line(prompt_text).strip()
-        if raw_choice.isdigit():
-            choice = int(raw_choice)
-            if min_value <= choice <= max_value:
-                return choice
-        show_warning(f"请输入 {min_value}-{max_value} 之间的数字")
+        choice = parse_menu_key(raw_choice, option_count)
+        if choice is not None:
+            return choice
+        show_warning(f"请输入有效数字键（{menu_keys_hint(option_count)}）")
 
 
 def show_title(title: str, subtitle: str | None = None) -> None:
@@ -486,6 +487,9 @@ def render_dashboard(state: ProjectState) -> None:
 
 
 def show_menu(options: list[str]) -> int:
+    from core.menu_keys import ensure_menu_option_count, menu_key_for_index
+
+    ensure_menu_option_count(len(options))
     table = Table(
         show_header=False,
         box=_rich_box(HEAVY_HEAD),
@@ -497,16 +501,21 @@ def show_menu(options: list[str]) -> int:
     )
     table.add_column("序号", justify="right", style=f"bold {GREEN}", width=4)
     table.add_column("功能", min_width=44)
+    total = len(options)
     for index, option in enumerate(options, start=1):
-        if index == len(options):
-            table.add_row(str(index), Text(option, style="dim"))
+        key = menu_key_for_index(index, total)
+        if index == total:
+            table.add_row(key, Text(option, style="dim"))
         else:
-            table.add_row(str(index), option)
+            table.add_row(key, option)
     console.print(Align.center(table))
-    return _ask_choice_number("请选择功能", min_value=1, max_value=len(options))
+    return _ask_choice_number("请选择功能", option_count=total)
 
 
 def prompt_choice(title: str, options: list[str], prompt: str = "请选择") -> int:
+    from core.menu_keys import ensure_menu_option_count, menu_key_for_index
+
+    ensure_menu_option_count(len(options))
     table = Table(
         show_header=False,
         box=_rich_box(ROUNDED),
@@ -518,10 +527,11 @@ def prompt_choice(title: str, options: list[str], prompt: str = "请选择") -> 
     )
     table.add_column("序号", justify="right", style=f"bold {GREEN}", width=4)
     table.add_column("选项", min_width=44)
+    total = len(options)
     for index, option in enumerate(options, start=1):
-        table.add_row(str(index), option)
+        table.add_row(menu_key_for_index(index, total), option)
     console.print(Align.center(table))
-    return _ask_choice_number(prompt, min_value=1, max_value=len(options))
+    return _ask_choice_number(prompt, option_count=total)
 
 
 def prompt_yes_no(message: str, default: str = "N") -> bool:

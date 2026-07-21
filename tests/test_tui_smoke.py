@@ -193,7 +193,7 @@ class TuiSmokeTests(unittest.TestCase):
                                 lambda: isinstance(app.screen, OptionScreen), pilot
                             )
                         )
-                        await pilot.press("enter")  # 选第一项「仅挂课」
+                        await pilot.press("1")  # 数字键直选「仅挂课」
 
                         # begin_operation 必须退掉 held 主菜单，露出 #main + 状态条。
                         self.assertTrue(
@@ -827,9 +827,15 @@ class TuiSmokeTests(unittest.TestCase):
                         menu_screen.query_one("#opt-status", Static)
                         main_content = app.query_one("#main")
                         self.assertEqual(main_content.styles.visibility, "visible")
-                        self.assertIn(
-                            "ESC 退出",
-                            str(menu_screen.query_one("#opt-hint", Static).render()),
+                        hint = str(menu_screen.query_one("#opt-hint", Static).render())
+                        self.assertIn("ESC 退出", hint)
+                        self.assertIn("1-9/0", hint)
+                        # 标签：最后一项为 0. 退出（而非 10.）
+                        option_list = menu_screen.query_one("#opt-list", OptionList)
+                        last_prompt = option_list.get_option_at_index(9).prompt
+                        self.assertTrue(
+                            str(last_prompt).startswith("0."),
+                            f"第 10 项键位应为 0，实际: {last_prompt!r}",
                         )
                         dialog = menu_screen.query_one("#opt-dialog")
                         screen_width = menu_screen.size.width
@@ -844,12 +850,9 @@ class TuiSmokeTests(unittest.TestCase):
                             2,
                             "主菜单没有垂直居中",
                         )
-                        option_list = menu_screen.query_one("#opt-list", OptionList)
                         self.assertIs(app.focused, option_list)
-                        for _ in range(9):
-                            await pilot.press("down")
-                        self.assertEqual(option_list.highlighted, 9)
-                        await pilot.press("enter")
+                        # 数字键 0 = 第 10 项「退出」，无需方向键+回车
+                        await pilot.press("0")
                         self.assertIs(
                             app._held_prompt_screen,
                             menu_screen,

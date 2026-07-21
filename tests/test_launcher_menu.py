@@ -1,5 +1,6 @@
 import unittest
 
+from core.menu_keys import MAX_MENU_OPTIONS, menu_key_for_index, parse_menu_key
 from launcher import MANUAL_SELECTION_PROMPTS, MENU_OPTIONS
 
 
@@ -20,6 +21,14 @@ class LauncherMenuTests(unittest.TestCase):
                 "退出",
             ],
         )
+
+    def test_main_menu_fits_single_page_with_zero_for_exit(self):
+        """主菜单每页不超过 10 项；退出为第 10 项，键位 0，返回序号仍为 10。"""
+        self.assertLessEqual(len(MENU_OPTIONS), MAX_MENU_OPTIONS)
+        self.assertEqual(len(MENU_OPTIONS), 10)
+        self.assertEqual(MENU_OPTIONS[-1], "退出")
+        self.assertEqual(menu_key_for_index(10, 10), "0")
+        self.assertEqual(parse_menu_key("0", 10), 10)
 
     def test_manual_selection_prompts_cover_signup_then_learning(self):
         joined = "\n".join(MANUAL_SELECTION_PROMPTS)
