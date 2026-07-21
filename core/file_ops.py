@@ -8,6 +8,7 @@ from core.config import (
     ZHIXUEYUN_COURSE_PREFIX,
     ZHIXUEYUN_EXAM_PREFIX,
     ZHIXUEYUN_SUBJECT_PREFIX,
+    ZHIXUEYUN_TRAIN_CLASS_PREFIX,
 )
 
 
@@ -47,11 +48,16 @@ def write_text_atomic(path, content: str, *, encoding: str = "utf-8") -> None:
 
 
 _UUID = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
-_BUSINESS_TYPE_MAP = {"1": "course", "2": "subject"}
+_BUSINESS_TYPE_PREFIX_MAP = {
+    "1": ZHIXUEYUN_COURSE_PREFIX,
+    "2": ZHIXUEYUN_SUBJECT_PREFIX,
+    "6": ZHIXUEYUN_TRAIN_CLASS_PREFIX,
+}
 
 # 根据配置的 URL 前缀生成合规正则
 _COURSE_PREFIX_ESCAPED = re.escape(ZHIXUEYUN_COURSE_PREFIX)
 _SUBJECT_PREFIX_ESCAPED = re.escape(ZHIXUEYUN_SUBJECT_PREFIX)
+_TRAIN_CLASS_PREFIX_ESCAPED = re.escape(ZHIXUEYUN_TRAIN_CLASS_PREFIX)
 _EXAM_PREFIX_ESCAPED = re.escape(ZHIXUEYUN_EXAM_PREFIX)
 _COMPLIANT_URL_PATTERN = re.compile(
     rf"^({_COURSE_PREFIX_ESCAPED}|{_SUBJECT_PREFIX_ESCAPED}){_UUID}$"
@@ -66,6 +72,7 @@ def normalize_url(url):
     支持的非标准格式:
     1. qrScan格式: .../qrScan?businessType=1&businessId=UUID...  →  .../course/detail/UUID
                     .../qrScan?businessType=2&businessId=UUID...  →  .../subject/detail/UUID
+                    .../qrScan?businessType=6&businessId=UUID...  →  .../train-new/class-detail/UUID
     2. detail带前缀格式: .../detail/11&UUID...  →  .../detail/UUID
 
     已是标准格式的链接原样返回。
@@ -77,7 +84,8 @@ def normalize_url(url):
     # 标准 detail 链接可能带有尾部查询参数，保存时只保留稳定的 UUID 链接。
     for candidate in candidates:
         standard_match = re.search(
-            rf"({_COURSE_PREFIX_ESCAPED}|{_SUBJECT_PREFIX_ESCAPED}|{_EXAM_PREFIX_ESCAPED})({_UUID})",
+            rf"({_COURSE_PREFIX_ESCAPED}|{_SUBJECT_PREFIX_ESCAPED}|"
+            rf"{_TRAIN_CLASS_PREFIX_ESCAPED}|{_EXAM_PREFIX_ESCAPED})({_UUID})",
             candidate,
         )
         if standard_match:
@@ -91,13 +99,8 @@ def normalize_url(url):
         )
         if business_match:
             type_code = business_match.group(1)
-            btype = _BUSINESS_TYPE_MAP.get(type_code)
-            if btype:
-                prefix = (
-                    ZHIXUEYUN_COURSE_PREFIX
-                    if btype == "course"
-                    else ZHIXUEYUN_SUBJECT_PREFIX
-                )
+            prefix = _BUSINESS_TYPE_PREFIX_MAP.get(type_code)
+            if prefix:
                 return f"{prefix}{business_match.group(2)}"
             logging.warning(
                 f"未知 businessType={type_code}，链接未能归一化为标准格式: {url}"
