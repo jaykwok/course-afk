@@ -12,7 +12,7 @@ uv pip install -r requirements.txt
 复制 `.env.example` 为 `.env`，双击 `run.bat`，或运行：
 
 ```bash
-python launcher.py
+uv run launcher.py
 ```
 
 ## 输出文件与状态
