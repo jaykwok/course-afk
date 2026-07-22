@@ -1382,6 +1382,7 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
 
         with TemporaryDirectory() as tmp:
             exam_file = Path(tmp) / "exam.json"
+            manual_file = Path(tmp) / "manual.json"
             urls = [
                 "https://kc.zhixueyun.com/#/study/course/detail/test-course-a",
                 "https://kc.zhixueyun.com/#/study/course/detail/test-course-b",
@@ -1390,6 +1391,7 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
 
             with (
                 patch("core.exam_runner.EXAM_URLS_FILE", exam_file),
+                patch("core.exam_runner.MANUAL_EXAM_FILE", manual_file),
                 patch(
                     "core.exam_runner.create_browser_context",
                     return_value=FakeBrowserContextManager(),
@@ -1401,6 +1403,7 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertIn("返回主菜单", str(ctx.exception))
             self.assertEqual(_read_exam_queue_urls(exam_file), urls)
+            self.assertFalse(manual_file.exists())
 
     async def test_run_ai_exam_batch_returns_to_menu_on_cancelled_error(self):
         from core.abort import UserCancelRequested
@@ -1435,6 +1438,7 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
 
         with TemporaryDirectory() as tmp:
             exam_file = Path(tmp) / "exam.json"
+            manual_file = Path(tmp) / "manual.json"
             urls = [
                 "https://kc.zhixueyun.com/#/study/course/detail/test-course-a",
                 "https://kc.zhixueyun.com/#/study/course/detail/test-course-b",
@@ -1443,6 +1447,7 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
 
             with (
                 patch("core.exam_runner.EXAM_URLS_FILE", exam_file),
+                patch("core.exam_runner.MANUAL_EXAM_FILE", manual_file),
                 patch(
                     "core.exam_runner.create_browser_context",
                     return_value=FakeBrowserContextManager(),
@@ -1459,6 +1464,7 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("返回主菜单", str(ctx.exception))
             # 取消时剩余考试链接已写回，不丢失
             self.assertEqual(_read_exam_queue_urls(exam_file), urls)
+            self.assertFalse(manual_file.exists())
 
     async def test_run_ai_exam_batch_ignores_close_error_after_closed_exam_tab_skip(self):
         from core.exam_runner import run_ai_exam_batch
