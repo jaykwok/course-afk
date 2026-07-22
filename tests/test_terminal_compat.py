@@ -73,7 +73,7 @@ class TerminalCompatTests(unittest.TestCase):
                     self.assertEqual(detect_terminal_kind(), "windows_terminal")
 
     def test_pure_cmd_prefers_ascii(self) -> None:
-        # 模拟真·纯 conhost：祖先只有 cmd / explorer，无 OpenConsole/WT
+        # 模拟真·纯 conhost：祖先只有 cmd/explorer，窗口类 ConsoleWindowClass
         with patch.dict(os.environ, {}, clear=False):
             _drop_terminal_env()
             with patch("core.ui.terminal_compat.is_windows", return_value=True):
@@ -81,17 +81,41 @@ class TerminalCompatTests(unittest.TestCase):
                     "core.ui.terminal_compat._windows_ancestor_stems",
                     return_value=("cmd", "explorer"),
                 ):
-                    self.assertTrue(is_legacy_windows_console())
-                    self.assertFalse(prefers_unicode_ui())
-                    self.assertEqual(detect_terminal_kind(), "cmd")
-                    cs = progress_charset()
-                    self.assertEqual(cs.name, "ascii")
-                    self.assertEqual(cs.track_done, "#")
-                    self.assertEqual(cs.bracket_l, "[")
+                    with patch(
+                        "core.ui.terminal_compat._console_window_class",
+                        return_value="ConsoleWindowClass",
+                    ):
+                        self.assertTrue(is_legacy_windows_console())
+                        self.assertFalse(prefers_unicode_ui())
+                        self.assertEqual(detect_terminal_kind(), "conhost")
+                        cs = progress_charset()
+                        self.assertEqual(cs.name, "ascii")
+                        self.assertEqual(cs.track_done, "#")
+                        self.assertEqual(cs.bracket_l, "[")
+
+    def test_win11_default_wt_via_pseudoconsole_class(self) -> None:
+        """Win11 默认 WT 托管 bat：无 WT_SESSION、祖先无 WT，但窗口类是 PseudoConsoleWindow。"""
+        with patch.dict(os.environ, {}, clear=False):
+            _drop_terminal_env()
+            with patch("core.ui.terminal_compat.is_windows", return_value=True):
+                with patch(
+                    "core.ui.terminal_compat._windows_ancestor_stems",
+                    return_value=("cmd", "explorer"),
+                ):
+                    with patch(
+                        "core.ui.terminal_compat._console_window_class",
+                        return_value="PseudoConsoleWindow",
+                    ):
+                        self.assertFalse(is_legacy_windows_console())
+                        self.assertTrue(prefers_unicode_ui())
+                        self.assertEqual(
+                            detect_terminal_kind(),
+                            "console_class:PseudoConsoleWindow",
+                        )
+                        self.assertEqual(ui_glyphs().name, "unicode")
 
     def test_win11_default_terminal_bat_chain_prefers_unicode(self) -> None:
-        """Win11 默认终端=WT：双击 bat 时 python←cmd←OpenConsole←WindowsTerminal，
-        且通常不注入 WT_SESSION。"""
+        """祖先链含 OpenConsole/WindowsTerminal 时亦走 Unicode。"""
         with patch.dict(os.environ, {}, clear=False):
             _drop_terminal_env()
             with patch("core.ui.terminal_compat.is_windows", return_value=True):
@@ -99,13 +123,16 @@ class TerminalCompatTests(unittest.TestCase):
                     "core.ui.terminal_compat._windows_ancestor_stems",
                     return_value=("cmd", "openconsole", "windowsterminal"),
                 ):
-                    self.assertFalse(is_legacy_windows_console())
-                    self.assertTrue(prefers_unicode_ui())
-                    self.assertEqual(detect_terminal_kind(), "ancestor:openconsole")
-                    self.assertEqual(ui_glyphs().name, "unicode")
+                    with patch(
+                        "core.ui.terminal_compat._console_window_class",
+                        return_value="",
+                    ):
+                        self.assertFalse(is_legacy_windows_console())
+                        self.assertTrue(prefers_unicode_ui())
+                        self.assertEqual(detect_terminal_kind(), "ancestor:openconsole")
+                        self.assertEqual(ui_glyphs().name, "unicode")
 
     def test_openconsole_grandparent_alone_prefers_unicode(self) -> None:
-        """仅祖先里有 OpenConsole（Win11 默认终端托管）也应走 Unicode。"""
         with patch.dict(os.environ, {}, clear=False):
             _drop_terminal_env()
             with patch("core.ui.terminal_compat.is_windows", return_value=True):
@@ -113,8 +140,12 @@ class TerminalCompatTests(unittest.TestCase):
                     "core.ui.terminal_compat._windows_ancestor_stems",
                     return_value=("cmd", "openconsole"),
                 ):
-                    self.assertTrue(prefers_unicode_ui())
-                    self.assertEqual(detect_terminal_kind(), "ancestor:openconsole")
+                    with patch(
+                        "core.ui.terminal_compat._console_window_class",
+                        return_value="",
+                    ):
+                        self.assertTrue(prefers_unicode_ui())
+                        self.assertEqual(detect_terminal_kind(), "ancestor:openconsole")
 
     def test_direct_parent_windows_terminal_prefers_unicode(self) -> None:
         with patch.dict(os.environ, {}, clear=False):
@@ -124,10 +155,15 @@ class TerminalCompatTests(unittest.TestCase):
                     "core.ui.terminal_compat._windows_ancestor_stems",
                     return_value=("windowsterminal",),
                 ):
-                    self.assertFalse(is_legacy_windows_console())
-                    self.assertTrue(prefers_unicode_ui())
-                    self.assertEqual(detect_terminal_kind(), "ancestor:windowsterminal")
-
+                    with patch(
+                        "core.ui.terminal_compat._console_window_class",
+                        return_value="",
+                    ):
+                        self.assertFalse(is_legacy_windows_console())
+                        self.assertTrue(prefers_unicode_ui())
+                        self.assertEqual(
+                            detect_terminal_kind(), "ancestor:windowsterminal"
+                        )
     def test_explicit_unicode_override_on_charset(self) -> None:
         self.assertIs(progress_charset(unicode=True), _UNICODE_PROGRESS)
         self.assertIs(progress_charset(unicode=False), _ASCII_PROGRESS)

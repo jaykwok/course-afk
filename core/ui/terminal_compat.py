@@ -6,18 +6,17 @@
 
 策略：
   1. 环境变量强制：COURSE_AFK_UI_CHARS=unicode|ascii（最高优先级）
-  2. 识别宿主窗口/终端（WT / VS Code / ConEmu / mintty / PyCharm 等）→ Unicode
-  3. 非 Windows → Unicode
-  4. 其余（真·纯 conhost cmd）→ ASCII
+  2. 控制台窗口类：PseudoConsoleWindow / Cascadia → Unicode；
+     ConsoleWindowClass（经典 conhost）→ 继续看其它信号
+  3. 环境变量 / 祖先进程链（WT_SESSION、WindowsTerminal.exe 等）→ Unicode
+  4. 非 Windows → Unicode
+  5. 其余 → ASCII
 
-识别手段：
-  - 环境变量（WT_SESSION 等）
-  - **祖先进程链**（不只看直接父进程）
-
-Win11 默认终端为 Windows Terminal 时，双击 run.bat 的典型进程链是：
-  python.exe ← cmd.exe ← OpenConsole.exe ← WindowsTerminal.exe
-直接父进程仍是 cmd，但 OpenConsole/WindowsTerminal 在祖先里——必须沿链向上找。
-且该路径下往往 **不会** 注入 WT_SESSION（与「在 WT 里手动开标签」不同）。
+Win11 双击 run.bat 且默认终端为 WT 时：
+  - 往往 **没有** WT_SESSION
+  - 进程链常是 python ← cmd ← explorer，**没有** WindowsTerminal 祖先
+  - 但 GetConsoleWindow 的窗口类是 ``PseudoConsoleWindow``（ConPTY/WT 托管）
+  本机实测：新控制台会话 class=PseudoConsoleWindow；真 conhost 才是 ConsoleWindowClass。
 """
 
 from __future__ import annotations
@@ -247,6 +246,53 @@ def _ancestor_looks_modern() -> bool:
     return _ancestor_modern_host() is not None
 
 
+# 控制台 HWND 窗口类（本机 Win11+WT 实测）
+# - PseudoConsoleWindow：ConPTY / Windows Terminal 等现代托管
+# - CASCADIA_HOSTING_WINDOW_CLASS：WT 外壳窗口
+# - ConsoleWindowClass：经典 conhost（CJK 宽度易错位）
+_MODERN_CONSOLE_CLASSES = frozenset(
+    {
+        "pseudoconsolewindow",
+        "cascadia_hosting_window_class",
+    }
+)
+_LEGACY_CONSOLE_CLASSES = frozenset(
+    {
+        "consolewindowclass",
+    }
+)
+
+
+@lru_cache(maxsize=1)
+def _console_window_class() -> str:
+    """当前进程附属控制台窗口的类名；无控制台返回空串。"""
+    if not is_windows():
+        return ""
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        user32 = ctypes.windll.user32
+        hwnd = kernel32.GetConsoleWindow()
+        if not hwnd:
+            return ""
+        buf = ctypes.create_unicode_buffer(256)
+        user32.GetClassNameW(hwnd, buf, 256)
+        return (buf.value or "").strip()
+    except Exception:
+        return ""
+
+
+def _console_class_is_modern() -> bool:
+    cls = _console_window_class().lower()
+    return bool(cls) and cls in _MODERN_CONSOLE_CLASSES
+
+
+def _console_class_is_legacy_conhost() -> bool:
+    cls = _console_window_class().lower()
+    return bool(cls) and cls in _LEGACY_CONSOLE_CLASSES
+
+
 def is_modern_terminal_host() -> bool:
     """是否挂在已知「宽度处理正常」的终端宿主上。"""
     if is_windows_terminal():
@@ -272,14 +318,18 @@ def is_modern_terminal_host() -> bool:
     if (os.environ.get("TERMINAL_EMULATOR") or "").strip():
         # 其它 IDE 内置终端多半设此变量
         return True
-    # Win11 默认终端托管 bat：父进程是 cmd，OpenConsole/WT 在更上层
+    # 最关键：Win11 默认 WT 托管 bat 时，进程树/环境都可能像纯 cmd，
+    # 但控制台窗口类是 PseudoConsoleWindow。
+    if is_windows() and _console_class_is_modern():
+        return True
+    # 祖先链：在 WT 标签内开 cmd、或 OpenConsole 仍是父/祖进程时
     if is_windows() and _ancestor_looks_modern():
         return True
     return False
 
 
 def is_legacy_windows_console() -> bool:
-    """真·纯 conhost/cmd：祖先链上没有现代终端宿主。"""
+    """真·纯 conhost：现代宿主信号全无。"""
     if not is_windows():
         return False
     if is_modern_terminal_host():
@@ -316,12 +366,15 @@ def detect_terminal_kind() -> str:
         return "mintty"
     if is_jetbrains_terminal():
         return "jetbrains"
+    if _console_class_is_modern():
+        cls = _console_window_class() or "pseudoconsole"
+        return f"console_class:{cls}"
     host = _ancestor_modern_host()
     if host:
-        # 标明是祖先链命中（如 openconsole），便于确认 Win11 默认终端场景
         return f"ancestor:{host}"
+    if _console_class_is_legacy_conhost():
+        return "conhost"
     return "cmd"
-
 # ---------- 全套 UI 字形（进度条 + 日志图标 + 分隔符 + 箭头）----------
 
 
@@ -507,6 +560,7 @@ def progress_charset(*, unicode: bool | None = None) -> ProgressCharset:
 
 
 def clear_terminal_compat_cache() -> None:
-    """测试用：清进程表 / 祖先链缓存。"""
+    """测试用：清进程表 / 祖先链 / 窗口类缓存。"""
     _windows_process_table.cache_clear()
     _windows_ancestor_stems.cache_clear()
+    _console_window_class.cache_clear()
