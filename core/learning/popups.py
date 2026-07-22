@@ -4,6 +4,73 @@ import asyncio
 import logging
 
 
+async def handle_archive_continue_popup(page) -> bool:
+    """归档课确认：「该课程已归档，是否继续学习？」→ 点「继续学习」。
+
+    实勘有两种 UI：
+    1) 中转页 ``.study-transition-page``（常见）：``div.btn``「继续学习」，
+       点取消则无法进入课程；须在章节 wait 前处理。
+    2) ant-modal 弹窗（兼容）：``.ant-modal-content`` 内按钮「继续学习」。
+    """
+    try:
+        # --- 路径 1：学习中转页（transition-page）---
+        transition = page.locator(".study-transition-page").filter(has_text="归档")
+        try:
+            await transition.first.wait_for(state="visible", timeout=2000)
+        except Exception:
+            transition = None
+
+        if transition is not None and await transition.count() > 0:
+            # 实勘：<div id="*goOnStudy" class="btn">继续学习</div>（非 <button>）
+            continue_btn = transition.locator("div.btn").filter(has_text="继续学习")
+            if await continue_btn.count() == 0:
+                continue_btn = page.locator("[id$='goOnStudy']")
+            if await continue_btn.count() == 0:
+                continue_btn = transition.get_by_text("继续学习", exact=True)
+            if await continue_btn.count() == 0:
+                logging.warning("检测到归档中转页，但未找到「继续学习」")
+                return False
+
+            await continue_btn.first.click()
+            logging.info("检测到归档课程中转页，已点击继续学习")
+            try:
+                await transition.first.wait_for(state="hidden", timeout=5000)
+            except Exception:
+                await page.wait_for_timeout(800)
+            try:
+                await page.wait_for_load_state("load", timeout=10000)
+            except Exception:
+                pass
+            return True
+
+        # --- 路径 2：ant-modal（兼容）---
+        dialog = page.locator(".ant-modal-content").filter(has_text="归档")
+        try:
+            await dialog.first.wait_for(state="visible", timeout=1500)
+        except Exception:
+            return False
+
+        continue_btn = dialog.locator("button").filter(has_text="继续学习")
+        if await continue_btn.count() == 0:
+            continue_btn = dialog.locator("div.btn, a, span").filter(has_text="继续学习")
+        if await continue_btn.count() == 0:
+            continue_btn = page.get_by_role("button", name="继续学习")
+        if await continue_btn.count() == 0:
+            logging.warning("检测到归档确认弹窗，但未找到「继续学习」按钮")
+            return False
+
+        await continue_btn.first.click()
+        logging.info("检测到归档课程确认弹窗，已点击继续学习")
+        try:
+            await dialog.first.wait_for(state="hidden", timeout=3000)
+        except Exception:
+            await page.wait_for_timeout(500)
+        return True
+    except Exception as exc:
+        logging.warning(f"处理归档确认弹窗时出错: {exc}")
+        return False
+
+
 async def handle_rating_popup(page):
     """监测评分弹窗, 选择五星并提交"""
     try:
@@ -14,6 +81,14 @@ async def handle_rating_popup(page):
         except Exception as exc:
             logging.debug(f"未检测到评分弹窗: {exc}")
             return False
+
+        # 归档确认也是 ant-modal，勿当评分弹窗硬点「确定」
+        try:
+            dialog_text = await dialog.first.inner_text(timeout=500)
+        except Exception:
+            dialog_text = ""
+        if "归档" in (dialog_text or ""):
+            return await handle_archive_continue_popup(page)
 
         stars_container = dialog.locator("ul.ant-rate")
         await stars_container.wait_for(state="visible", timeout=1000)

@@ -78,6 +78,10 @@ class FakeChapterListLocator:
     def last(self):
         return self
 
+    @property
+    def first(self):
+        return self
+
     async def wait_for(self, state="visible", timeout=0):
         return None
 
@@ -88,18 +92,46 @@ class FakeChapterListLocator:
         return self._boxes[index]
 
 
+class _EmptyChapterList:
+    @property
+    def last(self):
+        return self
+
+    @property
+    def first(self):
+        return self
+
+    async def wait_for(self, state="visible", timeout=0):
+        return None
+
+    async def count(self):
+        return 0
+
+    def nth(self, index):
+        raise IndexError(index)
+
+
 class FakeCoursePage:
     def __init__(self):
         self.main_frame = object()
         self.url = "https://kc.zhixueyun.com/#/study/course/detail/test-course"
         self._chapter_list = FakeChapterListLocator([FakeChapterBox()])
+        self._empty = _EmptyChapterList()
 
     async def wait_for_load_state(self, _state):
         return None
 
     def locator(self, selector):
-        if selector == "dl.chapter-list-box.required":
+        if selector in (
+            "dl.chapter-list-box",
+            "dl.chapter-list-box.required",
+        ):
             return self._chapter_list
+        if selector in (
+            "dl.chapter-list-box.elective",
+            "dl.chapter-list-box:not(.required)",
+        ):
+            return self._empty
         if selector == "span.course-title-text":
             return FakeTextLocator(text="测试课程")
         raise KeyError(selector)
@@ -191,7 +223,10 @@ class LearningExamTests(unittest.IsolatedAsyncioTestCase):
         mock_check = AsyncMock(return_value=False)
 
         with (
-            patch("core.learning.flows.check_permission", new=AsyncMock(return_value=True)),
+            patch(
+                "core.learning.flows.ensure_course_page_ready",
+                new=AsyncMock(return_value=None),
+            ),
             patch("core.learning.flows.handle_rating_popup", new=AsyncMock(return_value=False)),
             patch("core.learning.flows._is_course_completed", new=AsyncMock(return_value=False)),
             patch("core.learning.flows.check_exam_passed", new=mock_check),

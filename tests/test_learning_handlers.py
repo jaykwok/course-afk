@@ -90,8 +90,9 @@ class LearningHandlerTests(unittest.IsolatedAsyncioTestCase):
         if created_tasks:
             await asyncio.gather(*created_tasks, return_exceptions=True)
 
-        self.assertEqual(len(created_tasks), 2)
-        self.assertEqual(task_states_before_cleanup, [True, True])
+        # timeout / timer / popup 三个并行任务；页面关闭后均应被清理
+        self.assertEqual(len(created_tasks), 3)
+        self.assertEqual(task_states_before_cleanup, [True, True, True])
 
 
 if __name__ == "__main__":

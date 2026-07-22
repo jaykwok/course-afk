@@ -4,17 +4,26 @@ import asyncio
 import logging
 import traceback
 
-from core.abort import NoPermissionError
+from core.abort import (
+    LearningFlowError,
+    NoPermissionError,
+    PartialCourseFailure,
+)
 from core.browser.session import is_page_browser_connected, is_target_closed_exception
 from core.config import (
     URL_TYPE_WAIT,
 )
 from core.queues.exam import append_exam_url
-from core.learning.common import check_permission, get_course_url, is_learned, timer
+from core.learning.common import (
+    ensure_course_page_ready,
+    get_course_url,
+    is_learned,
+    timer,
+)
 from core.learning.exam_bridge import check_exam_passed, handle_examination
 from core.learning.handlers import handle_document, handle_h5, handle_video
 from core.queues.learning import record_learning_failure
-from core.learning.popups import handle_rating_popup
+from core.learning.popups import handle_archive_continue_popup, handle_rating_popup
 
 
 async def handle_subject_exam_item(learn_item) -> str | None:
@@ -73,21 +82,51 @@ async def is_subject_item_completed(learn_item) -> bool:
     return "重新学习" in text or "考试记录" in text
 
 
+def _record_structured_failure(url: str, exc: BaseException, *, detail: dict | None = None) -> None:
+    """按异常类型写入失败链接。"""
+    merged = dict(detail or {})
+    if isinstance(exc, NoPermissionError):
+        reason = getattr(exc, "reason", None) or "no_permission"
+        reason_text = (
+            getattr(exc, "reason_text", None)
+            or str(exc)
+            or "无权限访问该学习资源，已从课程链接清理"
+        )
+        record_learning_failure(
+            url, reason=reason, reason_text=reason_text, detail=merged
+        )
+        return
+    if isinstance(exc, LearningFlowError):
+        merged.update(getattr(exc, "detail", None) or {})
+        record_learning_failure(
+            url,
+            reason=exc.reason,
+            reason_text=exc.reason_text,
+            detail=merged,
+        )
+        return
+    record_learning_failure(
+        url,
+        reason="retryable_error",
+        reason_text=f"主题内课程处理失败，后续可重新加入课程链接: {exc}",
+        detail=merged,
+    )
+
+
 async def subject_learning(page):
     """
     主题内容学习（DOM 文案分流：课程 / URL / 考试 / 调研…）。
 
     注意：主题页 section-type 文案与课程内 data-sectiontype 数字是两套体系，
     切勿混用。主题 API 侧（chapter-progress）见 core.discovery.subject_parse：
-    10=课、9=考、3=外链 URL。
+    10=课、9=考、3=外链 URL。收集链接优先 API；挂机进度仍以 DOM 为准。
 
     已学完小节（「重新学习」）直接跳过；残留主题走 DOM 时，先前已挂完的课/考
-    通常已是「重新学习」，不会二次全挂。
+    通常已是「重新学习」，不会二次全挂。课内 100% 也会在 course_learning 快跳。
     """
     await page.wait_for_load_state("networkidle")
 
-    if not await check_permission(page.main_frame):
-        raise NoPermissionError("无权限查看该资源")
+    await ensure_course_page_ready(page)
 
     await page.locator(".item.current-hover").last.wait_for()
     await page.locator(".item.current-hover").locator(".section-type").last.wait_for()
@@ -95,6 +134,7 @@ async def subject_learning(page):
     learn_locator = page.locator(".item.current-hover")
     learn_count = await learn_locator.count()
 
+    has_failed_course = False
     for i in range(learn_count):
         learn_item = learn_locator.nth(i)
         if await is_subject_item_completed(learn_item):
@@ -113,49 +153,53 @@ async def subject_learning(page):
                 if is_target_closed_exception(exc):
                     if is_page_browser_connected(page_detail):
                         logging.info("当前课程标签页已关闭，跳过该课程")
+                        has_failed_course = True
                         continue
                     raise
-                logging.error(f"发生错误: {str(exc)}")
-                logging.error(traceback.format_exc())
-                course_url = await get_course_url(learn_item)
                 if isinstance(exc, NoPermissionError):
-                    record_learning_failure(
-                        course_url,
-                        reason="no_permission",
-                        reason_text="无权限访问该学习资源",
-                        detail={"source": "subject_course"},
+                    logging.warning(f"主题内课程不可访问: {exc}")
+                else:
+                    logging.error(f"发生错误: {str(exc)}")
+                    logging.error(traceback.format_exc())
+                course_url = await get_course_url(learn_item)
+                _record_structured_failure(
+                    course_url, exc, detail={"source": "subject_course"}
+                )
+                if isinstance(exc, NoPermissionError):
+                    logging.info(
+                        f"主题内课程不可访问，已记入失败链接并跳过: {course_url}"
                     )
                 else:
-                    record_learning_failure(
-                        course_url,
-                        reason="retryable_error",
-                        reason_text=f"主题内课程处理失败，后续可重新加入课程链接: {exc}",
-                        detail={"source": "subject_course"},
-                    )
-                    raise
+                    # 可恢复失败：记失败后继续后续小节，结束时再统一抛错
+                    has_failed_course = True
             finally:
                 await page_detail.close()
 
         elif section_type == "URL":
             logging.info("URL学习类型, 记录为待复查")
+            # record_learning_failure 按 URL 合并，重复调用会刷新文案，不堆多条
             record_learning_failure(
                 page.url,
                 reason="url_type_pending",
-                reason_text="URL 类型学习等待后续复查",
+                reason_text="URL 类型学习等待后续复查（打开外链停留后复查是否「重新学习」）",
                 detail={"source": "subject", "section_type": section_type},
             )
             async with page.expect_popup() as page_pop:
                 await learn_item.locator(".inline-block.operation").click()
             page_detail = await page_pop.value
+            timeout_task = asyncio.create_task(
+                page_detail.wait_for_timeout(URL_TYPE_WAIT * 1000)
+            )
             timer_task = asyncio.create_task(
-                timer(URL_TYPE_WAIT, fallback_interval=1, description="URL 类型学习等待")
+                timer(URL_TYPE_WAIT, description="URL 类型学习等待")
             )
             try:
-                await page_detail.wait_for_timeout(URL_TYPE_WAIT * 1000)
-                await timer_task
+                await asyncio.gather(timeout_task, timer_task)
             finally:
-                if not timer_task.done():
-                    timer_task.cancel()
+                for task in (timeout_task, timer_task):
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(timeout_task, timer_task, return_exceptions=True)
                 try:
                     await page_detail.close()
                 except Exception:
@@ -182,30 +226,81 @@ async def subject_learning(page):
                 detail={"source": "subject", "section_type": section_type},
             )
 
+    if has_failed_course:
+        raise PartialCourseFailure(
+            "部分主题课程学习失败",
+            reason="partial_course_failure",
+            reason_text="部分主题课程学习失败，后续可重新加入课程链接",
+        )
+
+
+async def _collect_chapter_boxes(page_detail) -> list[tuple[str, object]]:
+    """章节列表：先必修后选修。返回 [(track, box), ...]。"""
+    # 先等任意章节列表出现（归档/限流已在外层处理）
+    try:
+        await page_detail.locator("dl.chapter-list-box").first.wait_for(timeout=15000)
+    except Exception:
+        # 兼容仅有 required 类的旧页
+        await page_detail.locator("dl.chapter-list-box.required").last.wait_for(
+            timeout=5000
+        )
+
+    ordered: list[tuple[str, object]] = []
+    required = page_detail.locator("dl.chapter-list-box.required")
+    n_req = await required.count()
+    for i in range(n_req):
+        ordered.append(("required", required.nth(i)))
+
+    elective = page_detail.locator("dl.chapter-list-box.elective")
+    n_elec = await elective.count()
+    if n_elec == 0:
+        # 无 .elective 类时：非 required 的 chapter-list-box 视为选修
+        others = page_detail.locator(
+            "dl.chapter-list-box:not(.required)"
+        )
+        n_elec = await others.count()
+        for i in range(n_elec):
+            ordered.append(("elective", others.nth(i)))
+    else:
+        for i in range(n_elec):
+            ordered.append(("elective", elective.nth(i)))
+
+    return ordered
+
 
 async def course_learning(page_detail, learn_item=None):
-    """课程内容学习"""
+    """课程内容学习：必修章节优先，再挂选修。"""
     await page_detail.wait_for_load_state("load")
 
-    if await check_permission(page_detail.main_frame):
-        if await handle_rating_popup(page_detail):
-            logging.info("五星评价完成")
-    else:
-        raise NoPermissionError("无权限查看该资源")
+    # 归档课弹窗会挡住章节列表，须在任何章节 wait 之前点「继续学习」
+    if await handle_archive_continue_popup(page_detail):
+        logging.info("已确认继续学习归档课程")
+
+    # 访问权限 / 资源不存在 / 并发限流：须在等进度条与章节列表之前
+    await ensure_course_page_ready(page_detail)
+
+    if await handle_rating_popup(page_detail):
+        logging.info("五星评价完成")
 
     if await _is_course_completed(page_detail):
-        title = await page_detail.locator("span.course-title-text").inner_text()
+        try:
+            title = await page_detail.locator("span.course-title-text").inner_text(
+                timeout=3000
+            )
+        except Exception:
+            title = page_detail.url
         logging.info(f"<{title}>已学习完毕, 跳过该课程\n")
         return
 
-    await page_detail.locator("dl.chapter-list-box.required").last.wait_for()
-    chapter_locator = page_detail.locator("dl.chapter-list-box.required")
-    chapter_count = await chapter_locator.count()
+    chapters = await _collect_chapter_boxes(page_detail)
+    if not chapters:
+        logging.warning("未找到章节列表（必修/选修）")
+        return
 
+    # 预检：可判定类型是否全部已学
     all_learned = True
     has_non_detectable_types = False
-    for i in range(chapter_count):
-        box = chapter_locator.nth(i)
+    for track, box in chapters:
         section_type = await box.get_attribute("data-sectiontype")
         if section_type in ["1", "2", "3", "5", "6"]:
             progress_text = await box.locator(".section-item-wrapper").inner_text()
@@ -216,22 +311,22 @@ async def course_learning(page_detail, learn_item=None):
             has_non_detectable_types = True
 
     if all_learned and not has_non_detectable_types:
-        logging.info("所有章节已学习完毕, 跳过该课程")
+        logging.info("所有章节（含选修）已学习完毕, 跳过该课程")
         return
 
     # 课程内 data-sectiontype（与主题 chapter-progress 的 sectionType 数字含义不同）:
     # 1/2/3=文档网页, 4=H5, 5/6=视频, 9=课程内考试。主题外链 URL 的 API 类型 3 不在此列。
     has_failed_box = False
-    for count in range(chapter_count):
-        box = chapter_locator.nth(count)
+    for index, (track, box) in enumerate(chapters):
         section_type = await box.get_attribute("data-sectiontype")
         box_text = await box.locator(".text-overflow").inner_text()
-        logging.info(f"课程信息: \n{box_text}\n")
+        track_label = "必修" if track == "required" else "选修"
+        logging.info(f"课程信息[{track_label}]: \n{box_text}\n")
 
         if section_type in ["1", "2", "3", "5", "6"]:
             progress_text = await box.locator(".section-item-wrapper").inner_text()
             if is_learned(progress_text):
-                logging.info(f"课程{count+1}已学习, 跳过该节\n")
+                logging.info(f"课程第{index + 1}节({track_label})已学习, 跳过该节\n")
                 continue
 
         if await handle_rating_popup(page_detail):
@@ -265,28 +360,65 @@ async def course_learning(page_detail, learn_item=None):
                     await handle_examination(page_detail, exam_passed=exam_passed)
             else:
                 logging.info("未知课程学习类型, 记录为需要人工处理")
-                failure_url = await get_course_url(learn_item) if learn_item else page_detail.url
+                failure_url = (
+                    await get_course_url(learn_item) if learn_item else page_detail.url
+                )
                 record_learning_failure(
                     failure_url,
                     reason="unknown_learning_type",
                     reason_text=f"未知课程学习类型: {section_type}",
-                    detail={"source": "course_chapter", "section_type": section_type},
+                    detail={
+                        "source": "course_chapter",
+                        "section_type": section_type,
+                        "track": track,
+                    },
                 )
                 continue
         except Exception as exc:
             if is_target_closed_exception(exc):
                 raise
-            logging.error(f"课程{count+1}学习失败: {str(exc)}")
+            if isinstance(exc, NoPermissionError):
+                raise
+            if isinstance(exc, LearningFlowError) and not isinstance(
+                exc, PartialCourseFailure
+            ):
+                # 同步超时等：记入失败后继续其它节，避免一节拖死整课
+                logging.error(f"课程第{index + 1}节({track_label})学习失败: {exc}")
+                failure_url = (
+                    await get_course_url(learn_item) if learn_item else page_detail.url
+                )
+                _record_structured_failure(
+                    failure_url,
+                    exc,
+                    detail={
+                        "source": "course_chapter",
+                        "section_index": index,
+                        "track": track,
+                    },
+                )
+                has_failed_box = True
+                continue
+            logging.error(f"课程第{index + 1}节({track_label})学习失败: {str(exc)}")
             logging.error(traceback.format_exc())
             has_failed_box = True
             continue
-        logging.info(f"课程{count+1}学习完毕")
+        logging.info(f"课程第{index + 1}节({track_label})学习完毕")
 
     if has_failed_box:
-        raise Exception("部分章节学习失败")
+        raise PartialCourseFailure("部分章节学习失败")
 
 
-async def _is_course_completed(page):
+async def _is_course_completed(page) -> bool:
+    """课程进度 100% 则视为整课完成。
+
+    超时故意短于 Playwright 默认 30s，避免错误页/限流页空等；
+    又略放宽以照顾云电脑/弱单核（渲染进度条偏慢）。读不到则当未完成。
+    """
     progress_element = page.locator("div.course-progress div.progress")
-    progress_text = await progress_element.inner_text()
-    return "100%" in progress_text
+    try:
+        # 可见：12s；读文案：5s（合计仍远小于默认 30s）
+        await progress_element.first.wait_for(state="visible", timeout=12000)
+        progress_text = await progress_element.inner_text(timeout=5000)
+    except Exception:
+        return False
+    return "100%" in (progress_text or "")

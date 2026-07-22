@@ -340,6 +340,65 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                 ],
             )
 
+    async def test_process_url_clears_no_permission_and_records_reason(self):
+        """无权限/资源不存在：移出课程链接，失败文档写明原因。"""
+        from core.abort import NoPermissionError
+        from core.learning.afk_runner import _process_url
+
+        class FakePage:
+            def __init__(self):
+                self.closed = False
+
+            def is_closed(self):
+                return self.closed
+
+            async def close(self):
+                self.closed = True
+
+        page = FakePage()
+
+        class FakeContext:
+            async def new_page(self):
+                return page
+
+        async def denied_handler(_page):
+            raise NoPermissionError(
+                "该资源已不存在，已从课程链接清理",
+                reason="resource_gone",
+                reason_text="该资源已不存在，已从课程链接清理",
+            )
+
+        with TemporaryDirectory() as tmp:
+            failures_file = Path(tmp) / "failures.json"
+
+            with (
+                patch("core.learning.afk_runner.LEARNING_FAILURES_FILE", failures_file),
+                patch("core.learning.afk_runner.ensure_controller_page", new=AsyncMock()),
+                patch(
+                    "core.learning.afk_runner.goto_and_prepare_async",
+                    new=AsyncMock(),
+                ),
+            ):
+                keep_pending = await _process_url(
+                    FakeContext(),
+                    "https://kc.zhixueyun.com/#/study/course/detail/gone",
+                    denied_handler,
+                )
+
+            self.assertFalse(keep_pending)
+            self.assertTrue(page.closed)
+            self.assertEqual(
+                _read_learning_failures(failures_file),
+                [
+                    {
+                        "url": "https://kc.zhixueyun.com/#/study/course/detail/gone",
+                        "reason": "resource_gone",
+                        "reason_text": "该资源已不存在，已从课程链接清理",
+                        "detail": {},
+                    }
+                ],
+            )
+
     async def test_run_afk_once_opens_new_page_per_url_and_closes(self):
         """一门一页：每门 new_page，处理完 close，避免同页 goto 触发 errors 限流。"""
         from core.learning.afk_runner import AfkBatch, run_afk_once

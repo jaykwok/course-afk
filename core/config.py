@@ -456,17 +456,18 @@ REFERENCE_OUTPUT_DIR = DATA_DIR / "参考资料"
 # 视频课程服务端记录学习点的周期，也是播放结束后的额外等待上限
 VIDEO_SYNC_EXTRA_WAIT = 5 * 60  # 5分钟
 
-# 视频同步轮询与 fallback 进度日志的自适应间隔策略
-VIDEO_PROGRESS_SHORT_THRESHOLD = 5 * 60  # 5分钟及以下
-VIDEO_PROGRESS_MEDIUM_THRESHOLD = 30 * 60  # 30分钟及以下
-VIDEO_PROGRESS_SHORT_INTERVAL = 1  # 秒
-VIDEO_PROGRESS_MEDIUM_INTERVAL = 5  # 秒
-VIDEO_PROGRESS_LONG_INTERVAL = 10  # 秒
+# 学完后同步确认最短等待窗（确认已同步会提前返回，故下限可接受）
+VIDEO_SYNC_MIN_WAIT = 30  # 秒
+
+# 视频学完后「确认进度同步」的轮询 / 日志间隔
+VIDEO_SYNC_POLL_INTERVAL = 30  # 秒
 
 # 文档课程初始等待时间
 DOCUMENT_INITIAL_WAIT = 5  # 秒
 # 文档课程进度同步额外等待时间
 DOCUMENT_SYNC_EXTRA_WAIT = 30  # 秒
+# 文档进度同步轮询 / 日志间隔（文档本身学习时间很短，间隔宜细于视频）
+DOCUMENT_SYNC_POLL_INTERVAL = 10  # 秒
 
 # URL 学习类型等待时间
 URL_TYPE_WAIT = 10  # 秒

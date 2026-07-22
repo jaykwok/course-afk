@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from core.config import LEARNING_FAILURES_FILE, LEARNING_URLS_FILE
-from core.file_ops import del_file, normalize_text, write_text_atomic
+from core.file_ops import del_file, is_compliant_url_regex, normalize_text, write_text_atomic
 from core.links import unique_urls
 
 
@@ -262,23 +262,81 @@ def count_learning_failures(file_path: Path = LEARNING_FAILURES_FILE) -> int:
     return len(read_learning_failures(file_path=file_path))
 
 
-# 可重新入队学习队列的失败原因（无权限/不合规/待复查等不自动重试）
+def prune_invalid_learning_failures(
+    *,
+    file_path: Path = LEARNING_FAILURES_FILE,
+) -> list[str]:
+    """
+    清理失败文档中的脏数据：不合规 URL（如测试占位 .../detail/a）。
+
+    返回被移除的 URL 列表。
+    """
+    entries = read_learning_failures(file_path=file_path)
+    if not entries:
+        return []
+
+    kept: list[LearningFailureEntry] = []
+    removed: list[str] = []
+    for entry in entries:
+        if is_compliant_url_regex(entry.url):
+            kept.append(entry)
+        else:
+            removed.append(entry.url)
+
+    if not removed:
+        return []
+
+    write_learning_failures(kept, file_path=file_path, keep_file=True)
+    return removed
+
+
+# 可重新入队学习队列的失败原因（无权限/不合规/待复查/需人工等不自动重试）
 RETRIABLE_LEARNING_FAILURE_REASONS: frozenset[str] = frozenset(
     {
         "retryable_error",
+        "sync_timeout",
+        "partial_course_failure",
+        "concurrent_study_limit",
     }
 )
 
-# 展示用：reason → 中文说明
+# 展示用：reason → 中文说明（TUI 汇总分组）
 LEARNING_FAILURE_REASON_LABELS: dict[str, str] = {
     "retryable_error": "可重试错误",
+    "sync_timeout": "进度同步超时",
+    "partial_course_failure": "部分章节失败",
+    "concurrent_study_limit": "并发学习限流",
     "no_permission": "无权限",
+    "resource_gone": "资源不存在",
+    "resource_delisted": "资源已下架",
     "non_compliant_url": "不合规链接",
     "unknown_learning_type": "未知类型",
     "url_type_pending": "URL 待复查",
     "survey_manual_required": "调研需人工",
+    "h5_manual_required": "H5需人工",
     "other_learning_type": "其它类型",
 }
+
+# 需人工处理（不自动重试）
+MANUAL_LEARNING_FAILURE_REASONS: frozenset[str] = frozenset(
+    {
+        "survey_manual_required",
+        "h5_manual_required",
+        "other_learning_type",
+        "unknown_learning_type",
+        "url_type_pending",
+    }
+)
+
+# 不可访问已清理（不自动重试）
+ACCESS_DENIED_LEARNING_FAILURE_REASONS: frozenset[str] = frozenset(
+    {
+        "no_permission",
+        "resource_gone",
+        "resource_delisted",
+        "non_compliant_url",
+    }
+)
 
 
 def group_learning_failures_by_reason(

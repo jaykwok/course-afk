@@ -385,7 +385,10 @@ def handle_show_output_state(exam_urls_file, learning_urls_file, manual_exam_fil
     from core.config import LEARNING_FAILURES_FILE
     from core.queues.exam import read_exam_urls
     from core.queues.learning import (
+        ACCESS_DENIED_LEARNING_FAILURE_REASONS,
+        MANUAL_LEARNING_FAILURE_REASONS,
         group_learning_failures_by_reason,
+        prune_invalid_learning_failures,
         read_learning_failures,
         read_learning_urls,
         requeue_retryable_learning_failures,
@@ -394,6 +397,12 @@ def handle_show_output_state(exam_urls_file, learning_urls_file, manual_exam_fil
     from core.queues.manual_exam import read_manual_exam_urls
 
     failures_file = LEARNING_FAILURES_FILE
+    pruned = prune_invalid_learning_failures(file_path=failures_file)
+    if pruned:
+        ui.show_success(
+            f"已清理 {len(pruned)} 条无效失败链接（不合规 URL）"
+        )
+
     failures = read_learning_failures(file_path=failures_file)
     rows: list[tuple[str, str]] = [
         ("课程链接", str(len(read_learning_urls(learning_urls_file)))),
@@ -401,6 +410,18 @@ def handle_show_output_state(exam_urls_file, learning_urls_file, manual_exam_fil
         ("考试链接", str(len(read_exam_urls(exam_urls_file)))),
         ("人工考试链接", str(len(read_manual_exam_urls(manual_exam_file)))),
     ]
+    retriable_n = sum(
+        1 for e in failures if e.reason in RETRIABLE_LEARNING_FAILURE_REASONS
+    )
+    manual_n = sum(
+        1 for e in failures if e.reason in MANUAL_LEARNING_FAILURE_REASONS
+    )
+    denied_n = sum(
+        1 for e in failures if e.reason in ACCESS_DENIED_LEARNING_FAILURE_REASONS
+    )
+    rows.append(("失败·可重试", str(retriable_n)))
+    rows.append(("失败·需人工/待复查", str(manual_n)))
+    rows.append(("失败·不可访问已清理", str(denied_n)))
     for reason, count, label in group_learning_failures_by_reason(
         file_path=failures_file
     ):
@@ -408,9 +429,7 @@ def handle_show_output_state(exam_urls_file, learning_urls_file, manual_exam_fil
 
     ui.show_summary("当前输出文件状态", rows)
 
-    retryable_count = sum(
-        1 for entry in failures if entry.reason in RETRIABLE_LEARNING_FAILURE_REASONS
-    )
+    retryable_count = retriable_n
     if retryable_count > 0 and ui.prompt_yes_no(
         f"检测到 {retryable_count} 条可重试挂课失败，是否重新加入课程链接？",
         default="N",

@@ -7,7 +7,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from core.abort import NoPermissionError, UserAbortRequested, UserCancelRequested
+from core.abort import (
+    LearningFlowError,
+    NoPermissionError,
+    UserAbortRequested,
+    UserCancelRequested,
+)
 from core.browser.session import (
     create_browser_context,
     ensure_controller_page,
@@ -126,16 +131,38 @@ async def _process_url(context, url: str, handler) -> bool:
             raise UserCancelRequested(
                 "浏览器窗口已关闭，已保留剩余学习链接，返回主菜单"
             ) from None
-        logging.error(f"发生错误: {exc}")
-        logging.error(traceback.format_exc())
         if isinstance(exc, NoPermissionError):
+            # 无权限 / 资源不存在 / 下架：移出课程链接，失败文档写明原因（不自动重试）
+            reason = getattr(exc, "reason", None) or "no_permission"
+            reason_text = (
+                getattr(exc, "reason_text", None)
+                or str(exc)
+                or "无权限访问该学习资源，已从课程链接清理"
+            )
+            logging.warning(f"不可访问资源: {url} [{reason}] {reason_text}")
             record_learning_failure(
                 url,
-                reason="no_permission",
-                reason_text="无权限访问该学习资源",
+                reason=reason,
+                reason_text=reason_text,
                 file_path=LEARNING_FAILURES_FILE,
             )
+            logging.info(
+                f"不可访问资源已清理并记入失败链接: {url} [{reason}] {reason_text}"
+            )
             return False
+        if isinstance(exc, LearningFlowError):
+            logging.warning(f"挂课流程失败: {url} [{exc.reason}] {exc.reason_text}")
+            logging.debug(traceback.format_exc())
+            record_learning_failure(
+                url,
+                reason=exc.reason,
+                reason_text=exc.reason_text,
+                detail=getattr(exc, "detail", None) or {},
+                file_path=LEARNING_FAILURES_FILE,
+            )
+            return bool(exc.keep_pending)
+        logging.error(f"发生错误: {exc}")
+        logging.error(traceback.format_exc())
         record_learning_failure(
             url,
             reason="retryable_error",

@@ -194,6 +194,37 @@ class LearningQueueTests(unittest.TestCase):
             self.assertEqual(len(remaining), 1)
             self.assertEqual(remaining[0].reason, "no_permission")
 
+    def test_prune_invalid_learning_failures_removes_non_compliant_urls(self):
+        from core.queues.learning import (
+            prune_invalid_learning_failures,
+            read_learning_failures,
+            record_learning_failure,
+        )
+
+        with TemporaryDirectory() as tmp:
+            failures_file = Path(tmp) / "failures.json"
+            good = (
+                "https://kc.zhixueyun.com/#/study/course/detail/"
+                "363d5e6b-a6f2-4115-bf57-a4832d3296cf"
+            )
+            record_learning_failure(
+                "https://kc.zhixueyun.com/#/study/course/detail/a",
+                reason="unknown_learning_type",
+                reason_text="测试脏数据",
+                file_path=failures_file,
+            )
+            record_learning_failure(
+                good,
+                reason="retryable_error",
+                reason_text="真失败",
+                file_path=failures_file,
+            )
+            removed = prune_invalid_learning_failures(file_path=failures_file)
+            self.assertEqual(len(removed), 1)
+            remaining = read_learning_failures(file_path=failures_file)
+            self.assertEqual(len(remaining), 1)
+            self.assertEqual(remaining[0].url, good)
+
 
 if __name__ == "__main__":
     unittest.main()

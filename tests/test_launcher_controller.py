@@ -50,9 +50,17 @@ class LauncherControllerTests(unittest.TestCase):
                 file_path=failures,
             )
             record_learning_failure(
-                "https://example.com/x",
+                "https://kc.zhixueyun.com/#/study/course/detail/"
+                "22222222-2222-2222-2222-222222222222",
                 reason="no_permission",
                 reason_text="无权限",
+                file_path=failures,
+            )
+            # 脏数据：展示状态时会 prune 掉
+            record_learning_failure(
+                "https://kc.zhixueyun.com/#/study/course/detail/a",
+                reason="unknown_learning_type",
+                reason_text="测试占位",
                 file_path=failures,
             )
 
@@ -67,9 +75,12 @@ class LauncherControllerTests(unittest.TestCase):
             self.assertTrue(ui.summaries)
             labels = [row[0] for row in ui.summaries[0][1]]
             self.assertIn("失败·可重试错误", labels)
+            self.assertIn("失败·可重试", labels)
             self.assertEqual(len(read_learning_urls(file_path=learning)), 1)
+            # 无权限保留 + 可重试已 requeue 移除 + 脏数据 prune
             self.assertEqual(len(read_learning_failures(file_path=failures)), 1)
             self.assertTrue(any("重新加入" in m for m in ui.messages))
+            self.assertTrue(any("无效失败链接" in m for m in ui.messages))
 
     def test_choose_learning_zone_mode_returns_manual_when_no_learning_zone_urls(self):
         from core.app.launcher_controller import choose_learning_zone_mode
