@@ -1,22 +1,20 @@
-"""终端能力探测：决定 UI 用 Unicode 花式字符还是纯 ASCII。
+"""终端能力探测：Unicode 花式 UI vs 纯 ASCII。
 
-背景：传统 Windows cmd / conhost 搭配 CJK 字体时，box-drawing（━─╭╮）、
-中点 · 等 East Asian Ambiguous 字符常按全角 2 格渲染，而布局按半角 1 格算，
-进度条/表格边框会错位。Windows Terminal、VS Code 终端等宽度处理正常。
+产品入口只有两种：``run.bat`` 或 ``python launcher.py``。
+要区分的是底下挂的控制台宿主，不是启动方式本身。
 
-策略：
-  1. 环境变量强制：COURSE_AFK_UI_CHARS=unicode|ascii（最高优先级）
-  2. 控制台窗口类：PseudoConsoleWindow / Cascadia → Unicode；
-     ConsoleWindowClass（经典 conhost）→ 继续看其它信号
-  3. 环境变量 / 祖先进程链（WT_SESSION、WindowsTerminal.exe 等）→ Unicode
-  4. 非 Windows → Unicode
-  5. 其余 → ASCII
+判定优先级（由高到低）：
+  1. ``COURSE_AFK_UI_CHARS=unicode|ascii`` 强制
+  2. 控制台窗口类（本机 Win11 实测主信号）
+       - PseudoConsoleWindow → WT / ConPTY 托管 → Unicode
+       - ConsoleWindowClass  → 经典 conhost → 仍可看 3/4，默认偏 ASCII
+  3. ``WT_SESSION`` / ``WT_PROFILE_ID``（在 WT 标签内直接跑 launcher）
+  4. 开发兜底：VS Code / Cursor 集成终端
+  5. 祖先链仅认 windowsterminal / openconsole（窗口类拿不到时）
+  6. 非 Windows → Unicode；其余 → ASCII
 
-Win11 双击 run.bat 且默认终端为 WT 时：
-  - 往往 **没有** WT_SESSION
-  - 进程链常是 python ← cmd ← explorer，**没有** WindowsTerminal 祖先
-  - 但 GetConsoleWindow 的窗口类是 ``PseudoConsoleWindow``（ConPTY/WT 托管）
-  本机实测：新控制台会话 class=PseudoConsoleWindow；真 conhost 才是 ConsoleWindowClass。
+说明：不要用「父进程是 cmd」判断 legacy——bat 下面父进程几乎总是 cmd，
+Win11 默认终端仍可能是 WT（PseudoConsoleWindow）。
 """
 
 from __future__ import annotations
@@ -26,84 +24,26 @@ import sys
 from functools import lru_cache
 
 
-# 用户强制：unicode / ascii / auto（默认 auto）
 _ENV_FORCE = "COURSE_AFK_UI_CHARS"
 
-# 祖先进程可执行名（小写，可带或不带 .exe）→ 现代终端宿主
-_MODERN_HOST_STEMS = frozenset(
+# 仅 WT 相关宿主；入口场景不枚举 mintty/IDE 全家桶
+_WT_HOST_STEMS = frozenset({"windowsterminal", "openconsole", "wt"})
+_ANCESTOR_WALK_DEPTH = 8
+
+_MODERN_CONSOLE_CLASSES = frozenset(
     {
-        "windowsterminal",
-        "openconsole",  # WT 控制台宿主；Win11 默认终端托管 bat 时常见
-        "wt",
-        "code",
-        "code - insiders",
-        "cursor",
-        "devenv",  # Visual Studio
-        "pycharm64",
-        "pycharm",
-        "webstorm64",
-        "idea64",
-        "rider64",
-        "conemu64",
-        "conemu",
-        "cmder",
-        "mintty",
-        "alacritty",
-        "wezterm",
-        "wezterm-gui",
-        "hyper",
-        "tabby",
-        "fluentterminal",
-        "terminus",
+        "pseudoconsolewindow",  # ConPTY / Windows Terminal
+        "cascadia_hosting_window_class",
     }
 )
-
-# 向上追溯的最大代数（python→cmd→OpenConsole→WindowsTerminal 通常 2~4 层）
-_ANCESTOR_WALK_DEPTH = 10
+_LEGACY_CONSOLE_CLASSES = frozenset({"consolewindowclass"})
 
 
 def is_windows() -> bool:
     return sys.platform.startswith("win")
 
 
-def is_windows_terminal() -> bool:
-    """Windows Terminal（官方会注入 WT_SESSION / WT_PROFILE_ID）。"""
-    return bool(os.environ.get("WT_SESSION") or os.environ.get("WT_PROFILE_ID"))
-
-
-def is_vscode_terminal() -> bool:
-    """VS Code / Cursor 集成终端。"""
-    term_program = (os.environ.get("TERM_PROGRAM") or "").lower()
-    if term_program in {"vscode", "cursor"}:
-        return True
-    # 部分版本只注入 VSCODE_INJECTION，不设 TERM_PROGRAM
-    return bool(os.environ.get("VSCODE_INJECTION"))
-
-
-def is_conemu_or_cmder() -> bool:
-    return bool(
-        os.environ.get("ConEmuANSI")
-        or os.environ.get("ConEmuPID")
-        or os.environ.get("CMDER_ROOT")
-    )
-
-
-def is_mintty() -> bool:
-    """Git Bash / MSYS2 mintty。"""
-    term_program = (os.environ.get("TERM_PROGRAM") or "").lower()
-    if term_program == "mintty":
-        return True
-    return bool(os.environ.get("MSYSTEM") or os.environ.get("MINGW_PREFIX"))
-
-
-def is_jetbrains_terminal() -> bool:
-    """PyCharm / IDEA 等内置终端常设 TERMINAL_EMULATOR=JetBrains-JediTerm。"""
-    emu = (os.environ.get("TERMINAL_EMULATOR") or "").lower()
-    return "jetbrains" in emu or "jedi" in emu
-
-
 def _env_force_unicode() -> bool | None:
-    """COURSE_AFK_UI_CHARS=unicode|ascii → 强制；auto/空 → None。"""
     raw = (os.environ.get(_ENV_FORCE) or "").strip().lower()
     if raw in {"unicode", "utf8", "utf-8", "pretty", "1", "true", "yes"}:
         return True
@@ -112,8 +52,20 @@ def _env_force_unicode() -> bool | None:
     return None
 
 
+def is_windows_terminal_env() -> bool:
+    """WT 标签内常注入；双击 bat 经默认终端托管时往往没有。"""
+    return bool(os.environ.get("WT_SESSION") or os.environ.get("WT_PROFILE_ID"))
+
+
+def is_vscode_terminal() -> bool:
+    """开发时在 VS Code / Cursor 里跑 launcher。"""
+    term_program = (os.environ.get("TERM_PROGRAM") or "").lower()
+    if term_program in {"vscode", "cursor"}:
+        return True
+    return bool(os.environ.get("VSCODE_INJECTION"))
+
+
 def _normalize_exe_stem(name: str) -> str:
-    """进程名 → 小写 stem（去路径、去 .exe）。"""
     name = (name or "").strip().lower()
     if "\\" in name:
         name = name.rsplit("\\", 1)[-1]
@@ -126,7 +78,7 @@ def _normalize_exe_stem(name: str) -> str:
 
 @lru_cache(maxsize=1)
 def _windows_process_table() -> dict[int, tuple[int, str]]:
-    """pid → (parent_pid, exe_stem_lower)。失败返回空 dict。"""
+    """pid → (parent_pid, exe_stem)。"""
     if not is_windows():
         return {}
     try:
@@ -151,24 +103,13 @@ def _windows_process_table() -> dict[int, tuple[int, str]]:
             ]
 
         kernel32 = ctypes.windll.kernel32
-        CreateToolhelp32Snapshot = kernel32.CreateToolhelp32Snapshot
-        CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
-        CreateToolhelp32Snapshot.restype = wintypes.HANDLE
-        Process32FirstW = kernel32.Process32FirstW
-        Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
-        Process32FirstW.restype = wintypes.BOOL
-        Process32NextW = kernel32.Process32NextW
-        Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
-        Process32NextW.restype = wintypes.BOOL
-        CloseHandle = kernel32.CloseHandle
-
-        snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+        snap = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
         if snap in (0, INVALID_HANDLE_VALUE, None):
             return {}
         try:
             entry = PROCESSENTRY32W()
             entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
-            if not Process32FirstW(snap, ctypes.byref(entry)):
+            if not kernel32.Process32FirstW(snap, ctypes.byref(entry)):
                 return {}
             table: dict[int, tuple[int, str]] = {}
             while True:
@@ -177,21 +118,18 @@ def _windows_process_table() -> dict[int, tuple[int, str]]:
                     int(entry.th32ParentProcessID),
                     stem,
                 )
-                if not Process32NextW(snap, ctypes.byref(entry)):
+                if not kernel32.Process32NextW(snap, ctypes.byref(entry)):
                     break
             return table
         finally:
-            CloseHandle(snap)
+            kernel32.CloseHandle(snap)
     except Exception:
         return {}
 
 
 @lru_cache(maxsize=1)
 def _windows_ancestor_stems(max_depth: int = _ANCESTOR_WALK_DEPTH) -> tuple[str, ...]:
-    """从直接父进程起向上走 max_depth 代，返回 exe stem 元组。
-
-    例：双击 bat + Win11 默认 WT → ('cmd', 'openconsole', 'windowsterminal', ...)
-    """
+    """直接父进程起向上的 exe stem（仅作 WT 兜底，不靠「父=cmd」判 legacy）。"""
     if not is_windows():
         return ()
     try:
@@ -210,7 +148,7 @@ def _windows_ancestor_stems(max_depth: int = _ANCESTOR_WALK_DEPTH) -> tuple[str,
             info = table.get(pid)
             if not info:
                 break
-            parent_pid, _self_name = info
+            parent_pid, _self = info
             parent = table.get(parent_pid)
             if not parent:
                 break
@@ -223,49 +161,17 @@ def _windows_ancestor_stems(max_depth: int = _ANCESTOR_WALK_DEPTH) -> tuple[str,
         return ()
 
 
-def _windows_parent_process_stem() -> str:
-    """直接父进程 stem（兼容旧调用/测试）。"""
-    ancestors = _windows_ancestor_stems()
-    return ancestors[0] if ancestors else ""
-
-
-def _stem_is_modern_host(stem: str) -> bool:
-    bare = _normalize_exe_stem(stem)
-    return bare in _MODERN_HOST_STEMS
-
-
-def _ancestor_modern_host() -> str | None:
-    """祖先链上第一个现代终端宿主 stem；没有则 None。"""
+def _ancestor_wt_host() -> str | None:
     for stem in _windows_ancestor_stems():
-        if _stem_is_modern_host(stem):
-            return stem
+        bare = _normalize_exe_stem(stem)
+        if bare in _WT_HOST_STEMS:
+            return bare
     return None
-
-
-def _ancestor_looks_modern() -> bool:
-    return _ancestor_modern_host() is not None
-
-
-# 控制台 HWND 窗口类（本机 Win11+WT 实测）
-# - PseudoConsoleWindow：ConPTY / Windows Terminal 等现代托管
-# - CASCADIA_HOSTING_WINDOW_CLASS：WT 外壳窗口
-# - ConsoleWindowClass：经典 conhost（CJK 宽度易错位）
-_MODERN_CONSOLE_CLASSES = frozenset(
-    {
-        "pseudoconsolewindow",
-        "cascadia_hosting_window_class",
-    }
-)
-_LEGACY_CONSOLE_CLASSES = frozenset(
-    {
-        "consolewindowclass",
-    }
-)
 
 
 @lru_cache(maxsize=1)
 def _console_window_class() -> str:
-    """当前进程附属控制台窗口的类名；无控制台返回空串。"""
+    """附属控制台窗口类名；无控制台返回空。"""
     if not is_windows():
         return ""
     try:
@@ -294,51 +200,30 @@ def _console_class_is_legacy_conhost() -> bool:
 
 
 def is_modern_terminal_host() -> bool:
-    """是否挂在已知「宽度处理正常」的终端宿主上。"""
-    if is_windows_terminal():
-        return True
-    if is_vscode_terminal():
-        return True
-    if is_conemu_or_cmder():
-        return True
-    if is_mintty():
-        return True
-    if is_jetbrains_terminal():
-        return True
-    term_program = (os.environ.get("TERM_PROGRAM") or "").lower()
-    if term_program in {
-        "alacritty",
-        "wezterm",
-        "hyper",
-        "tabby",
-        "iterm.app",
-        "apple_terminal",
-    }:
-        return True
-    if (os.environ.get("TERMINAL_EMULATOR") or "").strip():
-        # 其它 IDE 内置终端多半设此变量
-        return True
-    # 最关键：Win11 默认 WT 托管 bat 时，进程树/环境都可能像纯 cmd，
-    # 但控制台窗口类是 PseudoConsoleWindow。
+    """宽度可信的现代宿主（WT / ConPTY / 开发终端）。"""
+    # 1) 窗口类：双击 bat + Win11 默认 WT 的主路径
     if is_windows() and _console_class_is_modern():
         return True
-    # 祖先链：在 WT 标签内开 cmd、或 OpenConsole 仍是父/祖进程时
-    if is_windows() and _ancestor_looks_modern():
+    # 2) WT 环境变量：在 WT 标签内跑 python launcher
+    if is_windows_terminal_env():
+        return True
+    # 3) 开发：VS Code / Cursor
+    if is_vscode_terminal():
+        return True
+    # 4) 窗口类缺失时的 WT 祖先兜底
+    if is_windows() and _ancestor_wt_host():
         return True
     return False
 
 
 def is_legacy_windows_console() -> bool:
-    """真·纯 conhost：现代宿主信号全无。"""
+    """经典 conhost / 无现代信号。"""
     if not is_windows():
         return False
-    if is_modern_terminal_host():
-        return False
-    return True
+    return not is_modern_terminal_host()
 
 
 def prefers_unicode_ui() -> bool:
-    """是否可用 box-drawing / 中点等（宽度可信）。"""
     forced = _env_force_unicode()
     if forced is not None:
         return forced
@@ -348,7 +233,7 @@ def prefers_unicode_ui() -> bool:
 
 
 def detect_terminal_kind() -> str:
-    """供日志/调试：终端类型标签。"""
+    """调试标签。"""
     forced = _env_force_unicode()
     if forced is True:
         return "forced_unicode"
@@ -356,31 +241,24 @@ def detect_terminal_kind() -> str:
         return "forced_ascii"
     if not is_windows():
         return "unix"
-    if is_windows_terminal():
+    if _console_class_is_modern():
+        return f"console_class:{_console_window_class()}"
+    if is_windows_terminal_env():
         return "windows_terminal"
     if is_vscode_terminal():
         return "vscode"
-    if is_conemu_or_cmder():
-        return "conemu"
-    if is_mintty():
-        return "mintty"
-    if is_jetbrains_terminal():
-        return "jetbrains"
-    if _console_class_is_modern():
-        cls = _console_window_class() or "pseudoconsole"
-        return f"console_class:{cls}"
-    host = _ancestor_modern_host()
+    host = _ancestor_wt_host()
     if host:
         return f"ancestor:{host}"
     if _console_class_is_legacy_conhost():
         return "conhost"
     return "cmd"
-# ---------- 全套 UI 字形（进度条 + 日志图标 + 分隔符 + 箭头）----------
+
+
+# ---------- 字形 ----------
 
 
 class ProgressCharset:
-    """进度条字形。"""
-
     __slots__ = (
         "name",
         "spinner",
@@ -418,11 +296,6 @@ class ProgressCharset:
 
 
 class UiGlyphs:
-    """整套 TUI/CLI 装饰字符：图标、分隔、箭头、进度轨、Textual 边框样式名。
-
-    现代终端用 Unicode；纯 cmd 全 ASCII，避免 CJK 字体全角错位。
-    """
-
     __slots__ = (
         "name",
         "icon_info",
@@ -477,15 +350,12 @@ class UiGlyphs:
         self.textual_border_soft = textual_border_soft
 
     def pad_icon(self, icon: str) -> str:
-        """日志图标左对齐到固定显示宽度。"""
         return f"{icon:<{self.icon_width}}"
 
     def join_keys(self, *parts: str) -> str:
-        """快捷键提示：A · B · C（Unicode）或 A | B | C（ASCII）。"""
         return self.keys_join.join(p for p in parts if p)
 
 
-# Windows Terminal / VS Code 等
 _UNICODE_PROGRESS = ProgressCharset(
     name="unicode",
     spinner=("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"),
@@ -512,7 +382,6 @@ _ASCII_PROGRESS = ProgressCharset(
 
 _UNICODE_GLYPHS = UiGlyphs(
     name="unicode",
-    # 单字符图标（WT 下宽度稳定）；日志用 icon_width=2 对齐
     icon_info="·",
     icon_success="✓",
     icon_warning="!",
@@ -549,18 +418,15 @@ _ASCII_GLYPHS = UiGlyphs(
 
 
 def ui_glyphs(*, unicode: bool | None = None) -> UiGlyphs:
-    """当前终端应使用的整套 UI 字形。"""
     use_unicode = prefers_unicode_ui() if unicode is None else bool(unicode)
     return _UNICODE_GLYPHS if use_unicode else _ASCII_GLYPHS
 
 
 def progress_charset(*, unicode: bool | None = None) -> ProgressCharset:
-    """返回当前终端应使用的进度条字符集。"""
     return ui_glyphs(unicode=unicode).progress
 
 
 def clear_terminal_compat_cache() -> None:
-    """测试用：清进程表 / 祖先链 / 窗口类缓存。"""
     _windows_process_table.cache_clear()
     _windows_ancestor_stems.cache_clear()
     _console_window_class.cache_clear()
