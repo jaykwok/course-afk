@@ -8,9 +8,16 @@
   1. 环境变量强制：COURSE_AFK_UI_CHARS=unicode|ascii（最高优先级）
   2. 识别宿主窗口/终端（WT / VS Code / ConEmu / mintty / PyCharm 等）→ Unicode
   3. 非 Windows → Unicode
-  4. 其余（含双击 run.bat 打开的纯 cmd）→ ASCII
+  4. 其余（真·纯 conhost cmd）→ ASCII
 
-识别手段：环境变量（WT_SESSION 等）+ 可选父进程名（WindowsTerminal.exe 等）。
+识别手段：
+  - 环境变量（WT_SESSION 等）
+  - **祖先进程链**（不只看直接父进程）
+
+Win11 默认终端为 Windows Terminal 时，双击 run.bat 的典型进程链是：
+  python.exe ← cmd.exe ← OpenConsole.exe ← WindowsTerminal.exe
+直接父进程仍是 cmd，但 OpenConsole/WindowsTerminal 在祖先里——必须沿链向上找。
+且该路径下往往 **不会** 注入 WT_SESSION（与「在 WT 里手动开标签」不同）。
 """
 
 from __future__ import annotations
@@ -23,11 +30,11 @@ from functools import lru_cache
 # 用户强制：unicode / ascii / auto（默认 auto）
 _ENV_FORCE = "COURSE_AFK_UI_CHARS"
 
-# 父进程名（小写、去 .exe）→ 现代终端
-_MODERN_PARENT_STEMS = frozenset(
+# 祖先进程可执行名（小写，可带或不带 .exe）→ 现代终端宿主
+_MODERN_HOST_STEMS = frozenset(
     {
         "windowsterminal",
-        "openconsole",  # Windows Terminal 控制台宿主
+        "openconsole",  # WT 控制台宿主；Win11 默认终端托管 bat 时常见
         "wt",
         "code",
         "code - insiders",
@@ -51,6 +58,9 @@ _MODERN_PARENT_STEMS = frozenset(
         "terminus",
     }
 )
+
+# 向上追溯的最大代数（python→cmd→OpenConsole→WindowsTerminal 通常 2~4 层）
+_ANCESTOR_WALK_DEPTH = 10
 
 
 def is_windows() -> bool:
@@ -103,11 +113,23 @@ def _env_force_unicode() -> bool | None:
     return None
 
 
+def _normalize_exe_stem(name: str) -> str:
+    """进程名 → 小写 stem（去路径、去 .exe）。"""
+    name = (name or "").strip().lower()
+    if "\\" in name:
+        name = name.rsplit("\\", 1)[-1]
+    if "/" in name:
+        name = name.rsplit("/", 1)[-1]
+    if name.endswith(".exe"):
+        name = name[:-4]
+    return name
+
+
 @lru_cache(maxsize=1)
-def _windows_parent_process_stem() -> str:
-    """当前进程父进程可执行文件名（小写）。失败返回空串。"""
+def _windows_process_table() -> dict[int, tuple[int, str]]:
+    """pid → (parent_pid, exe_stem_lower)。失败返回空 dict。"""
     if not is_windows():
-        return ""
+        return {}
     try:
         import ctypes
         from ctypes import wintypes
@@ -141,54 +163,88 @@ def _windows_parent_process_stem() -> str:
         Process32NextW.restype = wintypes.BOOL
         CloseHandle = kernel32.CloseHandle
 
-        pid = kernel32.GetCurrentProcessId()
         snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
         if snap in (0, INVALID_HANDLE_VALUE, None):
-            return ""
+            return {}
         try:
             entry = PROCESSENTRY32W()
             entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
             if not Process32FirstW(snap, ctypes.byref(entry)):
-                return ""
-            parent_pid = None
+                return {}
+            table: dict[int, tuple[int, str]] = {}
             while True:
-                if entry.th32ProcessID == pid:
-                    parent_pid = entry.th32ParentProcessID
-                    break
+                stem = _normalize_exe_stem(entry.szExeFile or "")
+                table[int(entry.th32ProcessID)] = (
+                    int(entry.th32ParentProcessID),
+                    stem,
+                )
                 if not Process32NextW(snap, ctypes.byref(entry)):
                     break
-            if not parent_pid:
-                return ""
-            # 再扫一遍找父进程名
-            entry = PROCESSENTRY32W()
-            entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
-            if not Process32FirstW(snap, ctypes.byref(entry)):
-                return ""
-            while True:
-                if entry.th32ProcessID == parent_pid:
-                    name = (entry.szExeFile or "").strip().lower()
-                    # 去掉路径只留文件名
-                    if "\\" in name:
-                        name = name.rsplit("\\", 1)[-1]
-                    return name
-                if not Process32NextW(snap, ctypes.byref(entry)):
-                    break
-            return ""
+            return table
         finally:
             CloseHandle(snap)
     except Exception:
-        return ""
+        return {}
 
 
-def _parent_looks_modern() -> bool:
-    stem = _windows_parent_process_stem()
-    if not stem:
-        return False
-    if stem in _MODERN_PARENT_STEMS:
-        return True
-    # 去 .exe 再比一次
-    bare = stem[:-4] if stem.endswith(".exe") else stem
-    return bare in _MODERN_PARENT_STEMS or f"{bare}.exe" in _MODERN_PARENT_STEMS
+@lru_cache(maxsize=1)
+def _windows_ancestor_stems(max_depth: int = _ANCESTOR_WALK_DEPTH) -> tuple[str, ...]:
+    """从直接父进程起向上走 max_depth 代，返回 exe stem 元组。
+
+    例：双击 bat + Win11 默认 WT → ('cmd', 'openconsole', 'windowsterminal', ...)
+    """
+    if not is_windows():
+        return ()
+    try:
+        import ctypes
+
+        table = _windows_process_table()
+        if not table:
+            return ()
+        pid = int(ctypes.windll.kernel32.GetCurrentProcessId())
+        stems: list[str] = []
+        seen: set[int] = set()
+        for _ in range(max(1, int(max_depth))):
+            if pid in seen:
+                break
+            seen.add(pid)
+            info = table.get(pid)
+            if not info:
+                break
+            parent_pid, _self_name = info
+            parent = table.get(parent_pid)
+            if not parent:
+                break
+            _ppid, parent_stem = parent
+            if parent_stem:
+                stems.append(parent_stem)
+            pid = parent_pid
+        return tuple(stems)
+    except Exception:
+        return ()
+
+
+def _windows_parent_process_stem() -> str:
+    """直接父进程 stem（兼容旧调用/测试）。"""
+    ancestors = _windows_ancestor_stems()
+    return ancestors[0] if ancestors else ""
+
+
+def _stem_is_modern_host(stem: str) -> bool:
+    bare = _normalize_exe_stem(stem)
+    return bare in _MODERN_HOST_STEMS
+
+
+def _ancestor_modern_host() -> str | None:
+    """祖先链上第一个现代终端宿主 stem；没有则 None。"""
+    for stem in _windows_ancestor_stems():
+        if _stem_is_modern_host(stem):
+            return stem
+    return None
+
+
+def _ancestor_looks_modern() -> bool:
+    return _ancestor_modern_host() is not None
 
 
 def is_modern_terminal_host() -> bool:
@@ -216,18 +272,18 @@ def is_modern_terminal_host() -> bool:
     if (os.environ.get("TERMINAL_EMULATOR") or "").strip():
         # 其它 IDE 内置终端多半设此变量
         return True
-    if is_windows() and _parent_looks_modern():
+    # Win11 默认终端托管 bat：父进程是 cmd，OpenConsole/WT 在更上层
+    if is_windows() and _ancestor_looks_modern():
         return True
     return False
 
 
 def is_legacy_windows_console() -> bool:
-    """纯 cmd / conhost：未挂在 WT / VS Code / ConEmu 等宿主上。"""
+    """真·纯 conhost/cmd：祖先链上没有现代终端宿主。"""
     if not is_windows():
         return False
     if is_modern_terminal_host():
         return False
-    # TERM=xterm-* 且带 TERM_PROGRAM 的，前面已覆盖；单独 xterm 在纯 cmd 上很少见
     return True
 
 
@@ -260,11 +316,11 @@ def detect_terminal_kind() -> str:
         return "mintty"
     if is_jetbrains_terminal():
         return "jetbrains"
-    if _parent_looks_modern():
-        parent = _windows_parent_process_stem() or "modern_parent"
-        return f"parent:{parent}"
+    host = _ancestor_modern_host()
+    if host:
+        # 标明是祖先链命中（如 openconsole），便于确认 Win11 默认终端场景
+        return f"ancestor:{host}"
     return "cmd"
-
 
 # ---------- 全套 UI 字形（进度条 + 日志图标 + 分隔符 + 箭头）----------
 
@@ -451,5 +507,6 @@ def progress_charset(*, unicode: bool | None = None) -> ProgressCharset:
 
 
 def clear_terminal_compat_cache() -> None:
-    """测试用：清父进程探测缓存。"""
-    _windows_parent_process_stem.cache_clear()
+    """测试用：清进程表 / 祖先链缓存。"""
+    _windows_process_table.cache_clear()
+    _windows_ancestor_stems.cache_clear()
