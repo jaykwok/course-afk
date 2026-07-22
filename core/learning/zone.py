@@ -5,15 +5,15 @@ from urllib.parse import parse_qs, urlparse
 
 from bs4 import BeautifulSoup
 
-from core.browser import create_browser_context
+from core.browser.session import create_browser_context
 from core.config import ZHIXUEYUN_COURSE_PREFIX, ZHIXUEYUN_SUBJECT_PREFIX
 from core.file_ops import is_compliant_url_regex, normalize_url
 from core.links import unique_urls
-from core.page_overlays import (
+from core.browser.overlays import (
     dismiss_topmost_overlays_async,
     prepare_page_after_navigation_async,
 )
-from core.subject_parse import enqueue_learning_links_with_subject_expand
+from core.discovery.subject_parse import enqueue_learning_links_with_subject_expand
 
 
 # 实勘（cms topic / 学习专区）:

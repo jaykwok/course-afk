@@ -24,7 +24,7 @@ from rich.table import Table
 from rich.text import Text
 
 from core.abort import UserCancelRequested
-from core.credential import load_credential_metadata
+from core.auth.credential import load_credential_metadata
 from core.palette import GREEN, GREEN_BRIGHT, ERROR, SUCCESS, WARNING
 from core.state import ProjectState, recommend_next_step
 

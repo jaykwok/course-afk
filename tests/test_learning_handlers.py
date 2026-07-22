@@ -45,7 +45,7 @@ class _FakePage:
 
 class LearningHandlerTests(unittest.IsolatedAsyncioTestCase):
     async def test_handle_video_cleans_up_background_tasks_when_page_closes(self):
-        from core.learning_handlers import handle_video
+        from core.learning.handlers import handle_video
 
         class TargetClosedError(Exception):
             pass
@@ -65,17 +65,17 @@ class LearningHandlerTests(unittest.IsolatedAsyncioTestCase):
             return task
 
         with (
-            patch("core.learning_handlers.timer", new=never_finishing_timer),
+            patch("core.learning.handlers.timer", new=never_finishing_timer),
             patch(
-                "core.learning_handlers.check_rating_popup_periodically",
+                "core.learning.handlers.check_rating_popup_periodically",
                 new=never_finishing_popup_check,
             ),
             patch(
-                "core.learning_handlers.check_and_handle_rating_popup",
+                "core.learning.handlers.check_and_handle_rating_popup",
                 new=AsyncMock(return_value=False),
             ),
             patch(
-                "core.learning_handlers.asyncio.create_task",
+                "core.learning.handlers.asyncio.create_task",
                 side_effect=tracking_create_task,
             ),
         ):

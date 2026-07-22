@@ -92,7 +92,7 @@ class TargetClosedError(Exception):
 
 class LoginTests(unittest.TestCase):
     def test_login_uses_no_viewport_context_for_visible_browser(self):
-        from core.login import login_and_save_credential
+        from core.auth.login import login_and_save_credential
 
         fake_browser = FakeLoginBrowser()
         fake_profile = SimpleNamespace(
@@ -104,11 +104,11 @@ class LoginTests(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             cookies_file = Path(tmp) / "cookies.json"
             with (
-                patch("core.login.COOKIES_FILE", cookies_file),
-                patch("core.login.launch_sync_browser", return_value=fake_browser),
-                patch("core.login.extract_account_profile_from_sync_context", return_value=fake_profile),
-                patch("core.login.save_credential_metadata"),
-                patch("core.login.sync_playwright"),
+                patch("core.auth.login.COOKIES_FILE", cookies_file),
+                patch("core.auth.login.launch_sync_browser", return_value=fake_browser),
+                patch("core.auth.login.extract_account_profile_from_sync_context", return_value=fake_profile),
+                patch("core.auth.login.save_credential_metadata"),
+                patch("core.auth.login.sync_playwright"),
             ):
                 profile = login_and_save_credential()
 
@@ -124,21 +124,21 @@ class LoginTests(unittest.TestCase):
 
     def test_login_saves_credentials_when_profile_lookup_times_out(self):
         from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
-        from core.login import login_and_save_credential
+        from core.auth.login import login_and_save_credential
 
         fake_browser = FakeLoginBrowser()
 
         with TemporaryDirectory() as tmp:
             cookies_file = Path(tmp) / "cookies.json"
             with (
-                patch("core.login.COOKIES_FILE", cookies_file),
-                patch("core.login.launch_sync_browser", return_value=fake_browser),
+                patch("core.auth.login.COOKIES_FILE", cookies_file),
+                patch("core.auth.login.launch_sync_browser", return_value=fake_browser),
                 patch(
-                    "core.login.extract_account_profile_from_sync_context",
+                    "core.auth.login.extract_account_profile_from_sync_context",
                     side_effect=PlaywrightTimeoutError("blank zhixueyun page"),
                 ),
-                patch("core.login.save_credential_metadata") as mock_save_metadata,
-                patch("core.login.sync_playwright"),
+                patch("core.auth.login.save_credential_metadata") as mock_save_metadata,
+                patch("core.auth.login.sync_playwright"),
             ):
                 profile = login_and_save_credential()
                 self.assertTrue(cookies_file.exists())
@@ -147,13 +147,13 @@ class LoginTests(unittest.TestCase):
         mock_save_metadata.assert_called_once()
 
     def test_login_closed_before_success_raises_clear_error(self):
-        from core.login import LoginNotCompletedError, login_and_save_credential
+        from core.auth.login import LoginNotCompletedError, login_and_save_credential
 
         fake_browser = FakeLoginBrowser(close_during_login=True)
 
         with (
-            patch("core.login.launch_sync_browser", return_value=fake_browser),
-            patch("core.login.sync_playwright"),
+            patch("core.auth.login.launch_sync_browser", return_value=fake_browser),
+            patch("core.auth.login.sync_playwright"),
         ):
             with self.assertRaises(LoginNotCompletedError) as ctx:
                 login_and_save_credential()

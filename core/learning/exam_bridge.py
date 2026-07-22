@@ -4,8 +4,8 @@ import asyncio
 import logging
 import re
 
-from core.exam_queue import append_exam_url
-from core.learning_common import get_course_url
+from core.queues.exam import append_exam_url
+from core.learning.common import get_course_url
 
 
 async def check_exam_passed(page):

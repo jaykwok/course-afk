@@ -20,10 +20,13 @@ from urllib.parse import urlparse
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(PROJECT_ROOT / ".env")
 
+# 运行时数据（队列、凭证、日志、参考资料）统一放在 data/
+DATA_DIR = PROJECT_ROOT / "data"
+
 # ============================================================
 # 日志配置
 # ============================================================
-LOG_FILE = PROJECT_ROOT / "log.txt"
+LOG_FILE = DATA_DIR / "log.txt"
 LOG_LEVEL = logging.DEBUG
 CONSOLE_LOG_LEVEL = logging.INFO
 LOG_FORMAT = (
@@ -323,12 +326,19 @@ def _log_startup_banner(root_logger):
     root_logger.info(separator)
 
 
+def ensure_data_layout() -> None:
+    """确保 data/ 存在。运行时路径仅认 data/，不兼容项目根目录旧文件布局。"""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+
 def setup_logging(show_startup_banner: bool | None = None):
     """统一日志配置，所有脚本共用，追加模式保留历史日志"""
     global _LOGGING_CONFIGURED
 
     if _LOGGING_CONFIGURED:
         return logging.getLogger()
+
+    ensure_data_layout()
 
     root_logger = logging.getLogger()
     for handler in root_logger.handlers[:]:
@@ -430,15 +440,15 @@ ZHIXUEYUN_TRAIN_CLASS_PREFIX = "https://kc.zhixueyun.com/#/train-new/class-detai
 ZHIXUEYUN_EXAM_PREFIX = "https://kc.zhixueyun.com/#/exam/exam/answer-paper/"
 
 # ============================================================
-# 文件路径
+# 文件路径（均位于 data/）
 # ============================================================
-COOKIES_FILE = PROJECT_ROOT / "cookies.json"
-CREDENTIAL_META_FILE = PROJECT_ROOT / "credential_meta.json"
-LEARNING_URLS_FILE = PROJECT_ROOT / "课程链接.json"
-LEARNING_FAILURES_FILE = PROJECT_ROOT / "挂课失败链接.json"
-EXAM_URLS_FILE = PROJECT_ROOT / "考试链接.json"
-MANUAL_EXAM_FILE = PROJECT_ROOT / "人工考试链接.json"
-REFERENCE_OUTPUT_DIR = PROJECT_ROOT / "参考资料"
+COOKIES_FILE = DATA_DIR / "cookies.json"
+CREDENTIAL_META_FILE = DATA_DIR / "credential_meta.json"
+LEARNING_URLS_FILE = DATA_DIR / "课程链接.json"
+LEARNING_FAILURES_FILE = DATA_DIR / "挂课失败链接.json"
+EXAM_URLS_FILE = DATA_DIR / "考试链接.json"
+MANUAL_EXAM_FILE = DATA_DIR / "人工考试链接.json"
+REFERENCE_OUTPUT_DIR = DATA_DIR / "参考资料"
 
 # ============================================================
 # 超时 / 等待时间（秒）

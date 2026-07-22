@@ -5,7 +5,7 @@ import traceback
 
 from core.abort import UserAbortRequested
 from core.config import MANUAL_EXAM_FILE
-from core.manual_exam_queue import append_manual_exam_entry
+from core.queues.manual_exam import append_manual_exam_entry
 
 
 def _get_option_click_selector(question_data) -> str:

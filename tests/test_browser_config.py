@@ -2,7 +2,7 @@ import asyncio
 import unittest
 from unittest.mock import AsyncMock
 
-from core import browser
+from core.browser import session as browser
 
 
 class BrowserLaunchConfigTests(unittest.TestCase):

@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import logging
 
-from core.exam_actions import close_exam_notice_if_present, select_answers, submit_exam
-from core.exam_answers import get_ai_answers
-from core.exam_parsing import (
+from core.exam.actions import close_exam_notice_if_present, select_answers, submit_exam
+from core.exam.answers import get_ai_answers
+from core.exam.parsing import (
     detect_exam_mode,
     extract_multi_questions_data,
     extract_single_question_data,

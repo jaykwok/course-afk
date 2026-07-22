@@ -13,7 +13,7 @@ def _chat_stream(*chunks):
 
 class ExamAnswerTests(unittest.TestCase):
     def test_build_question_prompt_includes_type_text_and_options(self):
-        from core.exam_answers import build_question_prompt
+        from core.exam.answers import build_question_prompt
 
         prompt = build_question_prompt(
             {
@@ -32,7 +32,7 @@ class ExamAnswerTests(unittest.TestCase):
         self.assertIn("B. CU", prompt)
 
     def test_normalize_ai_answer_text_handles_judge_and_ordering_and_multi(self):
-        from core.exam_answers import normalize_ai_answer_text
+        from core.exam.answers import normalize_ai_answer_text
 
         self.assertEqual(normalize_ai_answer_text("judge", "答案：正确"), ["正确"])
         self.assertEqual(normalize_ai_answer_text("judge", "The answer is false"), ["错误"])
@@ -43,7 +43,7 @@ class ExamAnswerTests(unittest.TestCase):
         self.assertEqual(normalize_ai_answer_text("multiple", "我选 ac"), ["A", "C"])
 
     def test_normalize_ai_answer_text_keeps_only_final_single_choice_from_reasoning(self):
-        from core.exam_answers import normalize_ai_answer_text
+        from core.exam.answers import normalize_ai_answer_text
 
         self.assertEqual(
             normalize_ai_answer_text("single", "A 不符合题意，B 才是正确答案。"),
@@ -57,7 +57,7 @@ class ExamAnswerTests(unittest.TestCase):
 
 class ExamAnswerResponsesApiTests(unittest.IsolatedAsyncioTestCase):
     async def test_get_ai_answers_raises_configuration_error_for_unsupported_model(self):
-        from core import exam_answers
+        from core.exam import answers as exam_answers
 
         create = Mock(
             side_effect=RuntimeError(
@@ -88,7 +88,7 @@ class ExamAnswerResponsesApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("qwen3.6-max-preview", str(ctx.exception))
 
     async def test_get_ai_answers_uses_responses_web_search_when_enabled(self):
-        from core import exam_answers
+        from core.exam import answers as exam_answers
 
         create = Mock(
             return_value=_responses_stream(
@@ -119,7 +119,7 @@ class ExamAnswerResponsesApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(create.call_args.kwargs["stream"])
 
     async def test_get_ai_answers_omits_tools_when_web_search_disabled(self):
-        from core import exam_answers
+        from core.exam import answers as exam_answers
 
         create = Mock(
             return_value=_responses_stream(
@@ -149,7 +149,7 @@ class ExamAnswerResponsesApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(create.call_args.kwargs["stream"])
 
     async def test_get_ai_answers_uses_responses_reasoning_effort_when_configured(self):
-        from core import exam_answers
+        from core.exam import answers as exam_answers
 
         create = Mock(
             return_value=_responses_stream(
@@ -179,7 +179,7 @@ class ExamAnswerResponsesApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("extra_body", create.call_args.kwargs)
 
     async def test_get_ai_answers_uses_responses_enable_thinking_when_effort_missing(self):
-        from core import exam_answers
+        from core.exam import answers as exam_answers
 
         create = Mock(
             return_value=_responses_stream(
@@ -213,7 +213,7 @@ class ExamAnswerResponsesApiTests(unittest.IsolatedAsyncioTestCase):
 
 class ExamAnswerChatApiTests(unittest.IsolatedAsyncioTestCase):
     async def test_get_ai_answers_uses_chat_completions_with_web_search_when_enabled(self):
-        from core import exam_answers
+        from core.exam import answers as exam_answers
 
         create = Mock(
             return_value=_chat_stream(
@@ -263,7 +263,7 @@ class ExamAnswerChatApiTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_get_ai_answers_sends_chat_thinking_disabled_when_configured(self):
-        from core import exam_answers
+        from core.exam import answers as exam_answers
 
         create = Mock(
             return_value=_chat_stream(
@@ -304,7 +304,7 @@ class ExamAnswerChatApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(create.call_args.kwargs["stream"])
 
     async def test_get_ai_answers_uses_chat_enable_thinking_and_search_together(self):
-        from core import exam_answers
+        from core.exam import answers as exam_answers
 
         create = Mock(
             return_value=_chat_stream(
@@ -343,7 +343,7 @@ class ExamAnswerChatApiTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_get_ai_answers_rejects_unknown_request_type(self):
-        from core import exam_answers
+        from core.exam import answers as exam_answers
 
         client = SimpleNamespace()
         question_data = {

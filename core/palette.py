@@ -1,6 +1,6 @@
 """全应用统一色板。
 
-Textual 主题(core.tui_app.COURSE_THEME)与 Rich 渲染(core.ui / core.tui_bridge)
+Textual 主题(core.ui.tui_app.COURSE_THEME)与 Rich 渲染(core.ui / core.ui.tui_bridge)
 共用这套颜色，保证 CLI 图标、TUI 日志、焦点高亮、按钮变体、边框、标题都用同一套
 「翡翠绿主色 + 语义色」，整体色调一致，不会冷暖 / 明暗打架。
 

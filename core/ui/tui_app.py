@@ -1,7 +1,7 @@
 """Textual TUI 前端：仪表盘 + 活动日志 + 模态提示。
 
 本模块只负责 Textual 界面本身，不依赖 core.* 业务逻辑。桥接层
-(core.tui_bridge.TuiFrontend) 负责把 core.ui 的同步接口接到这里。
+(core.ui.tui_bridge.TuiFrontend) 负责把 core.ui 的同步接口接到这里。
 
 线程模型：
 - Textual 事件循环跑在主线程。

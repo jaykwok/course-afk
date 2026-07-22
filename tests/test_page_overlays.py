@@ -1,6 +1,6 @@
 import unittest
 
-from core.page_overlays import (
+from core.browser.overlays import (
     DISMISS_TOPMOST_OVERLAY_SCRIPT,
     dismiss_topmost_overlays_async,
     dismiss_topmost_overlays_sync,

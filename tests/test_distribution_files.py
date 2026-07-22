@@ -1,5 +1,4 @@
 import unittest
-from pathlib import Path
 
 from core import config
 
@@ -39,6 +38,7 @@ class DistributionFilesTests(unittest.TestCase):
         self.assertIn("Python was not found", content)
         self.assertIn("Starting launcher.py", content)
         self.assertIn("Launcher exited with code", content)
+        self.assertIn("data\\log.txt", content)
         self.assertNotIn("WindowsPowerShell", content)
         self.assertNotIn("GetConsoleMode", content)
         self.assertNotIn("SetConsoleMode", content)
@@ -63,32 +63,28 @@ class DistributionFilesTests(unittest.TestCase):
         self.assertIn("考试链接.json", readme)
         self.assertIn("人工考试链接.json", readme)
         self.assertIn("参考资料", readme)
+        self.assertIn("data/", readme)
+        self.assertIn("tools/capture/", readme)
         self.assertNotIn("课程链接.txt", readme)
         self.assertNotIn("剩余未看课程链接.txt", readme)
         self.assertNotIn("考试次数超限链接.txt", readme)
         self.assertNotIn("run.ps1", readme)
 
-    def test_generated_workflow_outputs_are_json_only(self):
+    def test_generated_workflow_outputs_live_under_data_dir(self):
         gitignore = (config.PROJECT_ROOT / ".gitignore").read_text(encoding="utf-8")
         ignored_lines = set(gitignore.splitlines())
 
-        self.assertIn("课程链接.json", ignored_lines)
-        self.assertIn("挂课失败链接.json", ignored_lines)
-        self.assertIn("考试链接.json", ignored_lines)
-        self.assertIn("人工考试链接.json", ignored_lines)
-        self.assertIn("_capture/", ignored_lines)
-        self.assertNotIn("课程链接.txt", ignored_lines)
-        self.assertNotIn("剩余未看课程链接.txt", ignored_lines)
-        self.assertNotIn("考试次数超限链接.txt", ignored_lines)
-        self.assertNotIn("无权限资源链接.txt", ignored_lines)
-        self.assertNotIn("不合规链接.txt", ignored_lines)
-        self.assertNotIn("URL类型链接.txt", ignored_lines)
-        self.assertNotIn("h5课程类型链接.txt", ignored_lines)
-        self.assertNotIn("调研类型链接.txt", ignored_lines)
-        self.assertNotIn("未知类型链接.txt", ignored_lines)
-        self.assertNotIn("非课程及考试类学习类型链接.txt", ignored_lines)
-        self.assertNotIn("考试链接.txt", ignored_lines)
-        self.assertNotIn("人工考试链接.txt", ignored_lines)
+        self.assertIn("data/", ignored_lines)
+        self.assertIn("tools/capture/", ignored_lines)
+        # 断兼容：不再单独 ignore 根目录旧队列文件名 / 旧 capture 路径
+        self.assertNotIn("课程链接.json", ignored_lines)
+        self.assertNotIn("挂课失败链接.json", ignored_lines)
+        self.assertNotIn("考试链接.json", ignored_lines)
+        self.assertNotIn("人工考试链接.json", ignored_lines)
+        self.assertNotIn("cookies.json", ignored_lines)
+        self.assertNotIn("log.txt", ignored_lines)
+        self.assertNotIn("参考资料/", ignored_lines)
+        self.assertNotIn("_capture/", ignored_lines)
 
 
 if __name__ == "__main__":

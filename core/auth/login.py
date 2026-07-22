@@ -15,18 +15,18 @@ from core.config import (
     MYLEARNING_HOME,
     MYLEARNING_SSO_PATTERN,
 )
-from core.browser import (
+from core.browser.session import (
     apply_sync_browser_stealth,
     build_browser_context_options,
     is_target_closed_exception,
     launch_sync_browser,
 )
-from core.credential import (
+from core.auth.credential import (
     AccountProfile,
     extract_account_profile_from_sync_context,
     save_credential_metadata,
 )
-from core.page_overlays import prepare_page_after_navigation_sync
+from core.browser.overlays import prepare_page_after_navigation_sync
 
 
 def _clear_readonly(path) -> None:

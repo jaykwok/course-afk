@@ -6,7 +6,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from core.state import recommend_next_step
-from core.credential import CredentialMetadata
+from core.auth.credential import CredentialMetadata
 
 
 class WorkflowStateTests(unittest.TestCase):
@@ -149,7 +149,7 @@ class WorkflowStateTests(unittest.TestCase):
 
         with (
             patch("core.state.load_credential_metadata", return_value=metadata),
-            patch("core.credential.datetime") as mock_datetime,
+            patch("core.auth.credential.datetime") as mock_datetime,
         ):
             mock_datetime.fromisoformat.side_effect = datetime.fromisoformat
             mock_datetime.now.return_value = datetime(2026, 5, 19, 8, 0, 0)

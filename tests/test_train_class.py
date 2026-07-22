@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, patch
 from urllib.parse import parse_qs, urlparse
 
-from core.train_class import (
+from core.discovery.train_class import (
     build_activity_list_url,
     collect_learning_links_from_train_class_urls,
     extract_class_id,
@@ -327,19 +327,19 @@ class TrainClassCollectionTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch(
-                "core.train_class.create_browser_context",
+                "core.discovery.train_class.create_browser_context",
                 side_effect=fake_browser_context,
             ),
             patch(
-                "core.train_class.prepare_page_after_navigation_async",
+                "core.discovery.train_class.prepare_page_after_navigation_async",
                 new=AsyncMock(return_value=0),
             ),
             patch(
-                "core.train_class.wait_for_authorization_header",
+                "core.discovery.train_class.wait_for_authorization_header",
                 new=AsyncMock(return_value="Bearer__test-token"),
             ),
             patch(
-                "core.train_class.enqueue_learning_links_with_subject_expand",
+                "core.discovery.train_class.enqueue_learning_links_with_subject_expand",
                 side_effect=fake_enqueue,
             ),
         ):

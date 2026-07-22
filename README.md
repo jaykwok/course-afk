@@ -13,18 +13,45 @@ uv pip install -r requirements.txt
 
 ```bash
 uv run launcher.py
+# 或
+python launcher.py
 ```
+
+## 目录结构
+
+```text
+course-afk/
+  launcher.py          # 入口
+  run.bat
+  core/                # 业务源码（按领域分包）
+    auth/              # 登录与凭证
+    browser/           # Playwright 会话与页面
+    queues/            # 课程/考试 JSON 队列
+    learning/          # 挂课流程
+    exam/              # AI / 人工考试
+    discovery/         # 主题/培训班/资料收集
+    app/               # 工作流与菜单控制
+    ui/                # CLI + Textual TUI
+  data/                # 运行时数据（gitignore）
+  tests/
+  tools/capture/       # 本地抓包/反推实验（gitignore）
+```
+
+首次启动会自动创建 `data/`。运行时文件**只**读写 `data/`，不再识别项目根目录下的旧路径。
 
 ## 输出文件与状态
 
-- `课程链接.json`：待处理的课程和主题。
-- `挂课失败链接.json`：挂课失败原因和详情。
-- `考试链接.json`：待 AI 处理的考试及失败模型配置。
-- `人工考试链接.json`：需要人工处理的考试。
-- `参考资料/`：课程课件（PDF/文档）与视频 AI 导学资料。
-- `log.txt`：运行日志。
+均位于 `data/`：
 
-本地抓包/反推实验统一放在 `_capture/`（已 `.gitignore`，不上传）。
+- `data/课程链接.json`：待处理的课程和主题。
+- `data/挂课失败链接.json`：挂课失败原因和详情。
+- `data/考试链接.json`：待 AI 处理的考试及失败模型配置。
+- `data/人工考试链接.json`：需要人工处理的考试。
+- `data/参考资料/`：课程课件（PDF/文档）与视频 AI 导学资料。
+- `data/log.txt`：运行日志。
+- `data/cookies.json` / `data/credential_meta.json`：登录凭证（本地敏感，勿上传）。
+
+本地抓包/反推实验统一放在 `tools/capture/`（已 `.gitignore`，不上传）。
 
 ## 配置
 

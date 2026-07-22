@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from core.page_overlays import dismiss_topmost_overlays_async
+from core.browser.overlays import dismiss_topmost_overlays_async
 
 _AUTH_WAIT_MILLISECONDS = 15000
 _AUTH_POLL_MILLISECONDS = 500

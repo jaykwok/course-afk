@@ -7,14 +7,14 @@ from core.config import (
     DOCUMENT_INITIAL_WAIT,
     DOCUMENT_SYNC_EXTRA_WAIT,
 )
-from core.learning_common import (
+from core.learning.common import (
     build_video_timing_plan,
     get_course_url,
     is_learned,
     timer,
 )
-from core.learning_queue import record_learning_failure
-from core.learning_popups import check_and_handle_rating_popup, check_rating_popup_periodically
+from core.queues.learning import record_learning_failure
+from core.learning.popups import check_and_handle_rating_popup, check_rating_popup_periodically
 
 
 async def _cleanup_background_tasks(*tasks) -> None:

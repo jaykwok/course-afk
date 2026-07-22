@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Callable
 
 from core.abort import NoPermissionError, UserAbortRequested, UserCancelRequested
-from core.browser import (
+from core.browser.session import (
     create_browser_context,
     ensure_controller_page,
     is_browser_connected,
@@ -25,16 +25,16 @@ from core.file_ops import (
     is_subject_detail_url,
 )
 from core.links import normalize_urls
-from core.learning_exam import is_subject_url_completed
-from core.learning_flows import course_learning, subject_learning
-from core.learning_queue import (
+from core.learning.exam_bridge import is_subject_url_completed
+from core.learning.flows import course_learning, subject_learning
+from core.queues.learning import (
     read_learning_failures,
     read_learning_urls,
     record_learning_failure,
     remove_learning_failure,
     write_learning_urls,
 )
-from core.page_overlays import goto_and_prepare_async
+from core.browser.overlays import goto_and_prepare_async
 
 
 StatusCallback = Callable[[str], None]

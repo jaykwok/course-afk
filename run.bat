@@ -49,7 +49,7 @@ if not "%EXIT_CODE%"=="0" (
     color 0C
     echo.
     echo %PAD%Launcher exited with code %EXIT_CODE%.
-    echo %PAD%Check log.txt for details.
+    echo %PAD%Check data\log.txt for details.
     echo.
     pause
 )

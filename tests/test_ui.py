@@ -3,7 +3,7 @@ import unittest
 from datetime import datetime
 from unittest.mock import AsyncMock, patch
 
-from core.credential import CredentialMetadata
+from core.auth.credential import CredentialMetadata
 from core.state import ProjectState
 
 

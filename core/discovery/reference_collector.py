@@ -9,12 +9,12 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
-from core.browser import create_browser_context
+from core.browser.session import create_browser_context
 from core.config import REFERENCE_OUTPUT_DIR
 from core.file_ops import normalize_url
-from core.page_auth import fetch_json, get_authorization_header
-from core.page_overlays import prepare_page_after_navigation_async
-from core.subject_parse import (
+from core.browser.page_auth import fetch_json, get_authorization_header
+from core.browser.overlays import prepare_page_after_navigation_async
+from core.discovery.subject_parse import (
     collect_course_links_from_subject_page,
     extract_subject_id,
 )

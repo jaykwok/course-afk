@@ -13,7 +13,7 @@ from core.config import (
     MYLEARNING_HOME,
 )
 from core.file_ops import load_cookies
-from core.page_overlays import prepare_page_after_navigation_async
+from core.browser.overlays import prepare_page_after_navigation_async
 
 
 _CONTROLLER_PAGES: dict[int, object] = {}

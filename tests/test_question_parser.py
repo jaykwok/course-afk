@@ -26,7 +26,7 @@ class FakeLocator:
 
 class QuestionParserTests(unittest.IsolatedAsyncioTestCase):
     async def test_extract_options_with_selector_prefers_existing_preview_list_structure(self):
-        from core.question_parser import extract_options_with_selector
+        from core.exam.question_parser import extract_options_with_selector
 
         locator = FakeLocator(
             children={
@@ -61,7 +61,7 @@ class QuestionParserTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(click_selector, ".preview-list dd")
 
     async def test_extract_options_with_selector_falls_back_to_option_item_structure(self):
-        from core.question_parser import extract_options_with_selector
+        from core.exam.question_parser import extract_options_with_selector
 
         locator = FakeLocator(
             children={

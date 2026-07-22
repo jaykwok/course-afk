@@ -27,7 +27,7 @@ import core.ui as cli_ui
 from core.abort import UserCancelRequested
 from core.config import LOG_FORMAT, _get_console_log_level, setup_logging
 from core.palette import GREEN, ERROR, SUCCESS, WARNING
-from core.tui_app import (
+from core.ui.tui_app import (
     CourseTuiApp,
     MultilineScreen,
     OptionScreen,

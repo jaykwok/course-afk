@@ -7,8 +7,8 @@ from unittest.mock import patch
 
 class LauncherControllerTests(unittest.TestCase):
     def test_handle_show_output_state_groups_failures_and_can_requeue(self):
-        from core.launcher_controller import handle_show_output_state
-        from core.learning_queue import (
+        from core.app.launcher_controller import handle_show_output_state
+        from core.queues.learning import (
             read_learning_failures,
             read_learning_urls,
             record_learning_failure,
@@ -72,7 +72,7 @@ class LauncherControllerTests(unittest.TestCase):
             self.assertTrue(any("重新加入" in m for m in ui.messages))
 
     def test_choose_learning_zone_mode_returns_manual_when_no_learning_zone_urls(self):
-        from core.launcher_controller import choose_learning_zone_mode
+        from core.app.launcher_controller import choose_learning_zone_mode
 
         self.assertEqual(
             choose_learning_zone_mode([], prompt_choice_func=lambda *args, **kwargs: 1),
@@ -80,7 +80,7 @@ class LauncherControllerTests(unittest.TestCase):
         )
 
     def test_choose_learning_zone_mode_returns_auto_when_user_selects_first_option(self):
-        from core.launcher_controller import choose_learning_zone_mode
+        from core.app.launcher_controller import choose_learning_zone_mode
 
         self.assertEqual(
             choose_learning_zone_mode(
@@ -91,7 +91,7 @@ class LauncherControllerTests(unittest.TestCase):
         )
 
     def test_choose_learning_zone_mode_returns_manual_when_user_selects_second_option(self):
-        from core.launcher_controller import choose_learning_zone_mode
+        from core.app.launcher_controller import choose_learning_zone_mode
 
         self.assertEqual(
             choose_learning_zone_mode(
@@ -102,7 +102,7 @@ class LauncherControllerTests(unittest.TestCase):
         )
 
     def test_maybe_delete_empty_exam_queue_file_deletes_without_prompt(self):
-        from core.launcher_controller import _maybe_delete_empty_exam_queue_file
+        from core.app.launcher_controller import _maybe_delete_empty_exam_queue_file
 
         class FakeUi:
             def __init__(self):
@@ -123,7 +123,7 @@ class LauncherControllerTests(unittest.TestCase):
             self.assertIn("已删除空的考试链接.json", ui.messages)
 
     def test_maybe_delete_empty_exam_queue_file_keeps_non_empty_file(self):
-        from core.launcher_controller import _maybe_delete_empty_exam_queue_file
+        from core.app.launcher_controller import _maybe_delete_empty_exam_queue_file
 
         class FakeUi:
             def __init__(self):
@@ -154,7 +154,7 @@ class LauncherControllerTests(unittest.TestCase):
             self.assertEqual(ui.messages, [])
 
     def test_maybe_delete_empty_learning_queue_file_deletes_without_prompt(self):
-        from core.launcher_controller import _maybe_delete_empty_learning_queue_file
+        from core.app.launcher_controller import _maybe_delete_empty_learning_queue_file
 
         class FakeUi:
             def __init__(self):
@@ -175,7 +175,7 @@ class LauncherControllerTests(unittest.TestCase):
             self.assertIn("已删除空的课程链接.json", ui.messages)
 
     def test_maybe_delete_empty_learning_queue_file_keeps_non_empty_file(self):
-        from core.launcher_controller import _maybe_delete_empty_learning_queue_file
+        from core.app.launcher_controller import _maybe_delete_empty_learning_queue_file
 
         class FakeUi:
             def __init__(self):
@@ -199,7 +199,7 @@ class LauncherControllerTests(unittest.TestCase):
             self.assertEqual(ui.messages, [])
 
     def test_handle_ai_exam_prompts_for_auto_submit(self):
-        from core.launcher_controller import handle_ai_exam
+        from core.app.launcher_controller import handle_ai_exam
 
         class FakeUi:
             def __init__(self):
@@ -242,7 +242,7 @@ class LauncherControllerTests(unittest.TestCase):
                 patch("core.config.EXAM_URLS_FILE", exam_file),
                 patch("core.config.is_ai_configured", return_value=True),
                 patch(
-                    "core.workflows.run_ai_exam_workflow",
+                    "core.app.workflows.run_ai_exam_workflow",
                     new=unittest.mock.AsyncMock(return_value=0),
                 ) as mock_workflow,
             ):
@@ -255,7 +255,7 @@ class LauncherControllerTests(unittest.TestCase):
         )
 
     def test_handle_ai_exam_warns_when_ai_not_configured(self):
-        from core.launcher_controller import handle_ai_exam
+        from core.app.launcher_controller import handle_ai_exam
 
         class FakeUi:
             def __init__(self):
@@ -274,7 +274,7 @@ class LauncherControllerTests(unittest.TestCase):
         with (
             patch("core.config.is_ai_configured", return_value=False),
             patch(
-                "core.workflows.run_ai_exam_workflow",
+                "core.app.workflows.run_ai_exam_workflow",
                 new=unittest.mock.AsyncMock(),
             ) as mock_workflow,
         ):
@@ -287,7 +287,7 @@ class LauncherControllerTests(unittest.TestCase):
         mock_workflow.assert_not_awaited()
 
     def test_handle_ai_exam_does_not_start_when_missing_links_are_declined(self):
-        from core.launcher_controller import handle_ai_exam
+        from core.app.launcher_controller import handle_ai_exam
 
         class FakeUi:
             def __init__(self):
@@ -310,7 +310,7 @@ class LauncherControllerTests(unittest.TestCase):
                 patch("core.config.EXAM_URLS_FILE", exam_file),
                 patch("core.config.is_ai_configured", return_value=True),
                 patch(
-                    "core.workflows.run_ai_exam_workflow",
+                    "core.app.workflows.run_ai_exam_workflow",
                     new=unittest.mock.AsyncMock(return_value=0),
                 ) as mock_workflow,
             ):
@@ -321,8 +321,8 @@ class LauncherControllerTests(unittest.TestCase):
         mock_workflow.assert_not_awaited()
 
     def test_handle_ai_exam_accepts_multiline_links_and_starts_exam(self):
-        from core.exam_queue import read_exam_urls
-        from core.launcher_controller import handle_ai_exam
+        from core.queues.exam import read_exam_urls
+        from core.app.launcher_controller import handle_ai_exam
 
         class FakeUi:
             def __init__(self):
@@ -363,7 +363,7 @@ class LauncherControllerTests(unittest.TestCase):
                 patch("core.config.EXAM_URLS_FILE", exam_file),
                 patch("core.config.is_ai_configured", return_value=True),
                 patch(
-                    "core.workflows.run_ai_exam_workflow",
+                    "core.app.workflows.run_ai_exam_workflow",
                     new=unittest.mock.AsyncMock(return_value=0),
                 ) as mock_workflow,
             ):
@@ -390,8 +390,8 @@ class LauncherControllerTests(unittest.TestCase):
         )
 
     def test_handle_refresh_credential_reports_manual_browser_close(self):
-        from core.launcher_controller import handle_refresh_credential
-        from core.login import LoginNotCompletedError
+        from core.app.launcher_controller import handle_refresh_credential
+        from core.auth.login import LoginNotCompletedError
 
         class FakeUi:
             def __init__(self):
@@ -413,7 +413,7 @@ class LauncherControllerTests(unittest.TestCase):
         ui = FakeUi()
 
         with patch(
-            "core.workflows.refresh_credential",
+            "core.app.workflows.refresh_credential",
             side_effect=LoginNotCompletedError(
                 "已手动关闭浏览器，未完成登录，登录凭证未更新"
             ),
@@ -425,7 +425,7 @@ class LauncherControllerTests(unittest.TestCase):
 
     def test_handle_manual_selection_cancel_returns_to_menu(self):
         from core.abort import UserCancelRequested
-        from core.launcher_controller import handle_manual_selection
+        from core.app.launcher_controller import handle_manual_selection
 
         class FakeUi:
             def __init__(self):
@@ -448,7 +448,7 @@ class LauncherControllerTests(unittest.TestCase):
         self.assertIn("pause", ui.messages)
 
     def test_handle_manual_selection_confirms_link_categories_before_browser(self):
-        from core.launcher_controller import handle_manual_selection
+        from core.app.launcher_controller import handle_manual_selection
 
         class FakeUi:
             def __init__(self):
@@ -476,7 +476,7 @@ class LauncherControllerTests(unittest.TestCase):
 
         ui = FakeUi()
         with patch(
-            "core.workflows.run_manual_course_selection",
+            "core.app.workflows.run_manual_course_selection",
             new=unittest.mock.AsyncMock(),
         ) as workflow:
             handle_manual_selection(["请粘贴入口链接。"], ui)
@@ -494,7 +494,7 @@ class LauncherControllerTests(unittest.TestCase):
         workflow.assert_not_awaited()
 
     def test_handle_manual_selection_shows_ok_summary_after_browser(self):
-        from core.launcher_controller import handle_manual_selection
+        from core.app.launcher_controller import handle_manual_selection
 
         class FakeUi:
             def __init__(self):
@@ -536,7 +536,7 @@ class LauncherControllerTests(unittest.TestCase):
             "exam_total": 2,
         }
         with patch(
-            "core.workflows.run_manual_course_selection",
+            "core.app.workflows.run_manual_course_selection",
             new=unittest.mock.AsyncMock(return_value=result),
         ) as workflow:
             handle_manual_selection(["请粘贴入口链接。"], ui)
@@ -558,7 +558,7 @@ class LauncherControllerTests(unittest.TestCase):
 
     def test_handle_reference_collection_cancel_returns_to_menu(self):
         from core.abort import UserCancelRequested
-        from core.launcher_controller import handle_reference_collection
+        from core.app.launcher_controller import handle_reference_collection
 
         class FakeUi:
             def __init__(self):
@@ -581,7 +581,7 @@ class LauncherControllerTests(unittest.TestCase):
         self.assertIn("pause", ui.messages)
 
     def test_handle_reference_collection_reports_invalid_subject_url(self):
-        from core.launcher_controller import handle_reference_collection
+        from core.app.launcher_controller import handle_reference_collection
 
         class FakeUi:
             def __init__(self):
@@ -602,7 +602,7 @@ class LauncherControllerTests(unittest.TestCase):
         ui = FakeUi()
 
         with patch(
-            "core.workflows.run_reference_collection_workflow",
+            "core.app.workflows.run_reference_collection_workflow",
             new=unittest.mock.AsyncMock(side_effect=ValueError("未识别到有效的知学云学习专区链接")),
         ):
             handle_reference_collection(ui)
@@ -611,7 +611,7 @@ class LauncherControllerTests(unittest.TestCase):
         self.assertIn("pause", ui.messages)
 
     def test_handle_reference_collection_shows_summary(self):
-        from core.launcher_controller import handle_reference_collection
+        from core.app.launcher_controller import handle_reference_collection
 
         class FakeUi:
             def __init__(self):
@@ -645,7 +645,7 @@ class LauncherControllerTests(unittest.TestCase):
         }
 
         with patch(
-            "core.workflows.run_reference_collection_workflow",
+            "core.app.workflows.run_reference_collection_workflow",
             new=unittest.mock.AsyncMock(return_value=result),
         ) as mock_workflow:
             handle_reference_collection(ui)

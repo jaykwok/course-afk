@@ -8,19 +8,19 @@ from core.config import (
     LEARNING_URLS_FILE,
     MANUAL_EXAM_FILE,
 )
-from core.credential import (
+from core.auth.credential import (
     load_credential_metadata,
     parse_expires_at,
     parse_saved_at,
     is_credential_expired_at,
     is_credential_expired,
 )
-from core.exam_queue import count_exam_urls
-from core.learning_queue import (
+from core.queues.exam import count_exam_urls
+from core.queues.learning import (
     count_learning_failures,
     count_learning_urls,
 )
-from core.manual_exam_queue import count_manual_exam_urls
+from core.queues.manual_exam import count_manual_exam_urls
 
 
 @dataclass

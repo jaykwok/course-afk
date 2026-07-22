@@ -76,7 +76,7 @@ class _FakeSubmitPage:
 
 class ExamActionTests(unittest.IsolatedAsyncioTestCase):
     async def test_select_answers_routes_empty_choice_answers_without_claiming_fill_blank(self):
-        from core.exam_actions import MANUAL_EXAM_FILE, select_answers
+        from core.exam.actions import MANUAL_EXAM_FILE, select_answers
 
         question_data = {
             "index": 0,
@@ -89,8 +89,8 @@ class ExamActionTests(unittest.IsolatedAsyncioTestCase):
         }
 
         with (
-            patch("core.exam_actions.logging.info") as mock_info,
-            patch("core.exam_actions.append_manual_exam_entry") as mock_append_manual,
+            patch("core.exam.actions.logging.info") as mock_info,
+            patch("core.exam.actions.append_manual_exam_entry") as mock_append_manual,
         ):
             result = await select_answers(
                 object(),
@@ -112,7 +112,7 @@ class ExamActionTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(any("填空" in message for message in messages))
 
     async def test_select_answers_uses_option_click_selector_when_present(self):
-        from core.exam_actions import select_answers
+        from core.exam.actions import select_answers
 
         page = _FakePage()
         question_data = {
@@ -145,7 +145,7 @@ class ExamActionTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_select_answers_returns_false_when_click_fails(self):
-        from core.exam_actions import select_answers
+        from core.exam.actions import select_answers
 
         page = _FakePage(click_error=RuntimeError("click failed"))
         question_data = {
@@ -169,7 +169,7 @@ class ExamActionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_select_answers_raises_user_abort_when_exam_was_auto_submitted(self):
         from core.abort import UserAbortRequested
-        from core.exam_actions import select_answers
+        from core.exam.actions import select_answers
 
         page = _FakePage(
             click_error=RuntimeError("您好，已超过考试时长，考试已自动提交")
@@ -196,7 +196,7 @@ class ExamActionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("自动交卷", str(ctx.exception))
 
     async def test_submit_exam_uses_modal_close_button_instead_of_broad_text_selector(self):
-        from core.exam_actions import submit_exam
+        from core.exam.actions import submit_exam
 
         page = _FakeSubmitPage()
 

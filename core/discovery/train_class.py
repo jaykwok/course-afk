@@ -4,13 +4,13 @@ import logging
 import re
 from urllib.parse import unquote
 
-from core.browser import create_browser_context
+from core.browser.session import create_browser_context
 from core.config import ZHIXUEYUN_COURSE_PREFIX, ZHIXUEYUN_SUBJECT_PREFIX
 from core.file_ops import is_compliant_url_regex, is_train_class_url, normalize_url
 from core.links import unique_urls
-from core.page_auth import fetch_json, wait_for_authorization_header
-from core.page_overlays import prepare_page_after_navigation_async
-from core.subject_parse import enqueue_learning_links_with_subject_expand
+from core.browser.page_auth import fetch_json, wait_for_authorization_header
+from core.browser.overlays import prepare_page_after_navigation_async
+from core.discovery.subject_parse import enqueue_learning_links_with_subject_expand
 
 
 # 实勘确认（class 活动列表）:

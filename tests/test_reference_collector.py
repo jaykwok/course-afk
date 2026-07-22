@@ -4,7 +4,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import AsyncMock, patch
 
-from core.reference_collector import (
+from core.discovery.reference_collector import (
     SectionResource,
     build_resource_output_name,
     collect_reference_materials,
@@ -14,7 +14,7 @@ from core.reference_collector import (
     render_video_guides_markdown,
     safe_filename,
 )
-from core.subject_parse import extract_subject_id
+from core.discovery.subject_parse import extract_subject_id
 
 
 class ReferenceCollectorTests(unittest.IsolatedAsyncioTestCase):
@@ -132,27 +132,27 @@ class ReferenceCollectorTests(unittest.IsolatedAsyncioTestCase):
         with TemporaryDirectory() as tmp:
             with (
                 patch(
-                    "core.reference_collector.create_browser_context",
+                    "core.discovery.reference_collector.create_browser_context",
                     return_value=FakeBrowserContext(),
                 ),
                 patch(
-                    "core.reference_collector._collect_courses_from_subject_page",
+                    "core.discovery.reference_collector._collect_courses_from_subject_page",
                     new=AsyncMock(return_value=[object()]),
                 ),
                 patch(
-                    "core.reference_collector.get_authorization_header",
+                    "core.discovery.reference_collector.get_authorization_header",
                     new=AsyncMock(return_value="Bearer__token"),
                 ),
                 patch(
-                    "core.reference_collector._fetch_course_infos",
+                    "core.discovery.reference_collector._fetch_course_infos",
                     new=AsyncMock(return_value=[{"course_id": "course-id", "data": {}}]),
                 ),
                 patch(
-                    "core.reference_collector.collect_section_resources",
+                    "core.discovery.reference_collector.collect_section_resources",
                     return_value=[resource],
                 ),
                 patch(
-                    "core.reference_collector._fetch_video_guide",
+                    "core.discovery.reference_collector._fetch_video_guide",
                     new=AsyncMock(side_effect=RuntimeError("guide failed")),
                 ),
             ):

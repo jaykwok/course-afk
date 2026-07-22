@@ -9,7 +9,7 @@ from typing import Callable
 from openai import OpenAI
 
 from core.abort import UserAbortRequested, UserCancelRequested
-from core.browser import create_browser_context, is_browser_connected, is_target_closed_exception
+from core.browser.session import create_browser_context, is_browser_connected, is_target_closed_exception
 from core.config import (
     AI_ENABLE_THINKING,
     AI_ENABLE_WEB_SEARCH,
@@ -25,17 +25,17 @@ from core.config import (
     PAPER_EXAM_ATTEMPT_THRESHOLD,
     validate_ai_base_url,
 )
-from core.exam_flow import ai_exam, wait_for_finish_test
-from core.exam_answers import ExamAiConfigurationError
-from core.exam_queue import (
+from core.exam.flow import ai_exam, wait_for_finish_test
+from core.exam.answers import ExamAiConfigurationError
+from core.queues.exam import (
     has_ai_failed_model_config,
     read_exam_urls,
     record_ai_failed_model_config,
     write_exam_urls,
 )
-from core.learning_exam import check_exam_passed
-from core.learning_popups import handle_rating_popup
-from core.manual_exam_queue import (
+from core.learning.exam_bridge import check_exam_passed
+from core.learning.popups import handle_rating_popup
+from core.queues.manual_exam import (
     ManualExamEntry,
     append_manual_exam_entry,
     read_manual_exam_queue,

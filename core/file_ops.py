@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import re
+from pathlib import Path
 from urllib.parse import unquote
 
 from core.config import (
@@ -55,6 +56,8 @@ def load_cookies(path) -> list:
 
 def write_text_atomic(path, content: str, *, encoding: str = "utf-8") -> None:
     """原子写入：先写临时文件再 os.replace，避免并发读时读到半截内容。"""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_suffix(path.suffix + ".tmp")
     tmp_path.write_text(content, encoding=encoding)
     os.replace(tmp_path, path)

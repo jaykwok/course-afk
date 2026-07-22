@@ -67,7 +67,7 @@ def main() -> int:
     setup_logging()
 
     import core.ui as ui
-    from core.launcher_controller import (
+    from core.app.launcher_controller import (
         handle_afk,
         handle_ai_exam,
         handle_manual_exam,
@@ -134,6 +134,6 @@ def main() -> int:
 
 if __name__ == "__main__":
     # 默认入口走 Textual TUI；main() 仍可作为后台控制流被复用/被测试。
-    from core.tui_bridge import launch_tui
+    from core.ui.tui_bridge import launch_tui
 
     raise SystemExit(launch_tui())

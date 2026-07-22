@@ -6,7 +6,7 @@ from tempfile import TemporaryDirectory
 
 class LearningQueueTests(unittest.TestCase):
     def test_append_learning_url_writes_json_entries_and_deduplicates(self):
-        from core.learning_queue import append_learning_url, read_learning_queue
+        from core.queues.learning import append_learning_url, read_learning_queue
 
         with TemporaryDirectory() as tmp:
             learning_file = Path(tmp) / "learning.json"
@@ -28,7 +28,7 @@ class LearningQueueTests(unittest.TestCase):
             )
 
     def test_write_learning_urls_removes_completed_urls_and_can_delete_empty_file(self):
-        from core.learning_queue import write_learning_urls
+        from core.queues.learning import write_learning_urls
 
         with TemporaryDirectory() as tmp:
             learning_file = Path(tmp) / "learning.json"
@@ -56,7 +56,7 @@ class LearningQueueTests(unittest.TestCase):
             self.assertFalse(learning_file.exists())
 
     def test_record_learning_failure_records_reason_and_merges_duplicate_urls(self):
-        from core.learning_queue import record_learning_failure, read_learning_failures
+        from core.queues.learning import record_learning_failure, read_learning_failures
 
         with TemporaryDirectory() as tmp:
             failures_file = Path(tmp) / "failures.json"
@@ -94,7 +94,7 @@ class LearningQueueTests(unittest.TestCase):
             )
 
     def test_remove_learning_failure_deletes_matching_url_and_can_delete_empty_file(self):
-        from core.learning_queue import record_learning_failure, remove_learning_failure
+        from core.queues.learning import record_learning_failure, remove_learning_failure
 
         with TemporaryDirectory() as tmp:
             failures_file = Path(tmp) / "failures.json"
@@ -114,7 +114,7 @@ class LearningQueueTests(unittest.TestCase):
             self.assertFalse(failures_file.exists())
 
     def test_read_learning_queue_rejects_legacy_text_file(self):
-        from core.learning_queue import read_learning_queue
+        from core.queues.learning import read_learning_queue
 
         with TemporaryDirectory() as tmp:
             learning_file = Path(tmp) / "learning.json"
@@ -124,7 +124,7 @@ class LearningQueueTests(unittest.TestCase):
                 read_learning_queue(file_path=learning_file)
 
     def test_read_learning_failures_rejects_non_list_json(self):
-        from core.learning_queue import read_learning_failures
+        from core.queues.learning import read_learning_failures
 
         with TemporaryDirectory() as tmp:
             failures_file = Path(tmp) / "failures.json"
@@ -137,7 +137,7 @@ class LearningQueueTests(unittest.TestCase):
                 read_learning_failures(file_path=failures_file)
 
     def test_group_and_requeue_retryable_learning_failures(self):
-        from core.learning_queue import (
+        from core.queues.learning import (
             group_learning_failures_by_reason,
             read_learning_failures,
             read_learning_urls,

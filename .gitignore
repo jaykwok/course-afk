@@ -9,15 +9,15 @@ __pycache__/
 .agents/
 docs/
 
-# Local secrets and session state
+# Local secrets
 .env
-cookies.json
-credential_meta.json
 storage_state*.json
 auth_state*.json
 
+# Runtime data (queues, cookies, logs, reference materials)
+data/
+
 # Runtime logs and temporary probe files
-log.txt
 tmp_*
 *_probe.txt
 .coverage
@@ -27,11 +27,4 @@ build/
 dist/
 
 # Local capture / reverse-engineering experiments (do not upload)
-_capture/
-
-# Generated workflow output files
-课程链接.json
-挂课失败链接.json
-考试链接.json
-人工考试链接.json
-参考资料/
+tools/capture/

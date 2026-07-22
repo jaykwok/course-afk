@@ -2,7 +2,7 @@ import json
 import unittest
 from pathlib import Path
 
-from core.subject_parse import (
+from core.discovery.subject_parse import (
     COURSE_SECTION_TYPES,
     EXAM_SECTION_TYPES,
     URL_SECTION_TYPES,

@@ -6,8 +6,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import mock
 
-from core import workflows
-from core.workflows import parse_manual_selection_input
+from core.app import workflows
+from core.app.workflows import parse_manual_selection_input
 
 
 @asynccontextmanager
@@ -534,8 +534,8 @@ class ManualSelectionWorkflowTests(unittest.IsolatedAsyncioTestCase):
             async def fake_expand(subject_urls, status_callback=None, **kwargs):
                 self.assertEqual(list(subject_urls), [subject_url])
                 self.assertIs(kwargs.get("context"), shared_context)
-                from core.learning_queue import append_learning_urls
-                from core.exam_queue import append_exam_urls
+                from core.queues.learning import append_learning_urls
+                from core.queues.exam import append_exam_urls
 
                 learning_added = append_learning_urls(
                     [course_url], file_path=learning_file

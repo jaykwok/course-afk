@@ -2,7 +2,7 @@ import unittest
 from datetime import datetime, timedelta
 
 from core.config import MYLEARNING_CENTER_HOME
-from core.credential import (
+from core.auth.credential import (
     build_account_label,
     extract_account_profile_from_sync_context,
     is_credential_expired,

@@ -23,7 +23,7 @@ class _FakePage:
 
 class DetectExamModeTests(unittest.IsolatedAsyncioTestCase):
     async def test_detect_exam_mode_logs_clean_multi_mode_message_without_playwright_details(self):
-        from core.exam_parsing import detect_exam_mode
+        from core.exam.parsing import detect_exam_mode
 
         page = _FakePage(
             RuntimeError(
@@ -33,7 +33,7 @@ class DetectExamModeTests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
-        with patch("core.exam_parsing.logging.info") as mock_info:
+        with patch("core.exam.parsing.logging.info") as mock_info:
             result = await detect_exam_mode(page)
 
         self.assertEqual(result, "multi")

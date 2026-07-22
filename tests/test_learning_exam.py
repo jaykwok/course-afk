@@ -125,7 +125,7 @@ class FakeSubjectExamItem:
 
 class LearningExamTests(unittest.IsolatedAsyncioTestCase):
     async def test_check_exam_passed_treats_go_exam_row_as_pending_without_error(self):
-        from core.learning_exam import check_exam_passed
+        from core.learning.exam_bridge import check_exam_passed
 
         page = FakePage(
             {
@@ -146,14 +146,14 @@ class LearningExamTests(unittest.IsolatedAsyncioTestCase):
             }
         )
 
-        with patch("core.learning_exam.logging.error") as mock_error:
+        with patch("core.learning.exam_bridge.logging.error") as mock_error:
             result = await check_exam_passed(page)
 
         self.assertFalse(result)
         mock_error.assert_not_called()
 
     async def test_check_exam_passed_treats_no_exam_record_row_as_pending_without_error(self):
-        from core.learning_exam import check_exam_passed
+        from core.learning.exam_bridge import check_exam_passed
 
         page = FakePage(
             {
@@ -175,8 +175,8 @@ class LearningExamTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with (
-            patch("core.learning_exam.logging.info") as mock_info,
-            patch("core.learning_exam.logging.error") as mock_error,
+            patch("core.learning.exam_bridge.logging.info") as mock_info,
+            patch("core.learning.exam_bridge.logging.error") as mock_error,
         ):
             result = await check_exam_passed(page)
 
@@ -185,32 +185,32 @@ class LearningExamTests(unittest.IsolatedAsyncioTestCase):
         mock_info.assert_any_call("考试状态: 暂无考试记录")
 
     async def test_course_learning_checks_exam_status_only_once_for_exam_section(self):
-        from core.learning_flows import course_learning
+        from core.learning.flows import course_learning
 
         page = FakeCoursePage()
         mock_check = AsyncMock(return_value=False)
 
         with (
-            patch("core.learning_flows.check_permission", new=AsyncMock(return_value=True)),
-            patch("core.learning_flows.handle_rating_popup", new=AsyncMock(return_value=False)),
-            patch("core.learning_flows._is_course_completed", new=AsyncMock(return_value=False)),
-            patch("core.learning_flows.check_exam_passed", new=mock_check),
-            patch("core.learning_exam.check_exam_passed", new=mock_check),
-            patch("core.learning_exam.append_exam_url"),
+            patch("core.learning.flows.check_permission", new=AsyncMock(return_value=True)),
+            patch("core.learning.flows.handle_rating_popup", new=AsyncMock(return_value=False)),
+            patch("core.learning.flows._is_course_completed", new=AsyncMock(return_value=False)),
+            patch("core.learning.flows.check_exam_passed", new=mock_check),
+            patch("core.learning.exam_bridge.check_exam_passed", new=mock_check),
+            patch("core.learning.exam_bridge.append_exam_url"),
         ):
             await course_learning(page)
 
         self.assertEqual(mock_check.await_count, 1)
 
     async def test_handle_subject_exam_item_saves_exam_paper_url_for_pending_exam(self):
-        from core.learning_flows import handle_subject_exam_item
+        from core.learning.flows import handle_subject_exam_item
 
         learn_item = FakeSubjectExamItem()
         exam_url = "https://kc.zhixueyun.com/#/exam/exam/answer-paper/subject-exam"
 
         with (
-            patch("core.learning_flows.get_course_url", new=AsyncMock(return_value=exam_url)),
-            patch("core.learning_flows.append_exam_url") as mock_append,
+            patch("core.learning.flows.get_course_url", new=AsyncMock(return_value=exam_url)),
+            patch("core.learning.flows.append_exam_url") as mock_append,
         ):
             result = await handle_subject_exam_item(learn_item)
 
@@ -218,13 +218,13 @@ class LearningExamTests(unittest.IsolatedAsyncioTestCase):
         mock_append.assert_called_once_with(exam_url)
 
     async def test_handle_subject_exam_item_skips_completed_exam(self):
-        from core.learning_flows import handle_subject_exam_item
+        from core.learning.flows import handle_subject_exam_item
 
         learn_item = FakeSubjectExamItem(status_texts=["已完成"])
 
         with (
-            patch("core.learning_flows.get_course_url", new=AsyncMock()),
-            patch("core.learning_flows.append_exam_url") as mock_append,
+            patch("core.learning.flows.get_course_url", new=AsyncMock()),
+            patch("core.learning.flows.append_exam_url") as mock_append,
         ):
             result = await handle_subject_exam_item(learn_item)
 

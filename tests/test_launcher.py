@@ -32,7 +32,7 @@ class LauncherEntryTests(unittest.TestCase):
             patch("core.ui.show_menu", return_value=afk_choice),
             patch("core.ui.show_warning") as mock_warning,
             patch(
-                "core.launcher_controller.handle_afk",
+                "core.app.launcher_controller.handle_afk",
                 side_effect=UserAbortRequested("已保存当前和剩余学习链接，程序退出"),
             ),
         ):

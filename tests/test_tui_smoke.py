@@ -20,14 +20,14 @@ from textual.widgets import Button, OptionList, Static, TextArea
 
 import core.ui as cli_ui
 from core.abort import UserCancelRequested
-from core.tui_app import (
+from core.ui.tui_app import (
     CourseTuiApp,
     MultilineScreen,
     OptionScreen,
     PauseScreen,
     YesNoScreen,
 )
-from core.tui_bridge import TuiFrontend
+from core.ui.tui_bridge import TuiFrontend
 
 
 class _CapturingApp(CourseTuiApp):
@@ -798,7 +798,7 @@ class TuiSmokeTests(unittest.TestCase):
     def test_menu_to_quit_runs_full_bridge_and_exits_cleanly(self):
         async def scenario() -> None:
             # 安全网：即便菜单落点不在「退出」，也绝不启动浏览器自动化
-            import core.launcher_controller as launcher_controller
+            import core.app.launcher_controller as launcher_controller
 
             with (
                 patch("core.config.setup_logging"),

@@ -5,16 +5,16 @@ import logging
 import traceback
 
 from core.abort import NoPermissionError
-from core.browser import is_page_browser_connected, is_target_closed_exception
+from core.browser.session import is_page_browser_connected, is_target_closed_exception
 from core.config import (
     URL_TYPE_WAIT,
 )
-from core.exam_queue import append_exam_url
-from core.learning_common import check_permission, get_course_url, is_learned, timer
-from core.learning_exam import check_exam_passed, handle_examination
-from core.learning_handlers import handle_document, handle_h5, handle_video
-from core.learning_queue import record_learning_failure
-from core.learning_popups import handle_rating_popup
+from core.queues.exam import append_exam_url
+from core.learning.common import check_permission, get_course_url, is_learned, timer
+from core.learning.exam_bridge import check_exam_passed, handle_examination
+from core.learning.handlers import handle_document, handle_h5, handle_video
+from core.queues.learning import record_learning_failure
+from core.learning.popups import handle_rating_popup
 
 
 async def handle_subject_exam_item(learn_item) -> str | None:
@@ -78,7 +78,7 @@ async def subject_learning(page):
     主题内容学习（DOM 文案分流：课程 / URL / 考试 / 调研…）。
 
     注意：主题页 section-type 文案与课程内 data-sectiontype 数字是两套体系，
-    切勿混用。主题 API 侧（chapter-progress）见 core.subject_parse：
+    切勿混用。主题 API 侧（chapter-progress）见 core.discovery.subject_parse：
     10=课、9=考、3=外链 URL。
 
     已学完小节（「重新学习」）直接跳过；残留主题走 DOM 时，先前已挂完的课/考

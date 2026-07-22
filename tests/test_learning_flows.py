@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 class SubjectLearningFlowTests(unittest.IsolatedAsyncioTestCase):
     async def test_subject_learning_skips_closed_popup_course_and_continues(self):
-        from core.learning_flows import subject_learning
+        from core.learning.flows import subject_learning
 
         class TargetClosedError(Exception):
             pass
@@ -115,9 +115,9 @@ class SubjectLearningFlowTests(unittest.IsolatedAsyncioTestCase):
         subject_page = FakeSubjectPage(popup_pages)
 
         with (
-            patch("core.learning_flows.check_permission", new=AsyncMock(return_value=True)),
+            patch("core.learning.flows.check_permission", new=AsyncMock(return_value=True)),
             patch(
-                "core.learning_flows.course_learning",
+                "core.learning.flows.course_learning",
                 new=AsyncMock(
                     side_effect=[
                         TargetClosedError("Target page, context or browser has been closed"),
@@ -125,7 +125,7 @@ class SubjectLearningFlowTests(unittest.IsolatedAsyncioTestCase):
                     ]
                 ),
             ) as mock_course_learning,
-            patch("core.learning_flows.record_learning_failure") as mock_record_failure,
+            patch("core.learning.flows.record_learning_failure") as mock_record_failure,
         ):
             await subject_learning(subject_page)
 
@@ -136,7 +136,7 @@ class SubjectLearningFlowTests(unittest.IsolatedAsyncioTestCase):
 
 class SubjectItemCompletedTests(unittest.IsolatedAsyncioTestCase):
     async def test_completed_by_reload_icon(self):
-        from core.learning_flows import is_subject_item_completed
+        from core.learning.flows import is_subject_item_completed
 
         class Loc:
             def __init__(self, *, count_value=0, texts=None, inner=""):
@@ -166,7 +166,7 @@ class SubjectItemCompletedTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await is_subject_item_completed(Item()))
 
     async def test_completed_exam_by_record_text_without_reload(self):
-        from core.learning_flows import is_subject_item_completed
+        from core.learning.flows import is_subject_item_completed
 
         class Loc:
             def __init__(self, *, count_value=0, texts=None, inner=""):
@@ -196,7 +196,7 @@ class SubjectItemCompletedTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await is_subject_item_completed(Item()))
 
     async def test_incomplete_start_learning(self):
-        from core.learning_flows import is_subject_item_completed
+        from core.learning.flows import is_subject_item_completed
 
         class Loc:
             def __init__(self, *, count_value=0, texts=None, inner=""):

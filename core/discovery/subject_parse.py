@@ -4,22 +4,22 @@ import logging
 import re
 from dataclasses import dataclass, field
 
-from core.browser import create_browser_context
+from core.browser.session import create_browser_context
 from core.config import (
     ZHIXUEYUN_COURSE_PREFIX,
     ZHIXUEYUN_EXAM_PREFIX,
 )
-from core.exam_queue import append_exam_urls
+from core.queues.exam import append_exam_urls
 from core.file_ops import (
     is_compliant_url_regex,
     is_exam_url,
     is_subject_detail_url,
     normalize_url,
 )
-from core.learning_queue import append_learning_urls
+from core.queues.learning import append_learning_urls
 from core.links import unique_urls
-from core.page_auth import fetch_json, wait_for_authorization_header
-from core.page_overlays import prepare_page_after_navigation_async
+from core.browser.page_auth import fetch_json, wait_for_authorization_header
+from core.browser.overlays import prepare_page_after_navigation_async
 
 
 # 实勘（subject 详情页）:

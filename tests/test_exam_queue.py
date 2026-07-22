@@ -23,7 +23,7 @@ MODEL_CONFIG_A_WITH_WEB = {
 
 class ExamQueueTests(unittest.TestCase):
     def test_append_exam_url_writes_json_entries_and_deduplicates(self):
-        from core.exam_queue import append_exam_url, read_exam_queue
+        from core.queues.exam import append_exam_url, read_exam_queue
 
         with TemporaryDirectory() as tmp:
             exam_file = Path(tmp) / "exam.json"
@@ -51,7 +51,7 @@ class ExamQueueTests(unittest.TestCase):
             )
 
     def test_append_exam_urls_returns_only_new_urls(self):
-        from core.exam_queue import append_exam_urls, read_exam_urls
+        from core.queues.exam import append_exam_urls, read_exam_urls
 
         with TemporaryDirectory() as tmp:
             exam_file = Path(tmp) / "exam.json"
@@ -75,7 +75,7 @@ class ExamQueueTests(unittest.TestCase):
             self.assertEqual(read_exam_urls(exam_file), added)
 
     def test_read_exam_queue_returns_json_entries(self):
-        from core.exam_queue import read_exam_queue
+        from core.queues.exam import read_exam_queue
 
         with TemporaryDirectory() as tmp:
             exam_file = Path(tmp) / "exam.json"
@@ -107,7 +107,7 @@ class ExamQueueTests(unittest.TestCase):
             )
 
     def test_write_exam_urls_preserves_failed_models_for_retained_urls(self):
-        from core.exam_queue import read_exam_queue, write_exam_urls
+        from core.queues.exam import read_exam_queue, write_exam_urls
 
         with TemporaryDirectory() as tmp:
             exam_file = Path(tmp) / "exam.json"
@@ -136,7 +136,7 @@ class ExamQueueTests(unittest.TestCase):
             )
 
     def test_failed_model_config_matches_exact_runtime_options(self):
-        from core.exam_queue import (
+        from core.queues.exam import (
             has_ai_failed_model_config,
             record_ai_failed_model_config,
         )
@@ -159,7 +159,7 @@ class ExamQueueTests(unittest.TestCase):
             )
 
     def test_read_exam_queue_rejects_invalid_json(self):
-        from core.exam_queue import read_exam_queue
+        from core.queues.exam import read_exam_queue
 
         with TemporaryDirectory() as tmp:
             exam_file = Path(tmp) / "exam.json"
@@ -169,7 +169,7 @@ class ExamQueueTests(unittest.TestCase):
                 read_exam_queue(file_path=exam_file)
 
     def test_read_exam_queue_rejects_non_list_json(self):
-        from core.exam_queue import read_exam_queue
+        from core.queues.exam import read_exam_queue
 
         with TemporaryDirectory() as tmp:
             exam_file = Path(tmp) / "exam.json"

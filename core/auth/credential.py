@@ -12,7 +12,7 @@ from core.config import (
     MYLEARNING_CENTER_HOME,
     MYLEARNING_CENTER_HOME_PATTERN,
 )
-from core.page_overlays import prepare_page_after_navigation_sync
+from core.browser.overlays import prepare_page_after_navigation_sync
 
 
 CENTER_ACCOUNT_PROFILE_SCRIPT = """

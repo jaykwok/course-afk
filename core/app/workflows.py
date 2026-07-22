@@ -5,30 +5,30 @@ import logging
 from typing import Callable
 from urllib.parse import urlparse
 
-from core.afk_runner import run_afk_once
-from core.browser import create_browser_context, is_controller_page
+from core.learning.afk_runner import run_afk_once
+from core.browser.session import create_browser_context, is_controller_page
 from core.config import (
     EXAM_URLS_FILE,
     LEARNING_URLS_FILE,
     is_ai_configured,
 )
-from core.credential import AccountProfile
-from core.exam_runner import run_ai_exam_batch, run_manual_exam_batch
-from core.exam_queue import append_exam_url, append_exam_urls, read_exam_urls
-from core.learning_zone import collect_learning_links_from_learning_zone_urls
+from core.auth.credential import AccountProfile
+from core.exam.runner import run_ai_exam_batch, run_manual_exam_batch
+from core.queues.exam import append_exam_url, append_exam_urls, read_exam_urls
+from core.learning.zone import collect_learning_links_from_learning_zone_urls
 from core.links import extract_urls_from_text, split_manual_selection_urls
-from core.page_overlays import prepare_page_after_navigation_async
+from core.browser.overlays import prepare_page_after_navigation_async
 from core.file_ops import (
     is_compliant_url_regex,
     is_exam_url,
     normalize_url,
 )
-from core.train_class import collect_learning_links_from_train_class_urls
-from core.learning_queue import append_learning_urls, read_learning_urls
-from core.login import login_and_save_credential
+from core.discovery.train_class import collect_learning_links_from_train_class_urls
+from core.queues.learning import append_learning_urls, read_learning_urls
+from core.auth.login import login_and_save_credential
 from core.state import collect_project_state
 from core.config import summarize_exception_message
-from core.subject_parse import (
+from core.discovery.subject_parse import (
     expand_and_append_subject_urls,
     partition_course_and_subject_urls,
 )
@@ -530,7 +530,7 @@ async def run_reference_collection_workflow(
     subject_urls: list[str],
     status_callback: StatusCallback | None = None,
 ) -> dict:
-    from core.reference_collector import collect_reference_materials
+    from core.discovery.reference_collector import collect_reference_materials
 
     if status_callback:
         status_callback("开始保存课程课件和视频 AI 导学资料")

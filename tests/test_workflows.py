@@ -4,11 +4,11 @@ from unittest.mock import AsyncMock, patch
 
 class WorkflowTests(unittest.IsolatedAsyncioTestCase):
     async def test_run_ai_exam_workflow_passes_auto_submit_to_batch(self):
-        from core.workflows import run_ai_exam_workflow
+        from core.app.workflows import run_ai_exam_workflow
 
         with (
             patch(
-                "core.workflows.collect_project_state",
+                "core.app.workflows.collect_project_state",
                 return_value=type(
                     "State",
                     (),
@@ -22,7 +22,7 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
                 )(),
             ),
             patch(
-                "core.workflows.run_ai_exam_batch",
+                "core.app.workflows.run_ai_exam_batch",
                 new=AsyncMock(return_value=1),
             ) as mock_batch,
         ):
@@ -32,11 +32,11 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
         mock_batch.assert_awaited_once_with(status_callback=None, auto_submit=False)
 
     async def test_run_ai_exam_workflow_disables_auto_submit_by_default(self):
-        from core.workflows import run_ai_exam_workflow
+        from core.app.workflows import run_ai_exam_workflow
 
         with (
             patch(
-                "core.workflows.collect_project_state",
+                "core.app.workflows.collect_project_state",
                 return_value=type(
                     "State",
                     (),
@@ -44,7 +44,7 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
                 )(),
             ),
             patch(
-                "core.workflows.run_ai_exam_batch",
+                "core.app.workflows.run_ai_exam_batch",
                 new=AsyncMock(return_value=0),
             ) as mock_batch,
         ):
@@ -53,10 +53,10 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
         mock_batch.assert_awaited_once_with(status_callback=None, auto_submit=False)
 
     async def test_run_recommended_flow_returns_manual_exam_pending_without_callback(self):
-        from core.workflows import run_recommended_flow
+        from core.app.workflows import run_recommended_flow
 
         with patch(
-            "core.workflows.collect_project_state",
+            "core.app.workflows.collect_project_state",
             return_value=type(
                 "State",
                 (),
@@ -69,12 +69,12 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
                 },
             )(),
         ), patch(
-            "core.workflows.is_ai_configured", return_value=True,
+            "core.app.workflows.is_ai_configured", return_value=True,
         ), patch(
-            "core.workflows.run_afk_workflow",
+            "core.app.workflows.run_afk_workflow",
             return_value=True,
         ), patch(
-            "core.workflows.run_ai_exam_workflow",
+            "core.app.workflows.run_ai_exam_workflow",
             return_value=1,
         ) as mock_run_ai_exam:
             result = await run_recommended_flow()
@@ -86,13 +86,13 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_run_recommended_flow_asks_auto_submit_when_exam_detected(self):
-        from core.workflows import run_recommended_flow
+        from core.app.workflows import run_recommended_flow
 
         ask_auto_submit = unittest.mock.Mock(return_value=False)
 
         with (
             patch(
-                "core.workflows.collect_project_state",
+                "core.app.workflows.collect_project_state",
                 return_value=type(
                     "State",
                     (),
@@ -105,10 +105,10 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
                     },
                 )(),
             ),
-            patch("core.workflows.is_ai_configured", return_value=True),
-            patch("core.workflows.run_afk_workflow", return_value=True),
+            patch("core.app.workflows.is_ai_configured", return_value=True),
+            patch("core.app.workflows.run_afk_workflow", return_value=True),
             patch(
-                "core.workflows.run_ai_exam_workflow",
+                "core.app.workflows.run_ai_exam_workflow",
                 new=AsyncMock(return_value=0),
             ) as mock_run_ai_exam,
         ):
@@ -122,13 +122,13 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_run_recommended_flow_skips_ai_exam_when_not_configured(self):
-        from core.workflows import run_recommended_flow
+        from core.app.workflows import run_recommended_flow
 
         ask_auto_submit = unittest.mock.Mock(return_value=False)
 
         with (
             patch(
-                "core.workflows.collect_project_state",
+                "core.app.workflows.collect_project_state",
                 return_value=type(
                     "State",
                     (),
@@ -141,10 +141,10 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
                     },
                 )(),
             ),
-            patch("core.workflows.run_afk_workflow", return_value=True),
-            patch("core.workflows.is_ai_configured", return_value=False),
+            patch("core.app.workflows.run_afk_workflow", return_value=True),
+            patch("core.app.workflows.is_ai_configured", return_value=False),
             patch(
-                "core.workflows.run_ai_exam_workflow",
+                "core.app.workflows.run_ai_exam_workflow",
                 new=AsyncMock(),
             ) as mock_run_ai_exam,
         ):
@@ -155,7 +155,7 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
         ask_auto_submit.assert_not_called()
 
     async def test_format_status_error_message_sanitizes_raw_playwright_error(self):
-        from core.workflows import _format_status_error_message
+        from core.app.workflows import _format_status_error_message
 
         message = _format_status_error_message(
             "记录新页面链接失败",
@@ -171,14 +171,14 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
 
 class RefreshCredentialTests(unittest.TestCase):
     def test_refresh_credential_returns_login_result_without_profile_fallback(self):
-        from core.credential import AccountProfile
-        from core.workflows import refresh_credential
+        from core.auth.credential import AccountProfile
+        from core.app.workflows import refresh_credential
 
         messages = []
         profile = AccountProfile()
 
         with patch(
-            "core.workflows.login_and_save_credential",
+            "core.app.workflows.login_and_save_credential",
             return_value=profile,
         ) as mock_login:
             result = refresh_credential(status_callback=messages.append)

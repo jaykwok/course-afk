@@ -15,7 +15,7 @@ MODEL_CONFIG = {
 
 class ManualExamQueueTests(unittest.TestCase):
     def test_append_manual_exam_entry_records_reason_and_ai_model_state(self):
-        from core.manual_exam_queue import append_manual_exam_entry, read_manual_exam_queue
+        from core.queues.manual_exam import append_manual_exam_entry, read_manual_exam_queue
 
         with TemporaryDirectory() as tmp:
             manual_file = Path(tmp) / "manual.json"
@@ -49,7 +49,7 @@ class ManualExamQueueTests(unittest.TestCase):
             )
 
     def test_append_manual_exam_entry_merges_duplicate_url_state(self):
-        from core.manual_exam_queue import append_manual_exam_entry, read_manual_exam_queue
+        from core.queues.manual_exam import append_manual_exam_entry, read_manual_exam_queue
 
         with TemporaryDirectory() as tmp:
             manual_file = Path(tmp) / "manual.json"
@@ -78,7 +78,7 @@ class ManualExamQueueTests(unittest.TestCase):
             self.assertEqual(entries[0].ai_failed_model_configs, [MODEL_CONFIG])
 
     def test_read_manual_exam_queue_rejects_legacy_text_file(self):
-        from core.manual_exam_queue import read_manual_exam_queue
+        from core.queues.manual_exam import read_manual_exam_queue
 
         with TemporaryDirectory() as tmp:
             manual_file = Path(tmp) / "manual.json"
@@ -88,7 +88,7 @@ class ManualExamQueueTests(unittest.TestCase):
                 read_manual_exam_queue(file_path=manual_file)
 
     def test_read_manual_exam_queue_rejects_non_list_json(self):
-        from core.manual_exam_queue import read_manual_exam_queue
+        from core.queues.manual_exam import read_manual_exam_queue
 
         with TemporaryDirectory() as tmp:
             manual_file = Path(tmp) / "manual.json"

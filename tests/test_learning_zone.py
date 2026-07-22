@@ -2,7 +2,7 @@ import unittest
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, patch
 
-from core.learning_zone import (
+from core.learning.zone import (
     collect_learning_links_from_learning_zone_urls,
     extract_learning_links_from_learning_zone_html,
 )
@@ -134,11 +134,11 @@ class LearningZoneCollectionTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch(
-                "core.learning_zone.create_browser_context",
+                "core.learning.zone.create_browser_context",
                 side_effect=fake_browser_context,
             ),
             patch(
-                "core.learning_zone.enqueue_learning_links_with_subject_expand",
+                "core.learning.zone.enqueue_learning_links_with_subject_expand",
                 side_effect=fake_enqueue,
             ),
         ):
@@ -173,10 +173,10 @@ class LearningZoneCollectionTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch(
-                "core.learning_zone.create_browser_context",
+                "core.learning.zone.create_browser_context",
             ) as mock_create,
             patch(
-                "core.learning_zone.enqueue_learning_links_with_subject_expand",
+                "core.learning.zone.enqueue_learning_links_with_subject_expand",
                 new=AsyncMock(
                     return_value={
                         "course_links": 0,

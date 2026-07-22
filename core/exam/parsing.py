@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import traceback
 
-from core.question_parser import (
+from core.exam.question_parser import (
     detect_question_type_by_dom,
     extract_options_with_selector,
     parse_question_type,

@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from core.config import MANUAL_EXAM_FILE
-from core.exam_queue import normalize_model_config, unique_model_configs
+from core.queues.exam import normalize_model_config, unique_model_configs
 from core.file_ops import del_file, normalize_optional_text, write_text_atomic
 
 

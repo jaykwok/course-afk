@@ -45,7 +45,7 @@ def _prompt_ai_exam_auto_submit(ui) -> bool:
 
 def _ensure_exam_urls_for_ai_exam(ui) -> bool:
     from core.config import EXAM_URLS_FILE
-    from core.exam_queue import append_exam_url, read_exam_urls
+    from core.queues.exam import append_exam_url, read_exam_urls
     from core.links import extract_urls_from_text
 
     existing_urls = read_exam_urls(EXAM_URLS_FILE)
@@ -86,7 +86,7 @@ def _ensure_exam_urls_for_ai_exam(ui) -> bool:
 def _maybe_delete_empty_learning_queue_file(ui) -> None:
     from core.config import LEARNING_URLS_FILE
     from core.file_ops import del_file
-    from core.learning_queue import read_learning_urls
+    from core.queues.learning import read_learning_urls
 
     if not LEARNING_URLS_FILE.exists():
         return
@@ -99,7 +99,7 @@ def _maybe_delete_empty_learning_queue_file(ui) -> None:
 
 def _maybe_delete_empty_exam_queue_file(ui) -> None:
     from core.config import EXAM_URLS_FILE
-    from core.exam_queue import read_exam_urls
+    from core.queues.exam import read_exam_urls
     from core.file_ops import del_file
 
     if not EXAM_URLS_FILE.exists():
@@ -136,8 +136,8 @@ _FLOW_RESULT_LABELS = {
 
 
 def handle_recommended_flow(ui) -> None:
-    from core.exam_answers import ExamAiConfigurationError
-    from core.workflows import run_recommended_flow
+    from core.exam.answers import ExamAiConfigurationError
+    from core.app.workflows import run_recommended_flow
 
     _begin_operation(ui, "推荐流程", "正在检查登录状态与待处理任务")
     try:
@@ -160,8 +160,8 @@ def handle_recommended_flow(ui) -> None:
 
 
 def handle_refresh_credential(state, ui) -> None:
-    from core.login import LoginNotCompletedError
-    from core.workflows import refresh_credential
+    from core.auth.login import LoginNotCompletedError
+    from core.app.workflows import refresh_credential
 
     if state.has_credential and not state.credential_expired:
         ui.show_warning("当前登录凭证仍有效，继续将覆盖现有登录状态")
@@ -177,7 +177,7 @@ def handle_refresh_credential(state, ui) -> None:
 
 
 def handle_show_learning_links(learning_urls_file, ui) -> None:
-    from core.learning_queue import read_learning_urls
+    from core.queues.learning import read_learning_urls
 
     links = read_learning_urls(learning_urls_file)
     if not links:
@@ -192,7 +192,7 @@ def handle_show_learning_links(learning_urls_file, ui) -> None:
 
 def handle_manual_selection(prompts, ui) -> None:
     from core.links import split_manual_selection_urls
-    from core.workflows import parse_manual_selection_input, run_manual_course_selection
+    from core.app.workflows import parse_manual_selection_input, run_manual_course_selection
 
     try:
         input_text = ui.prompt_multiline_input(prompts)
@@ -265,7 +265,7 @@ def handle_manual_selection(prompts, ui) -> None:
 
 
 def handle_afk(ui) -> None:
-    from core.workflows import run_afk_workflow
+    from core.app.workflows import run_afk_workflow
 
     _begin_operation(ui, "课程学习", "正在打开浏览器并处理课程队列")
     has_exam = run_async(run_afk_workflow(status_callback=ui.show_info))
@@ -279,8 +279,8 @@ def handle_afk(ui) -> None:
 
 def handle_ai_exam(ui) -> None:
     from core.config import is_ai_configured
-    from core.exam_answers import ExamAiConfigurationError
-    from core.workflows import run_ai_exam_workflow
+    from core.exam.answers import ExamAiConfigurationError
+    from core.app.workflows import run_ai_exam_workflow
 
     if not is_ai_configured():
         ui.show_warning(
@@ -317,7 +317,7 @@ def handle_ai_exam(ui) -> None:
 
 def handle_manual_exam(ui) -> None:
     from core.state import collect_project_state
-    from core.workflows import run_manual_exam_workflow
+    from core.app.workflows import run_manual_exam_workflow
 
     _begin_operation(ui, "人工考试", "正在打开浏览器并等待人工完成考试")
     count = run_async(run_manual_exam_workflow(status_callback=ui.show_info))
@@ -335,7 +335,7 @@ def handle_manual_exam(ui) -> None:
 
 def handle_reference_collection(ui) -> None:
     from core.links import extract_urls_from_text
-    from core.workflows import run_reference_collection_workflow
+    from core.app.workflows import run_reference_collection_workflow
 
     try:
         input_text = ui.prompt_multiline_input(
@@ -383,15 +383,15 @@ def handle_reference_collection(ui) -> None:
 
 def handle_show_output_state(exam_urls_file, learning_urls_file, manual_exam_file, ui) -> None:
     from core.config import LEARNING_FAILURES_FILE
-    from core.exam_queue import read_exam_urls
-    from core.learning_queue import (
+    from core.queues.exam import read_exam_urls
+    from core.queues.learning import (
         group_learning_failures_by_reason,
         read_learning_failures,
         read_learning_urls,
         requeue_retryable_learning_failures,
         RETRIABLE_LEARNING_FAILURE_REASONS,
     )
-    from core.manual_exam_queue import read_manual_exam_urls
+    from core.queues.manual_exam import read_manual_exam_urls
 
     failures_file = LEARNING_FAILURES_FILE
     failures = read_learning_failures(file_path=failures_file)
