@@ -319,16 +319,24 @@ class TuiFrontend:
     async def _bridge_wait_with_progress(
         self, duration: int, description: str = "处理中"
     ) -> None:
+        """按秒推进进度数字，约 10Hz 刷新 UI，让转圈与 CLI Rich 一样顺滑。"""
         duration = int(duration)
         if duration <= 0:
             return
-        self.app.call_from_thread(self.app.set_progress, description, 0, duration)
-        for completed in range(1, duration + 1):
-            await asyncio.sleep(1)
+        # 与 CLI wait_with_progress(refresh_per_second=10) 对齐
+        ticks_per_sec = 10
+        total_ticks = duration * ticks_per_sec
+        self.app.call_from_thread(
+            self.app.set_progress, description, 0, duration, 0
+        )
+        for tick in range(1, total_ticks + 1):
+            await asyncio.sleep(1.0 / ticks_per_sec)
+            completed = min(duration, tick // ticks_per_sec)
             self.app.call_from_thread(
-                self.app.set_progress, description, completed, duration
+                self.app.set_progress, description, completed, duration, tick
             )
         self.app.call_from_thread(self.app.clear_progress)
+
 
 
 # ------------------------------------------------------------------

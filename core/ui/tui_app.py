@@ -108,11 +108,20 @@ def _format_duration(seconds: int) -> str:
     return f"{minutes}:{secs:02d}"
 
 
-def _build_progress_text(description: str, completed: int, total: int) -> Text:
+def _build_progress_text(
+    description: str,
+    completed: int,
+    total: int,
+    *,
+    spin_frame: int | None = None,
+) -> Text:
     """挂课进度双行：按终端选 Unicode 细轨或 ASCII [#---]。
 
     Windows Terminal / VS Code 等：braille 转圈 + ━─ 轨；
     纯 cmd（run.bat 默认）：ASCII，避免 CJK 字体全角错位。
+
+    spin_frame 与秒数解耦：桥接层以约 10Hz 递增，转圈才流畅；
+    未传时回退 completed（兼容旧调用）。
     """
     cs = progress_charset()
     total = max(1, int(total))
@@ -122,7 +131,8 @@ def _build_progress_text(description: str, completed: int, total: int) -> Text:
     bar_width = 30
     filled = int(round(ratio * bar_width))
     filled = max(0, min(bar_width, filled))
-    spin = cs.spinner[completed % len(cs.spinner)]
+    frame = int(completed if spin_frame is None else spin_frame)
+    spin = cs.spinner[frame % len(cs.spinner)]
 
     bar = Text()
     # 第一行：状态摘要
@@ -829,12 +839,21 @@ class CourseTuiApp(App):
             self.title = title
         self.sub_title = subtitle or ""
 
-    def set_progress(self, description: str, completed: int, total: int) -> None:
+    def set_progress(
+        self,
+        description: str,
+        completed: int,
+        total: int,
+        spin_frame: int | None = None,
+    ) -> None:
         if total <= 0:
             return
         self.query_one("#progress", Static).update(
-            _build_progress_text(description, completed, total)
+            _build_progress_text(
+                description, completed, total, spin_frame=spin_frame
+            )
         )
+
 
     def clear_progress(self) -> None:
         self.query_one("#progress", Static).update("")
