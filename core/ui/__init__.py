@@ -13,10 +13,12 @@ from rich.console import Console
 from rich.markup import escape
 from rich.panel import Panel
 from rich.progress import (
-    BarColumn,
     Progress,
+    ProgressColumn,
     SpinnerColumn,
+    Task,
     TextColumn,
+    TimeElapsedColumn,
     TimeRemainingColumn,
 )
 from rich.rule import Rule
@@ -28,31 +30,44 @@ from core.auth.credential import load_credential_metadata
 from core.palette import GREEN, GREEN_BRIGHT, ERROR, SUCCESS, WARNING
 from core.state import ProjectState, recommend_next_step
 
-# 输出图标约定（全 ASCII，cmd/conhost 宽度稳定；CLI 与 TUI 日志一致）。
-# 普通提示用裸 `-`，成功/警告/失败用方括号，统一占 3 格宽以左对齐。
-ICON_INFO = "-"  # 普通提示
-ICON_SUCCESS = "[+]"  # 成功
-ICON_WARNING = "[!]"  # 警告
-ICON_FAILURE = "[-]"  # 失败
+from core.ui.terminal_compat import (
+    is_legacy_windows_console as _is_legacy_windows_console,
+    prefers_unicode_ui,
+    progress_charset,
+    ui_glyphs,
+)
+
+
+def _g():
+    """当前终端 UI 字形（短别名）。"""
+    return ui_glyphs()
+
+
+# 输出图标：按终端自动选 Unicode / ASCII（见 terminal_compat.ui_glyphs）。
+# 通过模块 __getattr__ 懒解析，保证 import 后改 COURSE_AFK_UI_CHARS 仍生效。
+def __getattr__(name: str):
+    if name == "ICON_INFO":
+        return ui_glyphs().icon_info
+    if name == "ICON_SUCCESS":
+        return ui_glyphs().icon_success
+    if name == "ICON_WARNING":
+        return ui_glyphs().icon_warning
+    if name == "ICON_FAILURE":
+        return ui_glyphs().icon_failure
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _detect_legacy_windows_mode() -> bool | None:
-    if sys.platform.startswith("win") and os.environ.get("WT_SESSION"):
+    # Rich：WT 等明确非 legacy；纯 cmd 交 auto（None）或 True
+    if prefers_unicode_ui():
         return False
+    if sys.platform.startswith("win"):
+        return True
     return None
 
 
-def _is_legacy_windows_console() -> bool:
-    """纯 cmd / conhost（未设置 WT_SESSION）。
-
-    这类控制台搭配 CJK 字体时，box-drawing 字符（╭╮╰╯─│ 等，East Asian Ambiguous）
-    按全角 2 格渲染，而 Rich 按半角 1 格计算，导致表格/面板边框在角落错位断裂。
-    """
-    return sys.platform.startswith("win") and not os.environ.get("WT_SESSION")
-
-
 def _rich_box(default_box):
-    """Rich 表格/面板边框：Windows Terminal 用原花式边框，纯 cmd 退化为 ASCII。"""
+    """Rich 表格/面板边框：现代终端用花式边框，纯 cmd 退化为 ASCII。"""
     if _is_legacy_windows_console():
         return ASCII
     return default_box
@@ -327,19 +342,32 @@ def show_title(title: str, subtitle: str | None = None) -> None:
 
 
 def show_info(message: str) -> None:
-    console.print(f"  [{GREEN}]{ICON_INFO:<3}[/]  {escape(message)}")
+    g = _g()
+    console.print(f"  [{GREEN}]{g.pad_icon(g.icon_info)}[/]  {escape(message)}")
 
 
 def show_success(message: str) -> None:
-    console.print(f"  [bold {SUCCESS}]{ICON_SUCCESS:<3}[/]  [{SUCCESS}]{escape(message)}[/]")
+    g = _g()
+    console.print(
+        f"  [bold {SUCCESS}]{g.pad_icon(g.icon_success)}[/]  "
+        f"[{SUCCESS}]{escape(message)}[/]"
+    )
 
 
 def show_warning(message: str) -> None:
-    console.print(f"  [bold {WARNING}]{ICON_WARNING:<3}[/]  [{WARNING}]{escape(message)}[/]")
+    g = _g()
+    console.print(
+        f"  [bold {WARNING}]{g.pad_icon(g.icon_warning)}[/]  "
+        f"[{WARNING}]{escape(message)}[/]"
+    )
 
 
 def show_error(message: str) -> None:
-    console.print(f"  [bold {ERROR}]{ICON_FAILURE:<3}[/]  [bold {ERROR}]{escape(message)}[/]")
+    g = _g()
+    console.print(
+        f"  [bold {ERROR}]{g.pad_icon(g.icon_failure)}[/]  "
+        f"[bold {ERROR}]{escape(message)}[/]"
+    )
 
 
 def begin_operation(title: str, message: str) -> None:
@@ -358,24 +386,28 @@ def prepare_menu_loading() -> None:
 
 
 def _credential_display(state: ProjectState, metadata) -> Text:
+    g = _g()
     if not state.has_credential:
-        return Text(f"{ICON_FAILURE} 不存在", style=f"bold {ERROR}")
+        return Text(f"{g.icon_failure} 不存在", style=f"bold {ERROR}")
     if state.credential_expired:
-        return Text(f"{ICON_WARNING} 已过期", style=f"bold {WARNING}")
+        return Text(f"{g.icon_warning} 已过期", style=f"bold {WARNING}")
     if metadata and metadata.expires_at:
         try:
             expires_dt = datetime.fromisoformat(metadata.expires_at)
             now = datetime.now()
             if now.date() >= expires_dt.date():
-                return Text(f"{ICON_WARNING} 已过期", style=f"bold {WARNING}")
+                return Text(f"{g.icon_warning} 已过期", style=f"bold {WARNING}")
             seconds_left = (expires_dt - now).total_seconds()
             days_left = max(1, math.ceil(seconds_left / 86400))
-            t = Text(f"{ICON_SUCCESS} 有效至 {expires_dt:%Y-%m-%d}", style=f"bold {SUCCESS}")
+            t = Text(
+                f"{g.icon_success} 有效至 {expires_dt:%Y-%m-%d}",
+                style=f"bold {SUCCESS}",
+            )
             t.append(f"  （还有 {days_left} 天）", style="dim")
             return t
         except ValueError:
             pass
-    return Text(f"{ICON_SUCCESS} 有效", style=f"bold {SUCCESS}")
+    return Text(f"{g.icon_success} 有效", style=f"bold {SUCCESS}")
 
 
 def build_dashboard_renderable(state: ProjectState, *, expand: bool = False):
@@ -410,6 +442,7 @@ def build_dashboard_renderable(state: ProjectState, *, expand: bool = False):
     table.add_row("当前账号", Text(account_label, style="bold white"))
     table.add_row("账号有效期", _credential_display(state, metadata))
 
+    g = _g()
     counts = Text()
     for index, (label, count) in enumerate(
         (
@@ -420,14 +453,14 @@ def build_dashboard_renderable(state: ProjectState, *, expand: bool = False):
         )
     ):
         if index:
-            counts.append("   ", style="dim")
+            counts.append(g.sep, style="dim")
         counts.append(f"{label} ", style="dim white")
         counts.append(str(count), style="bold bright_white" if count else "dim")
     table.add_row("任务数量", counts)
 
     table.add_row(
         "建议操作",
-        Text(f"->  {recommended}", style=f"bold {WARNING}"),
+        Text(f"{g.arrow}  {recommended}", style=f"bold {WARNING}"),
     )
     return table if expand else Align.center(table)
 
@@ -453,6 +486,7 @@ def build_menu_status_renderable(state: ProjectState):
     grid.add_row("当前账号", Text(account_label, style="bold bright_white"))
     grid.add_row("账号有效期", _credential_display(state, metadata))
 
+    g = _g()
     counts = Text()
     for index, (label, count) in enumerate(
         (
@@ -463,13 +497,13 @@ def build_menu_status_renderable(state: ProjectState):
         )
     ):
         if index:
-            counts.append("  |  ", style="dim")
+            counts.append(g.sep, style="dim")
         counts.append(f"{label} ", style="dim")
         counts.append(str(count), style="bold bright_white" if count else "dim")
     grid.add_row("任务数量", counts)
     grid.add_row(
         "建议操作",
-        Text(f"->  {recommended}", style=f"bold {WARNING}"),
+        Text(f"{g.arrow}  {recommended}", style=f"bold {WARNING}"),
     )
 
     return Panel(
@@ -650,6 +684,35 @@ def wait_prepared_prompt(handle) -> None:
     pause(str(handle))
 
 
+class _AdaptiveBarColumn(ProgressColumn):
+    """按终端选 Unicode 细轨或 ASCII [#---]。"""
+
+    def __init__(self, width: int = 28) -> None:
+        super().__init__()
+        self.width = max(8, int(width))
+        self._cs = progress_charset()
+
+    def render(self, task: Task) -> Text:
+        total = task.total or 0
+        if total <= 0:
+            filled = 0
+        else:
+            filled = int(round((task.completed / total) * self.width))
+        filled = max(0, min(self.width, filled))
+        cs = self._cs
+        bar = Text()
+        if cs.bracket_l:
+            bar.append(cs.bracket_l, style=f"dim {GREEN}")
+        if filled:
+            style = f"bold {SUCCESS}" if task.finished else f"bold {GREEN_BRIGHT}"
+            bar.append(cs.track_done * filled, style=style)
+        if filled < self.width:
+            bar.append(cs.track_todo * (self.width - filled), style="dim")
+        if cs.bracket_r:
+            bar.append(cs.bracket_r, style=f"dim {GREEN}")
+        return bar
+
+
 async def wait_with_progress(
     duration: int,
     description: str = "处理中",
@@ -659,12 +722,18 @@ async def wait_with_progress(
     duration = int(duration)
     if duration <= 0:
         return
+    # CLI：现代终端 Unicode 细轨；纯 cmd 自动 ASCII
+    spinner_name = "dots" if prefers_unicode_ui() else "line"
     with Progress(
-        SpinnerColumn(spinner_name="dots"),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(bar_width=28),
-        TextColumn(f"[{GREEN}]{{task.completed}}[/][dim]/{{task.total}}s[/dim]"),
-        TextColumn("[dim]([/dim][bold]{task.percentage:>3.0f}%[/bold][dim])[/dim]"),
+        SpinnerColumn(spinner_name=spinner_name, style=GREEN_BRIGHT),
+        TextColumn(f"[bold {GREEN}]{{task.description}}[/]"),
+        _AdaptiveBarColumn(width=28),
+        TextColumn(f"[bold {GREEN_BRIGHT}]{{task.percentage:>4.1f}}%[/]"),
+        TextColumn(
+            f"[{GREEN}]{{task.completed}}[/]"
+            f"[dim]/{duration}s[/dim]"
+        ),
+        TimeElapsedColumn(),
         TimeRemainingColumn(),
         console=console,
         auto_refresh=True,

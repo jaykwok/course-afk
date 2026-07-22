@@ -36,6 +36,7 @@ from textual.widgets import (
     TextArea,
 )
 from textual.widgets.option_list import Option
+from rich.text import Text
 
 from core.menu_keys import (
     ensure_menu_option_count,
@@ -44,6 +45,7 @@ from core.menu_keys import (
     parse_menu_key,
 )
 from core.palette import GREEN, GREEN_BRIGHT, GREEN_DEEP, ERROR, SUCCESS, WARNING
+from core.ui.terminal_compat import progress_charset, ui_glyphs
 
 
 # Esc / Ctrl+C 强制取消当前模态提示时使用；桥接层识别后抛
@@ -106,11 +108,61 @@ def _format_duration(seconds: int) -> str:
     return f"{minutes}:{secs:02d}"
 
 
+def _build_progress_text(description: str, completed: int, total: int) -> Text:
+    """挂课进度双行：按终端选 Unicode 细轨或 ASCII [#---]。
+
+    Windows Terminal / VS Code 等：braille 转圈 + ━─ 轨；
+    纯 cmd（run.bat 默认）：ASCII，避免 CJK 字体全角错位。
+    """
+    cs = progress_charset()
+    total = max(1, int(total))
+    completed = max(0, min(int(completed), total))
+    ratio = completed / total
+    remaining = total - completed
+    bar_width = 30
+    filled = int(round(ratio * bar_width))
+    filled = max(0, min(bar_width, filled))
+    spin = cs.spinner[completed % len(cs.spinner)]
+
+    bar = Text()
+    # 第一行：状态摘要
+    bar.append(f" {spin} ", style=f"bold {GREEN_BRIGHT}")
+    bar.append(str(description or "处理中"), style=f"bold {GREEN}")
+    bar.append(cs.sep, style="dim")
+    bar.append(f"{ratio * 100:5.1f}%", style=f"bold {GREEN_BRIGHT}")
+    bar.append(cs.sep, style="dim")
+    bar.append(f"{completed}/{total}s", style="dim")
+    bar.append(cs.sep, style="dim")
+    if remaining > 0:
+        bar.append(f"剩余 {_format_duration(remaining)}", style=f"bold {SUCCESS}")
+    else:
+        bar.append("完成", style=f"bold {SUCCESS}")
+    bar.append("\n")
+    # 第二行：进度轨
+    bar.append("   ", style="")
+    if cs.bracket_l:
+        bar.append(cs.bracket_l, style=f"dim {GREEN}")
+    if filled > 0:
+        bar.append(cs.track_done * filled, style=f"bold {GREEN_BRIGHT}")
+    if filled < bar_width:
+        bar.append(
+            cs.track_todo * (bar_width - filled),
+            style=f"dim {GREEN_DEEP}",
+        )
+    if cs.bracket_r:
+        bar.append(cs.bracket_r, style=f"dim {GREEN}")
+    if remaining > 0:
+        bar.append(cs.tail_run, style=f"dim {GREEN}")
+    else:
+        bar.append(cs.tail_done, style=f"bold {SUCCESS}")
+    return bar
+
+
 class OptionScreen(ModalScreen[int]):
     """菜单 / 多选一。提交值为 1-based 序号。
 
     交互：数字键 1-9/0 直接选中、方向键移动高亮、回车或鼠标点击确认。
-    每页最多 10 项；第 10 项键位为 0。提示文字避免 ↑↓ 等 ambiguous 宽度字符。
+    每页最多 10 项；第 10 项键位为 0。提示分隔符按终端 Unicode/ASCII 自适应。
     """
 
     AUTO_FOCUS = "#opt-list"
@@ -136,18 +188,27 @@ class OptionScreen(ModalScreen[int]):
         self._status_renderable = status_renderable
 
     def compose(self) -> ComposeResult:
+        g = ui_glyphs()
         escape_hint = "ESC 退出" if self._status_renderable is not None else "ESC 返回"
         total = len(self._options)
         keys_hint = menu_keys_hint(total)
+        nav = (
+            f"{g.nav_up_down} 移动"
+            if g.name == "unicode"
+            else "方向键移动"
+        )
+        hint = g.join_keys(
+            f"数字键 {keys_hint} 直选",
+            nav,
+            "回车或点击确认",
+            escape_hint,
+        )
         content = [Static(self._title, id="opt-title")]
         if self._status_renderable is not None:
             content.append(Static(self._status_renderable, id="opt-status"))
         content.extend(
             (
-                Static(
-                    f"{self._prompt}（数字键 {keys_hint} 直选 | 方向键移动，回车或点击确认 | {escape_hint}）",
-                    id="opt-hint",
-                ),
+                Static(f"{self._prompt}（{hint}）", id="opt-hint"),
                 OptionList(
                     *(
                         Option(
@@ -247,13 +308,15 @@ class YesNoScreen(ModalScreen[bool]):
             self.add_class("with-details")
 
     def compose(self) -> ComposeResult:
+        g = ui_glyphs()
         content = [Static(self._message, id="yn-msg")]
         if self._details_renderable is not None:
             content.append(Static(self._details_renderable, id="yn-details"))
         content.extend(
             (
                 Static(
-                    f"默认 {self._default}（[Y] 是 / [N] 否 | ESC 返回）",
+                    f"默认 {self._default}（"
+                    f"{g.join_keys('[Y] 是', '[N] 否', 'ESC 返回')}）",
                     id="yn-hint",
                 ),
                 Horizontal(
@@ -312,6 +375,7 @@ class MultilineScreen(ModalScreen[tuple[str, Any]]):
         self._cancel_message = cancel_message
 
     def compose(self) -> ComposeResult:
+        g = ui_glyphs()
         instruction_lines = "\n".join(
             f"{idx}. {msg}" for idx, msg in enumerate(self._messages, start=1)
         )
@@ -320,7 +384,12 @@ class MultilineScreen(ModalScreen[tuple[str, Any]]):
             Static(instruction_lines, id="ml-instr"),
             TextArea(id="ml-text"),
             Static(
-                "Enter 换行 | Ctrl+V 粘贴 | Ctrl+Enter 提交 | ESC 返回",
+                g.join_keys(
+                    "Enter 换行",
+                    "Ctrl+V 粘贴",
+                    "Ctrl+Enter 提交",
+                    "ESC 返回",
+                ),
                 id="ml-hint",
             ),
             Horizontal(
@@ -377,6 +446,7 @@ class PauseScreen(ModalScreen[None]):
             self.add_class("with-details")
 
     def compose(self) -> ComposeResult:
+        g = ui_glyphs()
         content = []
         if self._details_renderable is not None:
             content.append(Static(self._details_renderable, id="pause-details"))
@@ -384,7 +454,10 @@ class PauseScreen(ModalScreen[None]):
         content.extend(
             (
                 Static(self._message, id="pause-msg"),
-                Static(f"Enter {hint_action} | ESC 返回", id="pause-hint"),
+                Static(
+                    g.join_keys(f"Enter {hint_action}", "ESC 返回"),
+                    id="pause-hint",
+                ),
                 Horizontal(
                     Button(self._button_label, id="continue", variant="primary"),
                     id="pause-actions",
@@ -435,175 +508,184 @@ COURSE_THEME = Theme(
 )
 
 
+# 边框样式按终端在 import 时选定（round 在纯 cmd 易错位 → ascii/solid）
+_UI = ui_glyphs()
+_BORDER = _UI.textual_border
+_BORDER_SOFT = _UI.textual_border_soft
+_KEYS_JOIN = _UI.keys_join
+
+
 class CourseTuiApp(App):
     """中国电信网上大学自动化工具的 Textual 主应用。"""
 
-    CSS = """
-    Screen {
+    CSS = f"""
+    Screen {{
         background: $surface;
-    }
+    }}
 
-    #main {
+    #main {{
         /* 常驻外壳：始终可见。菜单 / 确认 / 结果页是叠在上面的不透明模态，会遮住它；
            长任务（挂课/考试）期间不弹模态，于是仪表盘 / 进度条 / 活动日志 + 顶部状态条
            一起作为布局里的若干行平铺显示，互不遮挡。 */
         layout: vertical;
-    }
+    }}
 
     /* 操作状态条：长任务期间「当前在做什么」常驻顶部一行。它是布局里的一块（不是浮动
        模态），所以和仪表盘 / 进度条 / 日志各占一行，永远不会互相遮挡或文字叠字。
        空闲时 display:none 不占位；set_operation_status 时加 .active 显示。 */
-    #status-bar {
+    #status-bar {{
         height: 1;
         margin: 0 0 1 0;
         padding: 0 1;
         display: none;
-    }
+    }}
 
-    #status-bar.active {
+    #status-bar.active {{
         display: block;
-    }
+    }}
 
-    #status-spinner {
+    #status-spinner {{
         height: 1;
         width: 2;
         margin: 0 1 0 0;
         color: $accent;
-    }
+    }}
 
-    #status-text {
+    #status-text {{
         height: 1;
         width: 1fr;
         color: $text;
-    }
+    }}
 
     /* 快捷键常驻状态条右侧（顶部、醒目），不再埋在左下角 Footer。 */
-    #status-keys {
+    #status-keys {{
         height: 1;
         color: $accent;
         text-style: bold;
-    }
+    }}
 
-    #dashboard {
+    #dashboard {{
         /* 不再外加 Textual 边框：内层 Rich Table 自带绿色边框即卡片，避免双框。 */
         height: auto;
         max-height: 16;
         padding: 0 1;
         margin: 1 0 0 0;
         color: $text;
-    }
+    }}
 
-    #progress {
-        height: 1;
-        margin: 0;
+    /* 挂课进度：双行（摘要 + 进度轨），空内容时高度塌缩不占位 */
+    #progress {{
+        height: auto;
+        min-height: 0;
+        margin: 0 0 1 0;
         padding: 0 1;
         color: $text;
-    }
+    }}
 
-    #log {
-        border: round $primary 50%;
+    #log {{
+        border: {_BORDER} $primary 50%;
         margin: 1 0;
         height: 1fr;
         background: $surface;
-    }
+    }}
 
     /* ---------- 模态屏 ---------- */
-    OptionScreen, YesNoScreen, MultilineScreen, PauseScreen {
+    OptionScreen, YesNoScreen, MultilineScreen, PauseScreen {{
         align: center middle;
-    }
+    }}
 
-    #opt-dialog, #yn-dialog, #ml-dialog, #pause-dialog {
+    #opt-dialog, #yn-dialog, #ml-dialog, #pause-dialog {{
         width: 80;
         height: auto;
         max-width: 94%;
         max-height: 96%;
-        border: round $primary;
+        border: {_BORDER} $primary;
         background: $panel;
         padding: 1 2;
-    }
+    }}
 
-    #opt-title, #ml-title, #yn-msg {
+    #opt-title, #ml-title, #yn-msg {{
         text-style: bold;
         color: $text;
         margin-bottom: 1;
-    }
+    }}
 
-    #yn-msg {
+    #yn-msg {{
         border-bottom: solid $primary 40%;
         padding-bottom: 1;
-    }
+    }}
 
-    #opt-hint, #yn-hint, #ml-instr, #ml-hint, #pause-msg, #pause-hint {
+    #opt-hint, #yn-hint, #ml-instr, #ml-hint, #pause-msg, #pause-hint {{
         color: $text-muted;
         margin-bottom: 1;
-    }
+    }}
 
-    #opt-status {
+    #opt-status {{
         height: auto;
         margin-bottom: 1;
-    }
+    }}
 
-    #yn-details, #pause-details {
+    #yn-details, #pause-details {{
         height: 1fr;
         min-height: 3;
         overflow-y: auto;
         margin-bottom: 1;
-    }
+    }}
 
     YesNoScreen.with-details #yn-dialog,
-    PauseScreen.with-details #pause-dialog {
+    PauseScreen.with-details #pause-dialog {{
         height: 90%;
         max-height: 34;
-    }
+    }}
 
-    #opt-list {
+    #opt-list {{
         height: auto;
         max-height: 15;
         margin-bottom: 1;
-        border: solid $primary 30%;
-    }
+        border: {_BORDER_SOFT} $primary 30%;
+    }}
 
-    #ml-dialog {
+    #ml-dialog {{
         height: 90%;
         min-height: 16;
         max-height: 36;
-    }
+    }}
 
-    #ml-instr {
+    #ml-instr {{
         height: auto;
         max-height: 8;
         overflow-y: auto;
-    }
+    }}
 
-    #ml-text {
+    #ml-text {{
         height: 1fr;
         min-height: 3;
         margin-bottom: 1;
-        border: solid $primary 30%;
-    }
+        border: {_BORDER_SOFT} $primary 30%;
+    }}
 
-    #yn-actions, #ml-actions, #pause-actions {
+    #yn-actions, #ml-actions, #pause-actions {{
         align-horizontal: center;
         height: 3;
         margin-top: 0;
-    }
+    }}
 
-    Button {
+    Button {{
         margin: 0 1;
-    }
+    }}
 
     /* 按钮聚焦：整体提亮，替代默认的「反转」。
        反转会把变体按钮(是=success / 否=error / 提交=primary)的亮底深字
        反过来变成黑底，看起来像坏掉的光标；这里改成提亮底色 + 加粗
        (加粗见主题 button-focus-text-style)，聚焦更醒目且不反色。
        覆盖 Textual 默认的 5% 微弱提亮。 */
-    Button.-style-default:focus {
+    Button.-style-default:focus {{
         background-tint: $foreground 30%;
-    }
+    }}
     """
 
     TITLE = "中国电信网上大学自动化工具"
-    SUB_TITLE = "登录 | 学习 | 考试 统一入口"
+    SUB_TITLE = f"登录{_KEYS_JOIN}学习{_KEYS_JOIN}考试  统一入口"
 
     # Esc 在任何界面都表示返回；主菜单没有上一级，因此返回即退出。
     # Ctrl+C 保留同样的优雅取消能力。
@@ -626,12 +708,16 @@ class CourseTuiApp(App):
         self._operation_active: bool = False
 
     def compose(self) -> ComposeResult:
+        g = ui_glyphs()
         yield Header()
         yield Vertical(
             Horizontal(
                 LoadingIndicator(id="status-spinner"),
                 Static(id="status-text"),
-                Static("ESC 取消  |  Ctrl+C 退出", id="status-keys"),
+                Static(
+                    g.join_keys("ESC 取消", "Ctrl+C 退出"),
+                    id="status-keys",
+                ),
                 id="status-bar",
             ),
             Static(id="dashboard"),
@@ -674,8 +760,13 @@ class CourseTuiApp(App):
         try:
             from rich.text import Text
 
+            g = ui_glyphs()
             self.call_from_thread(
-                self.emit_log, Text(f"  [-]  {message}", style=f"bold {ERROR}")
+                self.emit_log,
+                Text(
+                    f"  {g.pad_icon(g.icon_failure)}  {message}",
+                    style=f"bold {ERROR}",
+                ),
             )
         except Exception:
             pass
@@ -741,21 +832,9 @@ class CourseTuiApp(App):
     def set_progress(self, description: str, completed: int, total: int) -> None:
         if total <= 0:
             return
-        ratio = max(0, min(1, completed / total))
-        bar_width = 20
-        filled = int(ratio * bar_width)
-        remaining = max(0, total - completed)
-        from rich.text import Text
-
-        # ASCII 进度条：方块字符是 East-Asian ambiguous 宽度，cmd 下会错位；
-        # 已完成用亮青 #、剩余用 dim -，外加方括号；末尾给出剩余挂课时间（对标 CLI 的 ETA）。
-        bar = Text()
-        bar.append(f"  {description}  [", style=GREEN)
-        bar.append("#" * filled, style=f"bold {GREEN_BRIGHT}")
-        bar.append("-" * (bar_width - filled), style="dim")
-        bar.append(f"] {completed}/{total}s ({ratio * 100:>3.0f}%)", style=GREEN)
-        bar.append(f"  剩余 {_format_duration(remaining)}", style=f"bold {GREEN_BRIGHT}")
-        self.query_one("#progress", Static).update(bar)
+        self.query_one("#progress", Static).update(
+            _build_progress_text(description, completed, total)
+        )
 
     def clear_progress(self) -> None:
         self.query_one("#progress", Static).update("")

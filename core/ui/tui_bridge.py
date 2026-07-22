@@ -38,12 +38,14 @@ from core.ui.tui_app import (
 
 
 # ------------------------------------------------------------------
-# Rich 渲染小工具（视觉与原 CLI 保持一致）
+# Rich 渲染小工具（视觉与 CLI 一致；图标按终端 Unicode/ASCII）
 # ------------------------------------------------------------------
 def _icon_text(icon: str, message: str, *, style: str) -> Text:
+    from core.ui.terminal_compat import ui_glyphs
+
+    g = ui_glyphs()
     text = Text()
-    # 图标统一占 3 格宽（`-` 与 `[+]`/`[!]`/`[-]` 对齐），多行日志文本左对齐。
-    text.append(f"  {icon:<3}  ", style=f"bold {style}")
+    text.append(f"  {g.pad_icon(icon)}  ", style=f"bold {style}")
     text.append(message, style=style)
     return text
 
@@ -144,31 +146,43 @@ class TuiFrontend:
         self.app.call_from_thread(self.app.set_title, title, subtitle)
 
     def _bridge_show_info(self, message: str) -> None:
+        from core.ui.terminal_compat import ui_glyphs
+
         self._refresh_dashboard()
         self.app.call_from_thread(self.app.set_busy_status, message)
         self.app.call_from_thread(
-            self.app.emit_log, _icon_text(cli_ui.ICON_INFO, message, style=GREEN)
+            self.app.emit_log,
+            _icon_text(ui_glyphs().icon_info, message, style=GREEN),
         )
 
     def _bridge_show_success(self, message: str) -> None:
+        from core.ui.terminal_compat import ui_glyphs
+
         self._refresh_dashboard()
         self.app.call_from_thread(self.app.set_busy_status, message)
         self.app.call_from_thread(
-            self.app.emit_log, _icon_text(cli_ui.ICON_SUCCESS, message, style=SUCCESS)
+            self.app.emit_log,
+            _icon_text(ui_glyphs().icon_success, message, style=SUCCESS),
         )
 
     def _bridge_show_warning(self, message: str) -> None:
+        from core.ui.terminal_compat import ui_glyphs
+
         self._refresh_dashboard()
         self.app.call_from_thread(self.app.set_busy_status, message)
         self.app.call_from_thread(
-            self.app.emit_log, _icon_text(cli_ui.ICON_WARNING, message, style=WARNING)
+            self.app.emit_log,
+            _icon_text(ui_glyphs().icon_warning, message, style=WARNING),
         )
 
     def _bridge_show_error(self, message: str) -> None:
+        from core.ui.terminal_compat import ui_glyphs
+
         self._refresh_dashboard()
         self.app.call_from_thread(self.app.set_busy_status, message)
         self.app.call_from_thread(
-            self.app.emit_log, _icon_text(cli_ui.ICON_FAILURE, message, style=ERROR)
+            self.app.emit_log,
+            _icon_text(ui_glyphs().icon_failure, message, style=ERROR),
         )
 
     def _bridge_begin_operation(self, title: str, message: str) -> None:
