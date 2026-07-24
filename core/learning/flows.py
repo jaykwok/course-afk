@@ -14,6 +14,7 @@ from core.config import (
     URL_TYPE_WAIT,
 )
 from core.queues.exam import append_exam_url
+from core.browser.overlays import dismiss_topmost_overlays_async
 from core.learning.common import (
     ensure_course_page_ready,
     get_course_url,
@@ -24,6 +25,96 @@ from core.learning.exam_bridge import check_exam_passed, handle_examination
 from core.learning.handlers import handle_document, handle_h5, handle_video
 from core.queues.learning import record_learning_failure
 from core.learning.popups import handle_archive_continue_popup, handle_rating_popup
+
+
+async def _open_subject_item_popup(page, learn_item, *, attempts: int = 3):
+    """点击主题小节操作区并等待 popup；手动能开但自动化偶发失败时重试。"""
+    operation = learn_item.locator(".inline-block.operation")
+    last_error: Exception | None = None
+
+    for attempt in range(1, attempts + 1):
+        try:
+            await dismiss_topmost_overlays_async(page, max_count=2)
+        except Exception:
+            pass
+
+        try:
+            await operation.scroll_into_view_if_needed(timeout=3000)
+        except Exception:
+            pass
+
+        try:
+            await operation.wait_for(state="visible", timeout=8000)
+        except Exception as exc:
+            last_error = exc
+            logging.info(
+                f"主题操作按钮不可见 (第{attempt}/{attempts}次): {exc}"
+            )
+            await page.wait_for_timeout(500)
+            continue
+
+        try:
+            async with page.expect_popup(timeout=15000) as page_pop:
+                try:
+                    await operation.click(timeout=5000)
+                except Exception:
+                    # 被遮罩/动画挡住时强制点一次
+                    await operation.click(timeout=5000, force=True)
+            popup = await page_pop.value
+            return popup
+        except Exception as exc:
+            last_error = exc
+            logging.info(
+                f"打开主题小节弹窗失败 (第{attempt}/{attempts}次): {exc}"
+            )
+            try:
+                await dismiss_topmost_overlays_async(page, max_count=2)
+            except Exception:
+                pass
+            await page.wait_for_timeout(800)
+
+    assert last_error is not None
+    raise last_error
+
+
+async def _activate_course_section(page_detail, box) -> None:
+    """点击课内章节；失败时关遮罩/force 点击后重试。"""
+    wrapper = box.locator(".section-item-wrapper")
+    last_error: Exception | None = None
+
+    for attempt in range(1, 4):
+        try:
+            await handle_rating_popup(page_detail)
+        except Exception:
+            pass
+        try:
+            await dismiss_topmost_overlays_async(page_detail, max_count=2)
+        except Exception:
+            pass
+
+        try:
+            await wrapper.scroll_into_view_if_needed(timeout=3000)
+        except Exception:
+            pass
+
+        try:
+            await wrapper.wait_for(state="visible", timeout=10000)
+            try:
+                await wrapper.click(timeout=5000)
+            except Exception:
+                await wrapper.click(timeout=5000, force=True)
+            # 给播放器/文档区一点切换时间
+            await page_detail.wait_for_timeout(500)
+            return
+        except Exception as exc:
+            last_error = exc
+            logging.info(
+                f"点击章节失败 (第{attempt}/3次): {exc}"
+            )
+            await page_detail.wait_for_timeout(600)
+
+    assert last_error is not None
+    raise last_error
 
 
 async def handle_subject_exam_item(learn_item) -> str | None:
@@ -144,9 +235,7 @@ async def subject_learning(page):
         section_type = await learn_item.locator(".section-type").inner_text()
 
         if section_type == "课程":
-            async with page.expect_popup() as page_pop:
-                await learn_item.locator(".inline-block.operation").click()
-            page_detail = await page_pop.value
+            page_detail = await _open_subject_item_popup(page, learn_item)
             try:
                 await course_learning(page_detail, learn_item)
             except Exception as exc:
@@ -184,9 +273,7 @@ async def subject_learning(page):
                 reason_text="URL 类型学习等待后续复查（打开外链停留后复查是否「重新学习」）",
                 detail={"source": "subject", "section_type": section_type},
             )
-            async with page.expect_popup() as page_pop:
-                await learn_item.locator(".inline-block.operation").click()
-            page_detail = await page_pop.value
+            page_detail = await _open_subject_item_popup(page, learn_item)
             timeout_task = asyncio.create_task(
                 page_detail.wait_for_timeout(URL_TYPE_WAIT * 1000)
             )
@@ -329,10 +416,7 @@ async def course_learning(page_detail, learn_item=None):
                 logging.info(f"课程第{index + 1}节({track_label})已学习, 跳过该节\n")
                 continue
 
-        if await handle_rating_popup(page_detail):
-            logging.info("五星评价完成")
-        await box.locator(".section-item-wrapper").wait_for()
-        await box.locator(".section-item-wrapper").click()
+        await _activate_course_section(page_detail, box)
 
         try:
             if section_type in ["5", "6"]:

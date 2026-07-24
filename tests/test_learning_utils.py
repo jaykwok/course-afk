@@ -9,11 +9,89 @@ class LearningUtilityTests(unittest.TestCase):
 
         self.assertFalse(is_learned("第一节 需学 12:30"))
         self.assertFalse(is_learned("第二节 需再学 03:00"))
+        self.assertFalse(is_learned("必修 视频 45:34\n需再学 36:00"))
+        # 文档节常见：需学 00:05 —— 绝不能当已学（曾误匹配「需学 00」前缀）
+        self.assertFalse(is_learned("必修 文档 05:00\n需学 00:05"))
+        self.assertFalse(is_learned("必修 文档 05:00\n需学 0:05"))
+        self.assertFalse(is_learned("需学 00:01"))
         self.assertTrue(is_learned("第三节 已完成 12:30"))
         self.assertTrue(is_learned("必修 视频 19:55"))
+        # 平台学完后常短暂残留「需再学 0:00」——应视为已同步
+        self.assertTrue(is_learned("必修 视频 19:55\n需再学 0:00"))
+        self.assertTrue(is_learned("必修 视频 19:55 需学 00:00"))
+        self.assertTrue(is_learned("需再学 0"))
+        self.assertTrue(is_learned("必修 文档 05:00\n需学 0:00"))
         # 空文案不得视为已学（DOM 未渲染）
         self.assertFalse(is_learned(""))
         self.assertFalse(is_learned("   "))
+
+    def test_wait_until_learned_accepts_zero_remaining_text(self):
+        from core.learning.common import wait_until_learned
+
+        class FakeWrapper:
+            def __init__(self, text):
+                self._text = text
+
+            async def scroll_into_view_if_needed(self, timeout=0):
+                return None
+
+            async def inner_text(self, timeout=None):
+                return self._text
+
+        class Box:
+            def __init__(self, text):
+                self._wrapper = FakeWrapper(text)
+
+            def locator(self, selector):
+                assert selector == ".section-item-wrapper"
+                return self._wrapper
+
+        class FakePage:
+            async def wait_for_timeout(self, _ms):
+                return None
+
+        asyncio.run(
+            wait_until_learned(
+                Box("必修 视频 10:00\n需再学 0:00"),
+                FakePage(),
+                max_wait=30,
+                poll_interval=5,
+            )
+        )
+
+    def test_wait_until_learned_final_recheck_before_timeout(self):
+        from core.learning.common import wait_until_learned
+
+        texts = [
+            "必修 视频 10:00\n需再学 01:00",
+            "必修 视频 10:00\n需再学 01:00",
+            "必修 视频 10:00",  # 超时边界复核命中
+        ]
+        reads = {"n": 0}
+
+        class FakeWrapper:
+            async def scroll_into_view_if_needed(self, timeout=0):
+                return None
+
+            async def inner_text(self, timeout=None):
+                idx = min(reads["n"], len(texts) - 1)
+                reads["n"] += 1
+                return texts[idx]
+
+        class Box:
+            def locator(self, selector):
+                assert selector == ".section-item-wrapper"
+                return FakeWrapper()
+
+        class FakePage:
+            async def wait_for_timeout(self, _ms):
+                return None
+
+        asyncio.run(
+            wait_until_learned(Box(), FakePage(), max_wait=5, poll_interval=5)
+        )
+        # 初始 + 循环内 + 超时边界复核
+        self.assertGreaterEqual(reads["n"], 3)
 
     def test_match_concurrent_study_limit(self):
         from core.learning.common import match_concurrent_study_limit
@@ -84,6 +162,26 @@ class LearningUtilityTests(unittest.TestCase):
         self.assertEqual(plan.learning_wait_time, 300)
         self.assertEqual(plan.sync_wait_time, VIDEO_SYNC_MIN_WAIT)
         self.assertEqual(plan.sync_poll_interval, VIDEO_SYNC_POLL_INTERVAL)
+
+    def test_build_video_timing_plan_keeps_min_sync_when_learning_is_zero(self):
+        from core.config import VIDEO_SYNC_MIN_WAIT, VIDEO_SYNC_POLL_INTERVAL
+        from core.learning.common import build_video_timing_plan
+
+        # 解析得到 learning=0 时也不能 0 秒直接判超时（DOM 可能仍挂「需再学」）
+        plan = build_video_timing_plan("总时长 00:00 剩余 00:00")
+
+        self.assertEqual(plan.learning_wait_time, 0)
+        self.assertEqual(plan.sync_wait_time, VIDEO_SYNC_MIN_WAIT)
+        self.assertEqual(plan.sync_poll_interval, VIDEO_SYNC_POLL_INTERVAL)
+
+    def test_document_wait_config_is_fixed_cap_without_sync_phase(self):
+        from core import config
+
+        # 文档统一挂 DOCUMENT_WAIT；不再拆「学习 + 同步确认」两段
+        self.assertEqual(config.DOCUMENT_WAIT, 60)
+        self.assertEqual(config.DOCUMENT_POLL_INTERVAL, 10)
+        self.assertFalse(hasattr(config, "DOCUMENT_INITIAL_WAIT"))
+        self.assertFalse(hasattr(config, "DOCUMENT_SYNC_EXTRA_WAIT"))
 
     def test_calculate_video_sync_wait_time_uses_theoretical_sync_boundary(self):
         from core.learning.common import calculate_video_sync_wait_time

@@ -19,7 +19,9 @@ class PathConfigTests(unittest.TestCase):
         # 断兼容：路径常量不得回落到项目根
         self.assertNotEqual(config.LEARNING_URLS_FILE, config.PROJECT_ROOT / "课程链接.json")
         self.assertNotEqual(config.COOKIES_FILE, config.PROJECT_ROOT / "cookies.json")
+        self.assertEqual(config.LOG_FILE, config.DATA_DIR / "log.log")
         self.assertNotEqual(config.LOG_FILE, config.PROJECT_ROOT / "log.txt")
+        self.assertNotEqual(config.LOG_FILE, config.PROJECT_ROOT / "log.log")
 
     def test_learning_links_file_is_project_relative(self):
         self.assertTrue(str(config.LEARNING_URLS_FILE).endswith("课程链接.json"))

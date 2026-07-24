@@ -72,15 +72,27 @@ async def handle_archive_continue_popup(page) -> bool:
 
 
 async def handle_rating_popup(page):
-    """监测评分弹窗, 选择五星并提交"""
+    """监测评分弹窗, 选择五星并提交。
+
+    无弹窗是常态：用 count/短探测，避免每次 DEBUG 刷 Playwright Timeout + Call log。
+    """
     try:
         dialog = page.locator(".ant-modal-content")
+        # 先廉价探测：多数章节没有评分弹窗
         try:
-            await dialog.wait_for(state="visible", timeout=1500)
-            logging.info("检测到评分弹窗")
-        except Exception as exc:
-            logging.debug(f"未检测到评分弹窗: {exc}")
+            if await dialog.count() == 0:
+                return False
+            if not await dialog.first.is_visible():
+                return False
+        except Exception:
             return False
+
+        try:
+            await dialog.first.wait_for(state="visible", timeout=800)
+        except Exception:
+            return False
+
+        logging.info("检测到评分弹窗")
 
         # 归档确认也是 ant-modal，勿当评分弹窗硬点「确定」
         try:
@@ -91,7 +103,11 @@ async def handle_rating_popup(page):
             return await handle_archive_continue_popup(page)
 
         stars_container = dialog.locator("ul.ant-rate")
-        await stars_container.wait_for(state="visible", timeout=1000)
+        try:
+            await stars_container.wait_for(state="visible", timeout=1000)
+        except Exception:
+            # 有 ant-modal 但不是评分（其它业务弹窗）
+            return False
 
         try:
             fifth_star = dialog.locator("ul.ant-rate li:nth-child(5) div[role='radio']")

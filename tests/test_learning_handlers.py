@@ -21,7 +21,7 @@ class _FakeLocator:
     async def inner_text(self):
         return self._inner_text_value
 
-    async def click(self):
+    async def click(self, *args, **kwargs):
         return None
 
 
@@ -75,6 +75,10 @@ class LearningHandlerTests(unittest.IsolatedAsyncioTestCase):
                 new=AsyncMock(return_value=False),
             ),
             patch(
+                "core.browser.overlays.dismiss_topmost_overlays_async",
+                new=AsyncMock(return_value=0),
+            ),
+            patch(
                 "core.learning.handlers.asyncio.create_task",
                 side_effect=tracking_create_task,
             ),
@@ -93,6 +97,61 @@ class LearningHandlerTests(unittest.IsolatedAsyncioTestCase):
         # timeout / timer / popup 三个并行任务；页面关闭后均应被清理
         self.assertEqual(len(created_tasks), 3)
         self.assertEqual(task_states_before_cleanup, [True, True, True])
+
+    async def test_handle_document_leaves_quietly_when_sync_times_out(self):
+        """文档到点未同步：不抛错、不记失败，直接走人。"""
+        from core.abort import SyncTimeoutError
+        from core.learning.handlers import handle_document
+
+        class DocBox:
+            def locator(self, selector):
+                return _FakeLocator(inner_text_value="必修 文档 05:00\n需学 00:05")
+
+        class DocPage:
+            def locator(self, selector):
+                return _FakeLocator()
+
+            async def wait_for_timeout(self, _ms):
+                return None
+
+        with (
+            patch(
+                "core.learning.handlers.wait_until_learned",
+                new=AsyncMock(
+                    side_effect=SyncTimeoutError(
+                        "课程进度未能在 60 秒内同步完成",
+                        reason_text="timeout",
+                    )
+                ),
+            ) as mock_wait,
+            patch(
+                "core.browser.overlays.dismiss_topmost_overlays_async",
+                new=AsyncMock(return_value=0),
+            ),
+        ):
+            # 不得向外抛 SyncTimeoutError
+            await handle_document(DocPage(), DocBox())
+
+        mock_wait.assert_awaited_once()
+        kwargs = mock_wait.await_args.kwargs
+        self.assertEqual(kwargs.get("max_wait"), 60)
+
+    async def test_handle_document_returns_early_when_synced(self):
+        from core.learning.handlers import handle_document
+
+        with (
+            patch(
+                "core.learning.handlers.wait_until_learned",
+                new=AsyncMock(return_value=None),
+            ) as mock_wait,
+            patch(
+                "core.browser.overlays.dismiss_topmost_overlays_async",
+                new=AsyncMock(return_value=0),
+            ),
+        ):
+            await handle_document(_FakePage(RuntimeError), _FakeBox())
+
+        mock_wait.assert_awaited_once()
 
 
 if __name__ == "__main__":

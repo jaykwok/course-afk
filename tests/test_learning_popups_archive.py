@@ -42,10 +42,13 @@ class _FakeLocator:
     async def count(self):
         return self._count
 
+    async def is_visible(self):
+        return self._visible and self._count > 0
+
     async def inner_text(self, timeout=None):
         return self._inner_text
 
-    async def click(self):
+    async def click(self, *args, **kwargs):
         return await self._click()
 
 

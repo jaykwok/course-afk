@@ -48,7 +48,7 @@ course-afk/
 - `data/考试链接.json`：待 AI 处理的考试及失败模型配置。
 - `data/人工考试链接.json`：需要人工处理的考试。
 - `data/参考资料/`：课程课件（PDF/文档）与视频 AI 导学资料。
-- `data/log.txt`：运行日志。
+- `data/log.log`：运行日志。
 - `data/cookies.json` / `data/credential_meta.json`：登录凭证（本地敏感，勿上传）。
 
 本地抓包/反推实验统一放在 `tools/capture/`（已 `.gitignore`，不上传）。

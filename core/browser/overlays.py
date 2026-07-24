@@ -107,15 +107,15 @@ async def dismiss_topmost_overlays_async(
             result = await page.evaluate(DISMISS_TOPMOST_OVERLAY_SCRIPT)
         except Exception as exc:
             if _is_navigation_context_error(exc):
-                # SPA 跳转会销毁 evaluate 上下文，等 load 后再试
-                logging.debug(f"关闭弹窗时遇导航，等待后重试: {exc}")
+                # SPA 跳转会销毁 evaluate 上下文：静默等 load 后重试，不刷噪音日志
                 try:
                     await page.wait_for_load_state("load")
                     await page.wait_for_timeout(settle_milliseconds)
                 except Exception:
                     break
                 continue
-            logging.debug(f"检查页面顶层弹窗失败: {exc}")
+            # 非导航类失败才记 debug，避免日志被 Call log 淹没
+            logging.debug(f"检查页面顶层弹窗失败: {type(exc).__name__}")
             break
         if not isinstance(result, dict):
             break

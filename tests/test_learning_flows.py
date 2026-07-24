@@ -66,7 +66,10 @@ class SubjectLearningFlowTests(unittest.IsolatedAsyncioTestCase):
             def last(self):
                 return self
 
-            async def wait_for(self):
+            async def wait_for(self, *args, **kwargs):
+                return None
+
+            async def scroll_into_view_if_needed(self, *args, **kwargs):
                 return None
 
             async def count(self):
@@ -75,7 +78,7 @@ class SubjectLearningFlowTests(unittest.IsolatedAsyncioTestCase):
             async def inner_text(self):
                 return self._inner_text_value
 
-            async def click(self):
+            async def click(self, *args, **kwargs):
                 return None
 
         class FakeLearnItem:
@@ -101,12 +104,15 @@ class SubjectLearningFlowTests(unittest.IsolatedAsyncioTestCase):
             async def wait_for_load_state(self, _state):
                 return None
 
+            async def wait_for_timeout(self, _ms):
+                return None
+
             def locator(self, selector):
                 if selector == ".item.current-hover":
                     return FakeCountLocator(self._items)
                 raise AssertionError(f"unexpected selector: {selector}")
 
-            def expect_popup(self):
+            def expect_popup(self, **kwargs):
                 popup_page = self._popup_pages.pop(0)
                 return FakePopupContextManager(popup_page)
 
@@ -118,6 +124,10 @@ class SubjectLearningFlowTests(unittest.IsolatedAsyncioTestCase):
             patch(
                 "core.learning.flows.ensure_course_page_ready",
                 new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "core.learning.flows.dismiss_topmost_overlays_async",
+                new=AsyncMock(return_value=0),
             ),
             patch(
                 "core.learning.flows.course_learning",
@@ -199,7 +209,10 @@ class SubjectLearningFlowTests(unittest.IsolatedAsyncioTestCase):
             def last(self):
                 return self
 
-            async def wait_for(self):
+            async def wait_for(self, *args, **kwargs):
+                return None
+
+            async def scroll_into_view_if_needed(self, *args, **kwargs):
                 return None
 
             async def count(self):
@@ -208,7 +221,7 @@ class SubjectLearningFlowTests(unittest.IsolatedAsyncioTestCase):
             async def inner_text(self):
                 return self._inner_text_value
 
-            async def click(self):
+            async def click(self, *args, **kwargs):
                 return None
 
             async def get_attribute(self, name):
@@ -244,12 +257,15 @@ class SubjectLearningFlowTests(unittest.IsolatedAsyncioTestCase):
             async def wait_for_load_state(self, _state):
                 return None
 
+            async def wait_for_timeout(self, _ms):
+                return None
+
             def locator(self, selector):
                 if selector == ".item.current-hover":
                     return FakeCountLocator(self._items)
                 raise AssertionError(f"unexpected selector: {selector}")
 
-            def expect_popup(self):
+            def expect_popup(self, **kwargs):
                 popup_page = self._popup_pages.pop(0)
                 return FakePopupContextManager(popup_page)
 
@@ -261,6 +277,10 @@ class SubjectLearningFlowTests(unittest.IsolatedAsyncioTestCase):
             patch(
                 "core.learning.flows.ensure_course_page_ready",
                 new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "core.learning.flows.dismiss_topmost_overlays_async",
+                new=AsyncMock(return_value=0),
             ),
             patch(
                 "core.learning.flows.course_learning",
@@ -292,6 +312,10 @@ class SubjectLearningFlowTests(unittest.IsolatedAsyncioTestCase):
             patch(
                 "core.learning.flows.ensure_course_page_ready",
                 new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "core.learning.flows.dismiss_topmost_overlays_async",
+                new=AsyncMock(return_value=0),
             ),
             patch(
                 "core.learning.flows.course_learning",

@@ -126,15 +126,48 @@ async def ensure_course_page_ready(page) -> None:
     await ensure_no_concurrent_study_limit(frame)
 
 
+# 未学标记后「整段」剩余时长为 0 才视为已同步。
+# 注意：不能写成 0+(?::0+){0,2}，否则「需学 00:05」会误匹配前缀「需学 00」。
+_ZERO_REMAINING_PROGRESS = re.compile(
+    r"(?:需学|需再学)\s*(?:0+(?::0+){1,2}|0)(?!\d|:)"
+)
+_PENDING_PROGRESS = re.compile(r"需学|需再学")
+
+
 def is_learned(text: str) -> bool:
     """判断章节是否已学完。
 
     实勘：已学/未学 class 相同；未学文案含「需学」「需再学」。
+    「需再学 0:00」/「需学 0:00」视为已学完（剩余为 0，DOM 尚未摘掉标记）。
+    「需学 00:05」仍是未学（5 秒剩余，勿被零时长规则误伤）。
     空文案不能当已学（避免 DOM 未渲染时误跳过）。
     """
     if not (text or "").strip():
         return False
-    return re.search(r"需学|需再学", text) is None
+    if _ZERO_REMAINING_PROGRESS.search(text):
+        return True
+    return _PENDING_PROGRESS.search(text) is None
+
+
+def _compact_progress_text(text: str, *, limit: int = 80) -> str:
+    compact = re.sub(r"\s+", " ", (text or "").strip())
+    if len(compact) <= limit:
+        return compact
+    return compact[: limit - 1] + "…"
+
+
+async def _read_section_progress_text(box) -> str:
+    """读取章节进度文案；尽量滚入视口，降低 SPA 列表虚拟化导致的 stale 文案。"""
+    wrapper = box.locator(".section-item-wrapper")
+    try:
+        await wrapper.scroll_into_view_if_needed(timeout=3000)
+    except Exception:
+        pass
+    try:
+        return await wrapper.inner_text(timeout=5000)
+    except Exception as exc:
+        logging.debug(f"读取章节进度文案失败: {exc}")
+        return ""
 
 
 async def wait_until_learned(
@@ -148,18 +181,29 @@ async def wait_until_learned(
     """轮询章节进度直至 is_learned 或超时抛 SyncTimeoutError。
 
     进入本函数前若已学完会立即返回。``max_wait`` / ``poll_interval`` 单位秒。
+    超时前会再强制读一次 DOM（滚入视口），避免「其实已同步却判超时」。
     """
     from core.abort import SyncTimeoutError
 
     max_wait = max(0, int(max_wait))
     poll_interval = max(1, int(poll_interval)) if max_wait > 0 else 0
 
-    current_text = await box.locator(".section-item-wrapper").inner_text()
+    current_text = await _read_section_progress_text(box)
     if is_learned(current_text):
         logging.info("课程进度已同步到服务器")
         return
 
     if max_wait <= 0:
+        # 最后再读一次，避免刚写完 0 秒剩余时的瞬时 stale
+        await page.wait_for_timeout(500)
+        current_text = await _read_section_progress_text(box)
+        if is_learned(current_text):
+            logging.info("课程进度已同步到服务器")
+            return
+        logging.info(
+            "超时: 无额外等待窗, 课程进度仍未同步"
+            f" (文案: {_compact_progress_text(current_text)})"
+        )
         raise SyncTimeoutError(
             "课程进度未能同步完成",
             reason_text="课程进度同步超时（无额外等待窗），后续可重新加入课程链接",
@@ -172,17 +216,30 @@ async def wait_until_learned(
         elapsed_sync_wait += wait_seconds
         if on_tick is not None:
             await on_tick()
-        current_text = await box.locator(".section-item-wrapper").inner_text()
+        current_text = await _read_section_progress_text(box)
         if is_learned(current_text):
             logging.info(
                 f"课程进度已同步到服务器, 额外等待 {elapsed_sync_wait} 秒"
             )
             return
         logging.info(
-            f"课程进度仍未同步完成, 已额外等待 {elapsed_sync_wait} 秒, 继续等待..."
+            f"课程进度仍未同步完成, 已额外等待 {elapsed_sync_wait} 秒"
+            f" (文案: {_compact_progress_text(current_text)}), 继续等待..."
         )
 
-    logging.info(f"超时: 已额外等待{max_wait}秒, 课程进度仍未同步")
+    # 超时边界再确认一次：平台有时刚好在最后一次轮询后刷掉「需再学」
+    await page.wait_for_timeout(800)
+    current_text = await _read_section_progress_text(box)
+    if is_learned(current_text):
+        logging.info(
+            f"课程进度已同步到服务器, 额外等待 {max_wait} 秒（超时边界复核）"
+        )
+        return
+
+    logging.info(
+        f"超时: 已额外等待{max_wait}秒, 课程进度仍未同步"
+        f" (文案: {_compact_progress_text(current_text)})"
+    )
     raise SyncTimeoutError(
         f"课程进度未能在 {max_wait} 秒内同步完成",
         reason_text=f"课程进度同步超时（已额外等待 {max_wait} 秒），后续可重新加入课程链接",
@@ -241,9 +298,9 @@ def build_video_timing_plan(text: str) -> VideoTimingPlan:
     """根据剩余学习时长生成视频学习与同步确认的时序计划。"""
     learning_wait_time, total_time = calculate_remaining_time(text)
     sync_wait_time = calculate_video_sync_wait_time(learning_wait_time, total_time)
-    # 理论同步窗为 0 时仍给最短宽限；轮询中确认已同步会提前返回
-    if learning_wait_time > 0:
-        sync_wait_time = max(sync_wait_time, VIDEO_SYNC_MIN_WAIT)
+    # 始终给最短同步确认窗：learning=0 但 DOM 仍挂着「需再学/需再学 0:00」时
+    # 不能 0 秒直接判超时；已同步时 wait_until_learned 会立即返回。
+    sync_wait_time = max(sync_wait_time, VIDEO_SYNC_MIN_WAIT)
     return VideoTimingPlan(
         learning_wait_time=learning_wait_time,
         sync_wait_time=sync_wait_time,

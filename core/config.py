@@ -26,7 +26,7 @@ DATA_DIR = PROJECT_ROOT / "data"
 # ============================================================
 # 日志配置
 # ============================================================
-LOG_FILE = DATA_DIR / "log.txt"
+LOG_FILE = DATA_DIR / "log.log"
 LOG_LEVEL = logging.DEBUG
 CONSOLE_LOG_LEVEL = logging.INFO
 LOG_FORMAT = (
@@ -462,12 +462,10 @@ VIDEO_SYNC_MIN_WAIT = 30  # 秒
 # 视频学完后「确认进度同步」的轮询 / 日志间隔
 VIDEO_SYNC_POLL_INTERVAL = 30  # 秒
 
-# 文档课程初始等待时间
-DOCUMENT_INITIAL_WAIT = 5  # 秒
-# 文档课程进度同步额外等待时间
-DOCUMENT_SYNC_EXTRA_WAIT = 30  # 秒
-# 文档进度同步轮询 / 日志间隔（文档本身学习时间很短，间隔宜细于视频）
-DOCUMENT_SYNC_POLL_INTERVAL = 10  # 秒
+# 文档/网页：统一挂机上限（秒）。提前同步则提前离开；到点直接走人，不另开同步确认窗、不因未同步判失败。
+DOCUMENT_WAIT = 60
+# 文档挂机期间进度轮询间隔（秒）
+DOCUMENT_POLL_INTERVAL = 10
 
 # URL 学习类型等待时间
 URL_TYPE_WAIT = 10  # 秒

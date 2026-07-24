@@ -45,10 +45,13 @@ class FakeTextLocator:
     async def wait_for(self, state="visible", timeout=0):
         return None
 
+    async def scroll_into_view_if_needed(self, timeout=0):
+        return None
+
     async def inner_text(self, timeout=None):
         return self._text
 
-    async def click(self):
+    async def click(self, *args, **kwargs):
         return None
 
 
@@ -119,6 +122,9 @@ class FakeCoursePage:
         self._empty = _EmptyChapterList()
 
     async def wait_for_load_state(self, _state):
+        return None
+
+    async def wait_for_timeout(self, _ms):
         return None
 
     def locator(self, selector):
@@ -228,6 +234,10 @@ class LearningExamTests(unittest.IsolatedAsyncioTestCase):
                 new=AsyncMock(return_value=None),
             ),
             patch("core.learning.flows.handle_rating_popup", new=AsyncMock(return_value=False)),
+            patch(
+                "core.learning.flows.dismiss_topmost_overlays_async",
+                new=AsyncMock(return_value=0),
+            ),
             patch("core.learning.flows._is_course_completed", new=AsyncMock(return_value=False)),
             patch("core.learning.flows.check_exam_passed", new=mock_check),
             patch("core.learning.exam_bridge.check_exam_passed", new=mock_check),
