@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 import traceback
 from typing import Callable
 
@@ -10,7 +9,12 @@ from openai import OpenAI
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from core.abort import UserAbortRequested, UserCancelRequested
-from core.browser.session import create_browser_context, is_browser_connected, is_target_closed_exception
+from core.browser.session import (
+    create_browser_context,
+    get_page_context,
+    is_browser_connected,
+    is_target_closed_exception,
+)
 from core.config import (
     AI_ENABLE_THINKING,
     AI_ENABLE_WEB_SEARCH,
@@ -29,8 +33,13 @@ from core.config import (
     ZHIXUEYUN_SUBJECT_PREFIX,
     validate_ai_base_url,
 )
-from core.exam.flow import ai_exam, wait_for_finish_test
+from core.exam.flow import ExamQuestionExtractionError, ai_exam, wait_for_finish_test
 from core.exam.answers import ExamAiConfigurationError
+from core.exam.rules import (
+    extract_attempt_limit_message as _extract_attempt_limit_message,
+    parse_remaining_attempts,
+)
+from core.exam.routing import queue_exam_url_by_attempt_text
 from core.file_ops import normalize_url
 from core.queues.exam import (
     has_ai_failed_model_config,
@@ -60,7 +69,7 @@ PAPER_EXAM_BUTTONS = [
     ".btn.new-radius",
 ]
 
-LOGIN_REDIRECT_TIMEOUT_MS = 30000
+LOGIN_REDIRECT_TIMEOUT_MS = 0
 LOGIN_REDIRECT_POLL_MS = 500
 
 
@@ -74,21 +83,6 @@ def classify_exam_entry_url(url: str) -> str:
     if normalized.startswith(ZHIXUEYUN_SUBJECT_PREFIX):
         return "subject"
     return "unknown"
-
-
-def _extract_attempt_limit_message(text: str) -> str | None:
-    for raw_line in text.replace("\r", "\n").split("\n"):
-        line = raw_line.strip()
-        if line and "考试次数限制" in line:
-            return line
-    return None
-
-
-def parse_remaining_attempts(button_text: str) -> int | None:
-    match = re.search(r"剩余(\d+)次", button_text)
-    if not match:
-        return None
-    return int(match.group(1))
 
 
 async def _locate_exam_button(page) -> "Locator | None":
@@ -107,6 +101,58 @@ async def _locate_exam_button(page) -> "Locator | None":
     return None
 
 
+async def _has_authorization_cookie(page) -> bool:
+    context = get_page_context(page)
+    if context is None:
+        return False
+    try:
+        cookies = await context.cookies()
+    except Exception:
+        return False
+    return any(
+        str(cookie.get("name", "")).strip().lower() == "authorization"
+        for cookie in cookies
+    )
+
+
+async def _has_ready_answer_question(page) -> bool:
+    """确认至少一道题的题型和题干均已挂载，排除空壳/登录页。"""
+    try:
+        items = page.locator(".question-type-item")
+        count = await items.count()
+        for index in range(min(count, 3)):
+            item = items.nth(index)
+            score = item.locator(".o-score")
+            if await score.count() <= 0 or not (await score.last.inner_text()).strip():
+                continue
+            for selector in (".stem-content-main", ".single-title .rich-text-style"):
+                question = item.locator(selector)
+                if await question.count() > 0 and (await question.first.inner_text()).strip():
+                    return True
+
+        # 单题模式部分版本没有 question-type-item 外壳，使用解析器同款全局选择器。
+        score = page.locator(".o-score")
+        question = page.locator(".single-title .rich-text-style")
+        if (
+            await score.count() > 0
+            and (await score.last.inner_text()).strip()
+            and await question.count() > 0
+            and (await question.first.inner_text()).strip()
+        ):
+            return True
+    except Exception:
+        return False
+    return False
+
+
+async def _is_paper_entry_ready(page) -> bool:
+    if await _has_ready_answer_question(page):
+        return True
+    if await _locate_exam_button(page) is not None:
+        return True
+    return await _get_paper_attempt_limit_message(page) is not None
+
+
 async def _wait_for_target_route_after_auth(
     page,
     target_url: str,
@@ -114,21 +160,40 @@ async def _wait_for_target_route_after_auth(
     timeout_ms: int = LOGIN_REDIRECT_TIMEOUT_MS,
     interval_ms: int = LOGIN_REDIRECT_POLL_MS,
 ) -> bool:
-    """等待授权链最终回到原路由；调用时已回跳完成也视为成功。"""
+    """等待 OAuth 完成且原考试路由的可用 DOM 已稳定挂载。
+
+    ``timeout_ms=0`` 表示不设超时：只有页面真正就绪或用户关闭浏览器才会
+    结束等待。正数超时仅供诊断工具和单元测试使用。
+    """
     expected_url = normalize_url(target_url)
     elapsed = 0
-    logging.info("等待登录授权完成并回跳原页面")
-    while elapsed < timeout_ms:
+    observed_external_route = False
+    no_timeout = timeout_ms <= 0
+    timeout_note = "不设超时" if no_timeout else f"最多 {timeout_ms / 1000:g} 秒"
+    logging.info(f"等待登录授权完成并加载考试页面（{timeout_note}）")
+    while no_timeout or elapsed < timeout_ms:
         current_url = normalize_url(str(getattr(page, "url", "") or ""))
-        if current_url == expected_url:
+        if current_url != expected_url:
+            observed_external_route = True
+        else:
+            auth_completed = observed_external_route or await _has_authorization_cookie(page)
+            if not auth_completed or not await _is_paper_entry_ready(page):
+                wait_ms = interval_ms if no_timeout else min(interval_ms, timeout_ms - elapsed)
+                await page.wait_for_timeout(wait_ms)
+                elapsed += wait_ms
+                continue
             try:
                 await page.wait_for_load_state("load")
             except Exception:
                 pass
-            logging.info("登录授权已回跳原页面")
+            try:
+                await page.wait_for_load_state("networkidle", timeout=3000)
+            except Exception:
+                pass
+            logging.info("登录授权已完成，考试页面内容已就绪")
             return True
 
-        wait_ms = min(interval_ms, timeout_ms - elapsed)
+        wait_ms = interval_ms if no_timeout else min(interval_ms, timeout_ms - elapsed)
         await page.wait_for_timeout(wait_ms)
         elapsed += wait_ms
     return False
@@ -137,7 +202,7 @@ async def _wait_for_target_route_after_auth(
 async def _raise_if_login_required(page, target_url: str) -> None:
     if not await _wait_for_target_route_after_auth(page, target_url):
         raise UserCancelRequested(
-            "考试链接进入登录页后未在 30 秒内完成授权回跳；"
+            "考试链接进入登录页后未完成授权并加载考试内容；"
             "已保留当前及剩余考试链接，请先更新登录凭证后重试"
         )
 
@@ -175,19 +240,19 @@ def _build_ai_exam_model_config(model: str) -> dict[str, object]:
 
 
 async def _is_direct_answer_paper_page(page) -> bool:
-    try:
-        await page.locator(".question-type-item, .single-title, .single-btns").first.wait_for(
-            timeout=5000
-        )
-        return True
-    except Exception:
-        return False
+    elapsed = 0
+    while elapsed < 5000:
+        if await _has_ready_answer_question(page):
+            return True
+        await page.wait_for_timeout(250)
+        elapsed += 250
+    return False
 
 
 async def _get_paper_attempt_limit_message(page) -> str | None:
     for selector in ("[data-region='modal:modal']", "body"):
-        locator = page.locator(selector)
         try:
+            locator = page.locator(selector)
             if await locator.count() <= 0:
                 continue
             text = (await locator.first.inner_text()).strip()
@@ -204,13 +269,13 @@ async def _handle_attempt_limit_if_present(page, url: str) -> bool:
     if not attempt_limit_message:
         return False
 
-    append_manual_exam_entry(
+    queue_exam_url_by_attempt_text(
         url,
-        reason="attempt_limit",
-        reason_text=attempt_limit_message,
-        file_path=MANUAL_EXAM_FILE,
+        attempt_limit_message,
+        threshold=PAPER_EXAM_ATTEMPT_THRESHOLD,
+        exam_file=EXAM_URLS_FILE,
+        manual_exam_file=MANUAL_EXAM_FILE,
     )
-    logging.info(f"检测到考试次数限制提示, 跳过当前考试: {attempt_limit_message}")
     return True
 
 
@@ -252,29 +317,22 @@ async def _can_continue_ai_exam(
 
     remaining = parse_remaining_attempts(button_text)
     if remaining is None:
-        reason_text = "无法解析剩余次数, 转为人工考试处理"
-        logging.info(reason_text)
-        append_manual_exam_entry(
+        queue_exam_url_by_attempt_text(
             url,
-            reason="attempt_unknown",
-            reason_text=reason_text,
+            button_text,
             threshold=threshold,
-            file_path=MANUAL_EXAM_FILE,
+            exam_file=EXAM_URLS_FILE,
+            manual_exam_file=MANUAL_EXAM_FILE,
         )
         return False
 
     if remaining <= threshold:
-        reason_text = (
-            f"当前考试剩余次数为 {remaining}, 小于等于 {threshold} 次, 转为人工考试"
-        )
-        logging.info(reason_text)
-        append_manual_exam_entry(
+        queue_exam_url_by_attempt_text(
             url,
-            reason="attempt_threshold",
-            reason_text=reason_text,
-            remaining_attempts=remaining,
+            button_text,
             threshold=threshold,
-            file_path=MANUAL_EXAM_FILE,
+            exam_file=EXAM_URLS_FILE,
+            manual_exam_file=MANUAL_EXAM_FILE,
         )
         return False
 
@@ -386,6 +444,10 @@ async def _run_paper_ai_exam(
     auto_submit: bool = True,
 ) -> None:
     model_config = _build_ai_exam_model_config(model)
+    await _raise_if_login_required(page, url)
+    if await _handle_attempt_limit_if_present(page, url):
+        return
+
     if await _is_direct_answer_paper_page(page):
         logging.info("试卷页已直接进入答题页, 继续 AI 自动考试")
         await ai_exam(
@@ -398,12 +460,8 @@ async def _run_paper_ai_exam(
         )
         return
 
-    if await _handle_attempt_limit_if_present(page, url):
-        return
-
     exam_button = await _locate_exam_button(page)
     if exam_button is None:
-        await _raise_if_login_required(page, url)
         if await _is_direct_answer_paper_page(page):
             logging.info("授权回跳后已直接进入答题页，继续 AI 自动考试")
             await ai_exam(
@@ -524,6 +582,23 @@ async def run_ai_exam_batch(
                 except UserCancelRequested:
                     write_exam_urls(retained_urls + pending_urls, file_path=EXAM_URLS_FILE)
                     raise
+                except ExamQuestionExtractionError as exc:
+                    write_exam_urls(retained_urls + pending_urls, file_path=EXAM_URLS_FILE)
+                    message = (
+                        f"{exc}；已保留当前及剩余考试链接。"
+                        "答题页将保持打开，请检查页面；关闭后返回主菜单"
+                    )
+                    logging.error(message)
+                    if status_callback:
+                        status_callback(message)
+                    answer_page = getattr(exc, "page", None) or page
+                    try:
+                        if answer_page is not None and is_browser_connected(context):
+                            await answer_page.wait_for_event("close", timeout=0)
+                    except Exception as close_exc:
+                        if not is_target_closed_exception(close_exc):
+                            logging.debug(f"等待异常答题页关闭时出错: {close_exc}")
+                    raise UserCancelRequested(message) from None
                 except ExamAiConfigurationError:
                     write_exam_urls(retained_urls + pending_urls, file_path=EXAM_URLS_FILE)
                     raise

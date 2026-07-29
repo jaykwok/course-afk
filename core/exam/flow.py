@@ -13,6 +13,17 @@ from core.exam.parsing import (
 MANUAL_SUBMIT_RESULT_CLOSE_SELECTOR = (
     "[data-region='modal:modal'] .btn.white.border:has-text('确定')"
 )
+QUESTION_EXTRACTION_ATTEMPTS = 3
+QUESTION_EXTRACTION_RETRY_MS = 750
+EXAM_NETWORK_IDLE_TIMEOUT_MS = 3000
+
+
+class ExamQuestionExtractionError(RuntimeError):
+    """答题页已打开，但题目 DOM 在重试后仍无法解析。"""
+
+    def __init__(self, message: str, *, page=None):
+        super().__init__(message)
+        self.page = page
 
 
 def _format_question_options(question_data) -> str:
@@ -76,27 +87,52 @@ async def _wait_for_manual_submit_completion(page) -> None:
         await page.wait_for_timeout(500)
 
 
+async def _wait_for_exam_page_stable(page) -> None:
+    """尽量等待请求稳定；考试心跳/自动保存可能使 networkidle 永不满足。"""
+    try:
+        await page.wait_for_load_state(
+            "networkidle", timeout=EXAM_NETWORK_IDLE_TIMEOUT_MS
+        )
+    except Exception as exc:
+        logging.debug(f"考试页在 3 秒内未达到 networkidle，按已就绪 DOM 继续: {exc}")
+
+
+async def _extract_with_retry(page, extractor, *, empty_message: str):
+    for attempt in range(1, QUESTION_EXTRACTION_ATTEMPTS + 1):
+        result = await extractor(page)
+        if result:
+            return result
+        if attempt < QUESTION_EXTRACTION_ATTEMPTS:
+            logging.warning(
+                f"{empty_message}，等待页面更新后重试 "
+                f"({attempt}/{QUESTION_EXTRACTION_ATTEMPTS})"
+            )
+            await page.wait_for_timeout(QUESTION_EXTRACTION_RETRY_MS)
+    raise ExamQuestionExtractionError(empty_message, page=page)
+
+
 async def ai_exam(client, model, page, course_url, auto_submit=True, ai_model_config=None):
     """AI自动答题主函数"""
     logging.info("AI考试开始")
 
-    await page.wait_for_load_state("networkidle")
+    await _wait_for_exam_page_stable(page)
     await page.wait_for_timeout(1000)
     await close_exam_notice_if_present(page)
-    await page.wait_for_load_state("networkidle")
+    await _wait_for_exam_page_stable(page)
     await page.wait_for_timeout(1000)
 
     exam_mode = await detect_exam_mode(page)
 
     if exam_mode == "single":
         while True:
-            await page.wait_for_load_state("networkidle")
+            await _wait_for_exam_page_stable(page)
             await page.wait_for_timeout(1000)
 
-            question_data = await extract_single_question_data(page)
-            if not question_data:
-                logging.error("无法提取题目信息")
-                break
+            question_data = await _extract_with_retry(
+                page,
+                extract_single_question_data,
+                empty_message="无法提取当前题目信息",
+            )
 
             logging.info(f"当前题目: {question_data['text']}")
             logging.info(f"题目类型: {question_data['type']}")
@@ -134,13 +170,14 @@ async def ai_exam(client, model, page, course_url, auto_submit=True, ai_model_co
             await next_button.click()
             await page.wait_for_timeout(1000)
     else:
-        await page.wait_for_load_state("networkidle")
+        await _wait_for_exam_page_stable(page)
         await page.wait_for_timeout(1000)
 
-        all_questions = await extract_multi_questions_data(page)
-        if not all_questions:
-            logging.error("无法提取任何题目信息")
-            return
+        all_questions = await _extract_with_retry(
+            page,
+            extract_multi_questions_data,
+            empty_message="无法提取任何题目信息",
+        )
 
         logging.info(f"本页共有 {len(all_questions)} 道题目")
         for question_data in all_questions:

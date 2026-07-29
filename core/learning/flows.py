@@ -11,9 +11,10 @@ from core.abort import (
 )
 from core.browser.session import is_page_browser_connected, is_target_closed_exception
 from core.config import (
+    PAPER_EXAM_ATTEMPT_THRESHOLD,
     URL_TYPE_WAIT,
 )
-from core.queues.exam import append_exam_url
+from core.exam.routing import queue_exam_url_by_attempt_text
 from core.browser.overlays import dismiss_topmost_overlays_async
 from core.learning.common import (
     ensure_course_page_ready,
@@ -129,8 +130,29 @@ async def handle_subject_exam_item(learn_item) -> str | None:
         return None
 
     exam_url = await get_course_url(learn_item, section_type="exam")
-    logging.info("学习主题考试类型, 存入考试链接")
-    append_exam_url(exam_url)
+    attempt_texts = list(status_texts)
+    for selector in (".inline-block.operation",):
+        try:
+            locator = learn_item.locator(selector)
+            if await locator.count() > 0:
+                text = (await locator.inner_text()).strip()
+                if text:
+                    attempt_texts.append(text)
+        except Exception:
+            pass
+    try:
+        item_text = (await learn_item.inner_text()).strip()
+        if item_text:
+            attempt_texts.append(item_text)
+    except Exception:
+        pass
+
+    destination = queue_exam_url_by_attempt_text(
+        exam_url,
+        "\n".join(attempt_texts),
+        threshold=PAPER_EXAM_ATTEMPT_THRESHOLD,
+    )
+    logging.info(f"学习主题考试类型, 已存入{'人工' if destination == 'manual' else 'AI'}考试队列")
     return exam_url
 
 

@@ -67,7 +67,7 @@ class ExamPageProbeTests(unittest.IsolatedAsyncioTestCase):
                     probe_exam_page,
                     "_wait_for_target_route_after_auth",
                     new=AsyncMock(return_value=False),
-                ),
+                ) as mock_wait_for_auth,
             ):
                 with self.assertRaisesRegex(RuntimeError, "已停止页面解析"):
                     await probe_exam_page.main(
@@ -78,8 +78,14 @@ class ExamPageProbeTests(unittest.IsolatedAsyncioTestCase):
                 cookies_path=probe_exam_page.COOKIES_FILE,
                 headless=False,
             )
+            mock_wait_for_auth.assert_awaited_once_with(
+                browser_context.context.page,
+                "https://kc.zhixueyun.com/#/exam/exam/answer-paper/test",
+                timeout_ms=0,
+            )
             browser_context.context.page.locator.assert_not_called()
             result = json.loads(result_file.read_text(encoding="utf-8"))
+            self.assertEqual(result["page_state"], "auth_incomplete")
             self.assertFalse(result["login_redirect_completed"])
             self.assertIn("未解析或保存当前登录页", result["error"])
 

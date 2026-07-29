@@ -11,12 +11,24 @@ import argparse
 import asyncio
 import json
 import re
+import sys
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from core.browser.session import create_browser_context
 from core.config import COOKIES_FILE, PROJECT_ROOT
-from core.exam.runner import _wait_for_target_route_after_auth
+from core.exam.runner import (
+    _get_paper_attempt_limit_message,
+    _has_authorization_cookie,
+    _has_ready_answer_question,
+    _locate_exam_button,
+    _wait_for_target_route_after_auth,
+)
 from core.file_ops import load_cookies, normalize_url
 
 CAPTURE_DIR = PROJECT_ROOT / "tools" / "capture" / "exam_page"
@@ -71,6 +83,42 @@ async def _inspect_selector(page, selector: str) -> dict[str, object]:
     }
 
 
+async def _classify_page_state(page) -> tuple[str, str | None]:
+    attempt_limit_message = await _get_paper_attempt_limit_message(page)
+    if attempt_limit_message:
+        return "attempt_limit", attempt_limit_message
+    if await _has_ready_answer_question(page):
+        return "answer_page", None
+    if await _locate_exam_button(page) is not None:
+        return "exam_entry", None
+    return "unknown", None
+
+
+def _save_classified_result(
+    result_data: dict[str, object],
+    *,
+    page_state: str,
+    captured_at: datetime,
+    html: str | None = None,
+) -> tuple[Path, Path | None]:
+    state_dir = CAPTURE_DIR / page_state
+    state_dir.mkdir(parents=True, exist_ok=True)
+    stem = f"probe_{captured_at:%Y%m%d_%H%M%S_%f}"
+    result_file = state_dir / f"{stem}.json"
+    result_text = json.dumps(result_data, ensure_ascii=False, indent=2)
+    result_file.write_text(result_text, encoding="utf-8")
+
+    # latest.json 作为稳定入口；完整历史按页面状态分类归档。
+    CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
+    RESULT_FILE.write_text(result_text, encoding="utf-8")
+
+    html_file = None
+    if html is not None:
+        html_file = state_dir / f"{stem}.html"
+        html_file.write_text(html, encoding="utf-8")
+    return result_file, html_file
+
+
 async def main(target_url: Optional[str] = None):
     target_url = (target_url or input("请输入考试页面 URL：")).strip()
     if not target_url:
@@ -91,53 +139,53 @@ async def main(target_url: Optional[str] = None):
             else None,
         )
         await page.goto(target_url, wait_until="load")
-        # SPA 可能先落在目标 hash，再异步发起 OAuth；给路由一次启动机会。
-        await page.wait_for_timeout(1500)
         login_redirect_completed = await _wait_for_target_route_after_auth(
-            page, target_url, timeout_ms=60000
+            page, target_url, timeout_ms=0
         )
-        await page.wait_for_timeout(1500)
 
         final_url = page.url
         returned_to_target = normalize_url(final_url) == normalize_url(target_url)
         context_cookies = await context.cookies()
         if not login_redirect_completed or not returned_to_target:
-            CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
-            RESULT_FILE.write_text(
-                json.dumps(
-                    {
-                        "requested_url": _sanitize_url(target_url),
-                        "final_url": _sanitize_url(final_url),
-                        "navigation_history": [
-                            _sanitize_url(url) for url in navigation_history
-                        ],
-                        "login_redirect_completed": False,
-                        "probed_at": datetime.now().astimezone().isoformat(),
-                        "cookies_file": str(COOKIES_FILE),
-                        "cookies_loaded": len(cookies) > 0,
-                        "source_cookies": [
-                            {
-                                "name": item.get("name", ""),
-                                "domain": item.get("domain", ""),
-                            }
-                            for item in cookies
-                        ],
-                        "context_cookies": [
-                            {
-                                "name": item.get("name", ""),
-                                "domain": item.get("domain", ""),
-                            }
-                            for item in context_cookies
-                        ],
-                        "error": "授权后未回到目标考试链接，未解析或保存当前登录页",
-                    },
-                    ensure_ascii=False,
-                    indent=2,
+            captured_at = datetime.now()
+            result_data = {
+                "page_state": "auth_incomplete",
+                "requested_url": _sanitize_url(target_url),
+                "final_url": _sanitize_url(final_url),
+                "navigation_history": [
+                    _sanitize_url(url) for url in navigation_history
+                ],
+                "login_redirect_completed": False,
+                "authorization_cookie_present": any(
+                    str(item.get("name", "")).strip().lower() == "authorization"
+                    for item in context_cookies
                 ),
-                encoding="utf-8",
+                "probed_at": captured_at.astimezone().isoformat(),
+                "cookies_file": str(COOKIES_FILE),
+                "cookies_loaded": len(cookies) > 0,
+                "source_cookies": [
+                    {
+                        "name": item.get("name", ""),
+                        "domain": item.get("domain", ""),
+                    }
+                    for item in cookies
+                ],
+                "context_cookies": [
+                    {
+                        "name": item.get("name", ""),
+                        "domain": item.get("domain", ""),
+                    }
+                    for item in context_cookies
+                ],
+                "error": "授权后未回到目标考试链接，未解析或保存当前登录页",
+            }
+            result_file, _ = _save_classified_result(
+                result_data,
+                page_state="auth_incomplete",
+                captured_at=captured_at,
             )
             raise RuntimeError(
-                f"授权后未回到目标考试链接，已停止页面解析；诊断见 {RESULT_FILE}"
+                f"授权后未回到目标考试链接，已停止页面解析；诊断见 {result_file}"
             )
 
         selector_results = []
@@ -152,13 +200,18 @@ async def main(target_url: Optional[str] = None):
         page_title = await page.title()
         body_text = (await page.locator("body").inner_text()).strip()
         html = await page.content()
+        page_state, attempt_limit_message = await _classify_page_state(page)
+        captured_at = datetime.now()
         result_data = {
+            "page_state": page_state,
             "requested_url": _sanitize_url(target_url),
             "final_url": _sanitize_url(final_url),
             "navigation_history": [_sanitize_url(url) for url in navigation_history],
             "title": page_title,
             "login_redirect_completed": login_redirect_completed,
-            "probed_at": datetime.now().astimezone().isoformat(),
+            "authorization_cookie_present": await _has_authorization_cookie(page),
+            "attempt_limit_message": attempt_limit_message,
+            "probed_at": captured_at.astimezone().isoformat(),
             "cookies_file": str(COOKIES_FILE),
             "cookies_loaded": len(cookies) > 0,
             "source_cookies": [
@@ -173,14 +226,15 @@ async def main(target_url: Optional[str] = None):
             "selectors": selector_results,
         }
 
-        CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
-        html_file = CAPTURE_DIR / f"page_{datetime.now():%Y%m%d_%H%M%S}.html"
-        RESULT_FILE.write_text(
-            json.dumps(result_data, ensure_ascii=False, indent=2), encoding="utf-8"
+        result_file, html_file = _save_classified_result(
+            result_data,
+            page_state=page_state,
+            captured_at=captured_at,
+            html=html,
         )
-        html_file.write_text(html, encoding="utf-8")
 
-    print(f"\n探针结果已保存到 {RESULT_FILE}")
+    print(f"\n页面状态: {page_state}")
+    print(f"探针结果已保存到 {result_file}")
     print(f"页面 HTML 已保存到 {html_file}")
 
 

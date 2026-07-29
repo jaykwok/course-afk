@@ -115,6 +115,31 @@ class _FakeClosedPopupPage:
 
 
 class ExamFlowLoggingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_ai_exam_raises_when_questions_remain_unavailable(self):
+        from core.exam.flow import ExamQuestionExtractionError, ai_exam
+
+        page = _FakePage()
+        extractor = AsyncMock(return_value=[])
+        with (
+            patch("core.exam.flow.close_exam_notice_if_present", new=AsyncMock()),
+            patch("core.exam.flow.detect_exam_mode", new=AsyncMock(return_value="multi")),
+            patch("core.exam.flow.extract_multi_questions_data", new=extractor),
+            patch("core.exam.flow.logging.info") as mock_info,
+        ):
+            with self.assertRaises(ExamQuestionExtractionError) as ctx:
+                await ai_exam(
+                    object(),
+                    "test-model",
+                    page,
+                    "https://example.com/exam",
+                )
+
+        self.assertIs(ctx.exception.page, page)
+        self.assertEqual(extractor.await_count, 3)
+        self.assertFalse(
+            any(call.args and call.args[0] == "考试完成" for call in mock_info.call_args_list)
+        )
+
     async def test_ai_exam_logs_single_question_options_for_frontend_display(self):
         from core.exam.flow import ai_exam
 

@@ -74,6 +74,27 @@ class ExamQueueTests(unittest.TestCase):
             )
             self.assertEqual(read_exam_urls(exam_file), added)
 
+    def test_remove_exam_url_preserves_other_entries(self):
+        from core.queues.exam import append_exam_urls, read_exam_urls, remove_exam_url
+
+        with TemporaryDirectory() as tmp:
+            exam_file = Path(tmp) / "exam.json"
+            append_exam_urls(
+                [
+                    "https://example.com/exam/1",
+                    "https://example.com/exam/2",
+                ],
+                file_path=exam_file,
+            )
+
+            self.assertTrue(
+                remove_exam_url("https://example.com/exam/1", file_path=exam_file)
+            )
+            self.assertEqual(
+                read_exam_urls(exam_file),
+                ["https://example.com/exam/2"],
+            )
+
     def test_read_exam_queue_returns_json_entries(self):
         from core.queues.exam import read_exam_queue
 

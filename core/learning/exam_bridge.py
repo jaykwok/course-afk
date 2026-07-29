@@ -4,7 +4,8 @@ import asyncio
 import logging
 import re
 
-from core.queues.exam import append_exam_url
+from core.config import COURSE_EXAM_ATTEMPT_THRESHOLD
+from core.exam.routing import queue_exam_url_by_attempt_text
 from core.learning.common import get_course_url
 
 
@@ -100,14 +101,27 @@ async def handle_examination(page, learn_item=None, exam_passed: bool | None = N
         logging.info("考试已通过, 跳过该节")
         return
 
-    logging.info("学习课程考试类型, 存入文档")
-    if learn_item:
-        course_url = await get_course_url(learn_item)
-        append_exam_url(course_url)
-        logging.info(f"链接: {course_url}\n")
-    else:
-        append_exam_url(page.url)
-        logging.info(f"链接: {page.url}\n")
+    course_url = await get_course_url(learn_item) if learn_item else page.url
+    attempt_texts: list[str] = []
+    for selector in (".btn.new-radius",):
+        try:
+            locator = page.locator(selector)
+            if await locator.count() > 0:
+                text = (await locator.inner_text()).strip()
+                if text:
+                    attempt_texts.append(text)
+        except Exception:
+            pass
+
+    destination = queue_exam_url_by_attempt_text(
+        course_url,
+        "\n".join(attempt_texts),
+        threshold=COURSE_EXAM_ATTEMPT_THRESHOLD,
+    )
+    logging.info(
+        f"学习课程考试类型, 已存入{'人工' if destination == 'manual' else 'AI'}考试队列"
+    )
+    logging.info(f"链接: {course_url}\n")
 
 
 async def is_subject_url_completed(page):

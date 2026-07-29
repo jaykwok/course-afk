@@ -174,6 +174,20 @@ def append_exam_urls(
     return added
 
 
+def remove_exam_url(url: str, *, file_path: Path = EXAM_URLS_FILE) -> bool:
+    """从 AI 考试队列移除单个链接，保留队列文件。"""
+    normalized_url = str(url or "").strip()
+    if not normalized_url:
+        return False
+
+    entries = read_exam_queue(file_path=file_path)
+    retained = [entry for entry in entries if entry.url != normalized_url]
+    if len(retained) == len(entries):
+        return False
+    write_exam_queue(retained, file_path=file_path)
+    return True
+
+
 def read_exam_urls(file_path: Path = EXAM_URLS_FILE) -> list[str]:
     return [entry.url for entry in read_exam_queue(file_path=file_path)]
 

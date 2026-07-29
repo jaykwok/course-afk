@@ -152,13 +152,23 @@ class FakeListTextLocator:
 
 
 class FakeSubjectExamItem:
-    def __init__(self, status_texts=None):
+    def __init__(self, status_texts=None, operation_text="", item_text=""):
         self._status_texts = status_texts or []
+        self._operation_text = operation_text
+        self._item_text = item_text
 
     def locator(self, selector):
         if selector == "span.finished-status":
             return FakeListTextLocator(self._status_texts)
+        if selector == ".inline-block.operation":
+            return FakeLocator(
+                count=1 if self._operation_text else 0,
+                text=self._operation_text,
+            )
         raise KeyError(selector)
+
+    async def inner_text(self):
+        return self._item_text
 
 
 class LearningExamTests(unittest.IsolatedAsyncioTestCase):
@@ -241,7 +251,10 @@ class LearningExamTests(unittest.IsolatedAsyncioTestCase):
             patch("core.learning.flows._is_course_completed", new=AsyncMock(return_value=False)),
             patch("core.learning.flows.check_exam_passed", new=mock_check),
             patch("core.learning.exam_bridge.check_exam_passed", new=mock_check),
-            patch("core.learning.exam_bridge.append_exam_url"),
+            patch(
+                "core.learning.exam_bridge.queue_exam_url_by_attempt_text",
+                return_value="ai",
+            ),
         ):
             await course_learning(page)
 
@@ -255,12 +268,37 @@ class LearningExamTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch("core.learning.flows.get_course_url", new=AsyncMock(return_value=exam_url)),
-            patch("core.learning.flows.append_exam_url") as mock_append,
+            patch(
+                "core.learning.flows.queue_exam_url_by_attempt_text",
+                return_value="ai",
+            ) as mock_queue,
         ):
             result = await handle_subject_exam_item(learn_item)
 
         self.assertEqual(result, exam_url)
-        mock_append.assert_called_once_with(exam_url)
+        mock_queue.assert_called_once_with(exam_url, "", threshold=1)
+
+    async def test_handle_subject_exam_item_routes_last_attempt_to_manual_exam(self):
+        from core.learning.flows import handle_subject_exam_item
+
+        learn_item = FakeSubjectExamItem(operation_text="继续考试 剩余 1 次")
+        exam_url = "https://kc.zhixueyun.com/#/exam/exam/answer-paper/subject-exam"
+
+        with (
+            patch("core.learning.flows.get_course_url", new=AsyncMock(return_value=exam_url)),
+            patch(
+                "core.learning.flows.queue_exam_url_by_attempt_text",
+                return_value="manual",
+            ) as mock_queue,
+        ):
+            result = await handle_subject_exam_item(learn_item)
+
+        self.assertEqual(result, exam_url)
+        mock_queue.assert_called_once_with(
+            exam_url,
+            "继续考试 剩余 1 次",
+            threshold=1,
+        )
 
     async def test_handle_subject_exam_item_skips_completed_exam(self):
         from core.learning.flows import handle_subject_exam_item
@@ -269,12 +307,39 @@ class LearningExamTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch("core.learning.flows.get_course_url", new=AsyncMock()),
-            patch("core.learning.flows.append_exam_url") as mock_append,
+            patch(
+                "core.learning.flows.queue_exam_url_by_attempt_text"
+            ) as mock_queue,
         ):
             result = await handle_subject_exam_item(learn_item)
 
         self.assertIsNone(result)
-        mock_append.assert_not_called()
+        mock_queue.assert_not_called()
+
+    async def test_handle_course_exam_routes_last_attempt_to_manual_exam(self):
+        from core.learning.exam_bridge import handle_examination
+
+        page = FakePage(
+            {
+                ".btn.new-radius": FakeLocator(
+                    count=1,
+                    text="继续考试 剩余1次",
+                )
+            }
+        )
+        page.url = "https://kc.zhixueyun.com/#/study/course/detail/course-exam"
+
+        with patch(
+            "core.learning.exam_bridge.queue_exam_url_by_attempt_text",
+            return_value="manual",
+        ) as mock_queue:
+            await handle_examination(page, exam_passed=False)
+
+        mock_queue.assert_called_once_with(
+            page.url,
+            "继续考试 剩余1次",
+            threshold=1,
+        )
 
 
 if __name__ == "__main__":
