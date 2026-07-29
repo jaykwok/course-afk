@@ -554,13 +554,20 @@ async def run_recommended_flow(
             status_callback("登录凭证不可用，请先更新登录凭证")
         return "credential"
 
-    if state.learning_count == 0:
-        if status_callback:
-            status_callback("未检测到学习链接，请先手动选择课程或录入链接")
-        return "manual-selection"
+    if state.learning_count > 0:
+        has_exam = await run_afk_workflow(status_callback=status_callback)
+    else:
+        has_exam = state.exam_count > 0
 
-    has_exam = await run_afk_workflow(status_callback=status_callback)
     if not has_exam:
+        if state.manual_exam_count > 0:
+            if status_callback:
+                status_callback("当前仅有人工考试待处理")
+            return "manual-exam-pending"
+        if state.learning_count == 0:
+            if status_callback:
+                status_callback("未检测到学习或考试链接，请先手动录入")
+            return "manual-selection"
         if status_callback:
             status_callback("未检测到考试链接，本次流程结束")
         return "afk-only"

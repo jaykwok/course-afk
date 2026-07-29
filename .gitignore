@@ -18,6 +18,7 @@ auth_state*.json
 data/
 
 # Runtime logs and temporary probe files
+/*.log
 tmp_*
 *_probe.txt
 .coverage

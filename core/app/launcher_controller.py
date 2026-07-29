@@ -422,7 +422,7 @@ def handle_show_output_state(exam_urls_file, learning_urls_file, manual_exam_fil
     rows.append(("失败·可重试", str(retriable_n)))
     rows.append(("失败·需人工/待复查", str(manual_n)))
     rows.append(("失败·不可访问已清理", str(denied_n)))
-    for reason, count, label in group_learning_failures_by_reason(
+    for _reason, count, label in group_learning_failures_by_reason(
         file_path=failures_file
     ):
         rows.append((f"失败·{label}", str(count)))

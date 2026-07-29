@@ -8,7 +8,6 @@ from core.discovery.train_class import (
     collect_learning_links_from_train_class_urls,
     extract_class_id,
     extract_learning_links_from_activity_items,
-    extract_learning_links_from_train_class_content,
     map_activity_to_learning_url,
 )
 
@@ -147,32 +146,6 @@ class TrainClassMappingTests(unittest.TestCase):
                 "11111111-1111-1111-1111-111111111111",
             ],
         )
-
-    def test_extract_learning_links_from_api_json_text(self):
-        content = """
-        {
-          "items": [
-            {
-              "businessType": 11,
-              "businessValue": "https://kc.zhixueyun.com/app/wechat/#/qrScan?businessType=2&businessId=1d40d4e0-a622-4535-8f02-ad108a930656"
-            },
-            {
-              "businessType": 8,
-              "businessId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
-            }
-          ]
-        }
-        """
-        self.assertEqual(
-            extract_learning_links_from_train_class_content(content),
-            [
-                "https://kc.zhixueyun.com/#/study/subject/detail/"
-                "1d40d4e0-a622-4535-8f02-ad108a930656",
-                "https://kc.zhixueyun.com/#/study/course/detail/"
-                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-            ],
-        )
-
 
 class FakeApiResponse:
     def __init__(self, payload, *, ok=True, status=200):

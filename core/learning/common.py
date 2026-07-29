@@ -59,17 +59,10 @@ async def detect_access_denial(frame) -> tuple[str, str] | None:
     try:
         text_content = await frame.content()
     except Exception as exc:
-        logging.error(f"检查frame时出错: {exc}")
-        return (
-            "no_permission",
-            f"检查资源访问权限失败，已从课程链接清理: {exc}",
-        )
+        # 读取 DOM 失败可能是瞬时导航/页面关闭，不能据此永久清理链接。
+        logging.debug(f"检查资源访问权限时读取页面失败: {exc}")
+        return None
     return match_access_denial(text_content)
-
-
-async def check_permission(frame) -> bool:
-    """检查是否有权限查看资源（True=可访问）。"""
-    return await detect_access_denial(frame) is None
 
 
 async def ensure_resource_accessible(frame) -> None:

@@ -122,20 +122,6 @@ def write_learning_queue(
     )
 
 
-def append_learning_url(url: str, *, file_path: Path = LEARNING_URLS_FILE) -> bool:
-    normalized_url = normalize_text(url)
-    if not normalized_url:
-        return False
-
-    entries = read_learning_queue(file_path=file_path)
-    if normalized_url in {entry.url for entry in entries}:
-        return False
-
-    entries.append(LearningQueueEntry(url=normalized_url))
-    write_learning_queue(entries, file_path=file_path)
-    return True
-
-
 def append_learning_urls(
     urls: list[str],
     *,
@@ -371,7 +357,8 @@ def requeue_retryable_learning_failures(
     """
     将可重试失败链接重新写入学习队列，并从失败队列移除。
 
-    默认仅 retryable_error。返回从失败队列移出并尝试入队的 URL（去重保序）。
+    默认使用 ``RETRIABLE_LEARNING_FAILURE_REASONS`` 中的所有可重试原因。
+    返回从失败队列移出并尝试入队的 URL（去重保序）。
     """
     allowed = reasons if reasons is not None else RETRIABLE_LEARNING_FAILURE_REASONS
     failures = read_learning_failures(file_path=failures_file)

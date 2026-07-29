@@ -129,65 +129,6 @@ def extract_learning_links_from_activity_items(items: list) -> list[str]:
     return unique_urls(results)
 
 
-def extract_learning_links_from_train_class_content(content: str) -> list[str]:
-    """
-    从接口 JSON 文本中提取可挂机链接（secondary 兜底；主路径用结构化 chapter/activity API）。
-
-    只认 JSON 字段形态的 businessValue / businessType+businessId。
-    """
-    text = content or ""
-    results: list[str] = []
-    decoded = unquote(text)
-    # 直接 type：1 / 2 / 8
-    type_group = "1|2|8"
-
-    for candidate in (text, decoded):
-        for match in re.finditer(
-            rf"({re.escape(ZHIXUEYUN_COURSE_PREFIX)}|{re.escape(ZHIXUEYUN_SUBJECT_PREFIX)})"
-            rf"({_UUID})",
-            candidate,
-            re.IGNORECASE,
-        ):
-            results.append(f"{match.group(1)}{match.group(2)}")
-
-        for match in re.finditer(
-            r"[\"']businessValue[\"']\s*:\s*[\"']([^\"']+)[\"']",
-            candidate,
-            re.IGNORECASE,
-        ):
-            mapped = map_activity_to_learning_url({"businessValue": match.group(1)})
-            if mapped:
-                results.append(mapped)
-
-        for match in re.finditer(
-            rf"[\"']businessType[\"']\s*:\s*[\"']?({type_group})[\"']?"
-            rf".{{0,80}}?"
-            rf"[\"']businessId[\"']\s*:\s*[\"']({_UUID})[\"']",
-            candidate,
-            re.IGNORECASE | re.DOTALL,
-        ):
-            mapped = map_activity_to_learning_url(
-                {"businessType": match.group(1), "businessId": match.group(2)}
-            )
-            if mapped:
-                results.append(mapped)
-
-        for match in re.finditer(
-            rf"[\"']businessId[\"']\s*:\s*[\"']({_UUID})[\"']"
-            rf".{{0,80}}?"
-            rf"[\"']businessType[\"']\s*:\s*[\"']?({type_group})[\"']?",
-            candidate,
-            re.IGNORECASE | re.DOTALL,
-        ):
-            mapped = map_activity_to_learning_url(
-                {"businessType": match.group(2), "businessId": match.group(1)}
-            )
-            if mapped:
-                results.append(mapped)
-
-    return unique_urls(results)
-
-
 def _chapter_ids_from_payload(payload: object) -> list[str]:
     if isinstance(payload, list):
         chapters = payload

@@ -5,15 +5,20 @@ from tempfile import TemporaryDirectory
 
 
 class LearningQueueTests(unittest.TestCase):
-    def test_append_learning_url_writes_json_entries_and_deduplicates(self):
-        from core.queues.learning import append_learning_url, read_learning_queue
+    def test_append_learning_urls_writes_json_entries_and_deduplicates(self):
+        from core.queues.learning import append_learning_urls, read_learning_queue
 
         with TemporaryDirectory() as tmp:
             learning_file = Path(tmp) / "learning.json"
 
-            append_learning_url("https://example.com/course/1", file_path=learning_file)
-            append_learning_url("https://example.com/course/1", file_path=learning_file)
-            append_learning_url("https://example.com/course/2", file_path=learning_file)
+            append_learning_urls(
+                [
+                    "https://example.com/course/1",
+                    "https://example.com/course/1",
+                    "https://example.com/course/2",
+                ],
+                file_path=learning_file,
+            )
 
             self.assertEqual(
                 [entry.url for entry in read_learning_queue(file_path=learning_file)],

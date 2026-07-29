@@ -7,7 +7,6 @@ from core.discovery.subject_parse import (
     EXAM_SECTION_TYPES,
     URL_SECTION_TYPES,
     expand_chapter_progress,
-    extract_course_links_from_chapter_progress,
     extract_subject_id,
     is_subject_detail_url,
     partition_course_and_subject_urls,
@@ -64,7 +63,7 @@ class SubjectParseUnitTests(unittest.TestCase):
                 ]
             }
         ]
-        links = extract_course_links_from_chapter_progress(payload)
+        links = list(expand_chapter_progress(payload).course_urls)
         self.assertEqual(
             links,
             [
@@ -265,10 +264,6 @@ class SubjectParseUnitTests(unittest.TestCase):
         self.assertEqual(result.exam_urls, [])
         # 实勘主题全为 sectionType=10，无残留
         self.assertIsNone(result.residual_subject_url)
-        self.assertEqual(
-            extract_course_links_from_chapter_progress(payload),
-            result.course_urls,
-        )
 
 
 if __name__ == "__main__":

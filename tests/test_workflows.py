@@ -154,6 +154,63 @@ class WorkflowTests(unittest.IsolatedAsyncioTestCase):
         mock_run_ai_exam.assert_not_awaited()
         ask_auto_submit.assert_not_called()
 
+    async def test_run_recommended_flow_processes_existing_exam_without_learning(self):
+        from core.app.workflows import run_recommended_flow
+
+        with (
+            patch(
+                "core.app.workflows.collect_project_state",
+                return_value=type(
+                    "State",
+                    (),
+                    {
+                        "has_credential": True,
+                        "credential_expired": False,
+                        "learning_count": 0,
+                        "exam_count": 2,
+                        "manual_exam_count": 0,
+                    },
+                )(),
+            ),
+            patch("core.app.workflows.is_ai_configured", return_value=True),
+            patch(
+                "core.app.workflows.run_afk_workflow", new=AsyncMock()
+            ) as mock_run_afk,
+            patch(
+                "core.app.workflows.run_ai_exam_workflow",
+                new=AsyncMock(return_value=0),
+            ) as mock_run_ai_exam,
+        ):
+            result = await run_recommended_flow()
+
+        self.assertEqual(result, "done")
+        mock_run_afk.assert_not_awaited()
+        mock_run_ai_exam.assert_awaited_once_with(
+            status_callback=None,
+            auto_submit=False,
+        )
+
+    async def test_run_recommended_flow_reports_existing_manual_exam(self):
+        from core.app.workflows import run_recommended_flow
+
+        with patch(
+            "core.app.workflows.collect_project_state",
+            return_value=type(
+                "State",
+                (),
+                {
+                    "has_credential": True,
+                    "credential_expired": False,
+                    "learning_count": 0,
+                    "exam_count": 0,
+                    "manual_exam_count": 1,
+                },
+            )(),
+        ):
+            result = await run_recommended_flow()
+
+        self.assertEqual(result, "manual-exam-pending")
+
     async def test_format_status_error_message_sanitizes_raw_playwright_error(self):
         from core.app.workflows import _format_status_error_message
 

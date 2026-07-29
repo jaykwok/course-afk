@@ -168,6 +168,9 @@ def run_async(awaitable):
         finally:
             with _RUNNING_ASYNC_LOCK:
                 _RUNNING_ASYNC.pop(thread_id, None)
+            close_awaitable = getattr(awaitable, "close", None)
+            if callable(close_awaitable):
+                close_awaitable()
 
 
 # 线程 id -> (事件循环, 正在运行的任务)；run_async 登记，interrupt_running_async 读取

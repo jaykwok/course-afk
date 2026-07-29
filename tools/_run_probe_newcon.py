@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import os
 import subprocess
-import sys
 from pathlib import Path
 
 CREATE_NEW_CONSOLE = 0x00000010
@@ -12,7 +11,8 @@ CREATE_NEW_CONSOLE = 0x00000010
 def main() -> int:
     root = Path(__file__).resolve().parents[1]
     py = root / ".venv" / "Scripts" / "python.exe"
-    out = root / "tools" / "_probe_newcon_result.json"
+    out = root / "tools" / "capture" / "terminal" / "new_console.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
     if out.exists():
         out.unlink()
 

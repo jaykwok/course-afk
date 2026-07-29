@@ -24,11 +24,6 @@ def menu_key_for_index(index_1based: int, total: int) -> str:
     return str(index_1based)
 
 
-def menu_key_labels(total: int) -> list[str]:
-    ensure_menu_option_count(total)
-    return [menu_key_for_index(i, total) for i in range(1, total + 1)]
-
-
 def menu_keys_hint(total: int) -> str:
     """提示文案，如「1-9/0」或「1-3」。"""
     ensure_menu_option_count(total)

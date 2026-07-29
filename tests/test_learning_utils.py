@@ -118,6 +118,15 @@ class LearningUtilityTests(unittest.TestCase):
         )
         self.assertIsNone(match_access_denial("正常课程内容"))
 
+    def test_access_denial_read_failure_does_not_claim_no_permission(self):
+        from core.learning.common import detect_access_denial
+
+        class UnreadableFrame:
+            async def content(self):
+                raise RuntimeError("navigation in progress")
+
+        self.assertIsNone(asyncio.run(detect_access_denial(UnreadableFrame())))
+
     def test_time_to_seconds_rounds_up_to_tens(self):
         from core.learning.common import time_to_seconds
 

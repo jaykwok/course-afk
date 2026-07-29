@@ -232,15 +232,6 @@ def expand_chapter_progress(
     )
 
 
-def extract_course_links_from_chapter_progress(payload: object) -> list[str]:
-    """
-    从 chapter-progress JSON 提取课程链接（仅 sectionType ∈ COURSE_SECTION_TYPES）。
-
-    实勘: 顶层为章节数组；sectionType=10 的 courseChapterSections[].id → course/detail。
-    """
-    return list(expand_chapter_progress(payload).course_urls)
-
-
 async def expand_subject_from_page(
     page,
     subject_url: str,

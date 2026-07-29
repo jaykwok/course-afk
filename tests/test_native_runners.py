@@ -850,6 +850,32 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ExamAttemptRoutingTests(unittest.TestCase):
+    def test_classify_exam_entry_url_uses_explicit_hash_routes(self):
+        from core.exam.runner import classify_exam_entry_url
+
+        self.assertEqual(
+            classify_exam_entry_url(
+                "https://kc.zhixueyun.com/#/study/subject/detail/test-subject"
+            ),
+            "subject",
+        )
+        self.assertEqual(
+            classify_exam_entry_url(
+                "https://kc.zhixueyun.com/#/study/course/detail/test-course"
+            ),
+            "course",
+        )
+        self.assertEqual(
+            classify_exam_entry_url(
+                "https://kc.zhixueyun.com/#/exam/exam/answer-paper/test-paper"
+            ),
+            "exam",
+        )
+        self.assertEqual(
+            classify_exam_entry_url("https://example.com/?next=exam/course"),
+            "unknown",
+        )
+
     def test_parse_remaining_attempts_extracts_integer(self):
         from core.exam.runner import parse_remaining_attempts
 
@@ -860,19 +886,113 @@ class ExamAttemptRoutingTests(unittest.TestCase):
 
         self.assertIsNone(parse_remaining_attempts("开始考试"))
 
-    def test_should_route_exam_to_manual_when_attempts_reach_threshold(self):
-        from core.exam.runner import should_route_exam_to_manual
-
-        self.assertTrue(should_route_exam_to_manual("继续考试 剩余3次", threshold=3))
-        self.assertFalse(should_route_exam_to_manual("继续考试 剩余4次", threshold=3))
-
-    def test_should_not_route_go_exam_button_to_manual(self):
-        from core.exam.runner import should_route_exam_to_manual
-
-        self.assertFalse(should_route_exam_to_manual("去考试", threshold=1))
-
-
 class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_locate_exam_button_ignores_hidden_matches(self):
+        from core.exam import runner as exam_runner
+
+        class HiddenLocator:
+            async def count(self):
+                return 1
+
+            def nth(self, _index):
+                return self
+
+            async def is_visible(self):
+                return False
+
+        class FakePage:
+            def locator(self, _selector):
+                return HiddenLocator()
+
+        self.assertIsNone(await exam_runner._locate_exam_button(FakePage()))
+
+    async def test_wait_for_target_route_follows_auth_round_trip(self):
+        from core.exam.runner import _wait_for_target_route_after_auth
+
+        class FakePage:
+            def __init__(self):
+                self.url = "https://kc.zhixueyun.com/oauth/#login/token"
+                self.wait_count = 0
+
+            async def wait_for_timeout(self, _milliseconds):
+                self.wait_count += 1
+                self.url = (
+                    "https://open.mylearning.cn/open/authorize"
+                    if self.wait_count == 1
+                    else "https://kc.zhixueyun.com/#/exam/exam/answer-paper/a"
+                )
+
+            async def wait_for_load_state(self, _state):
+                return None
+
+        page = FakePage()
+        self.assertTrue(
+            await _wait_for_target_route_after_auth(
+                page,
+                "https://kc.zhixueyun.com/#/exam/exam/answer-paper/a",
+                timeout_ms=1000,
+                interval_ms=100,
+            )
+        )
+        self.assertEqual(page.wait_count, 2)
+
+    async def test_wait_for_target_route_accepts_completed_redirect(self):
+        from core.exam.runner import _wait_for_target_route_after_auth
+
+        class FakePage:
+            url = "https://kc.zhixueyun.com/#/exam/exam/answer-paper/a"
+
+            def __init__(self):
+                self.load_count = 0
+                self.wait_count = 0
+
+            async def wait_for_load_state(self, _state):
+                self.load_count += 1
+
+            async def wait_for_timeout(self, _milliseconds):
+                self.wait_count += 1
+
+        page = FakePage()
+        self.assertTrue(
+            await _wait_for_target_route_after_auth(
+                page,
+                page.url,
+                timeout_ms=1000,
+                interval_ms=100,
+            )
+        )
+        self.assertEqual(page.load_count, 1)
+        self.assertEqual(page.wait_count, 0)
+
+    async def test_open_paper_answer_page_accepts_current_page_navigation(self):
+        from core.exam import runner as exam_runner
+
+        class FakePopupContext:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                raise exam_runner.PlaywrightTimeoutError("no popup")
+
+        class FakePage:
+            def expect_popup(self, timeout):
+                self.popup_timeout = timeout
+                return FakePopupContext()
+
+        page = FakePage()
+        button = AsyncMock()
+        with patch(
+            "core.exam.runner._is_direct_answer_paper_page",
+            new=AsyncMock(return_value=True),
+        ):
+            answer_page = await exam_runner._open_paper_answer_page(
+                page, button, popup_timeout_ms=100
+            )
+
+        self.assertIs(answer_page, page)
+        self.assertEqual(page.popup_timeout, 100)
+        button.click.assert_awaited_once_with()
+
     def test_build_exam_client_uses_openai_completion_config(self):
         from core.exam import runner as exam_runner
 
@@ -1071,6 +1191,74 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
             mock_run_exam.assert_awaited_once()
             self.assertFalse(mock_run_exam.await_args.kwargs["auto_submit"])
 
+    async def test_run_ai_exam_batch_preserves_queue_when_redirected_to_login(self):
+        from core.abort import UserCancelRequested
+        from core.exam.runner import run_ai_exam_batch
+
+        class FakePage:
+            def __init__(self):
+                self.url = "https://open.mylearning.cn/open/authorize"
+
+            async def goto(self, _url, **_kwargs):
+                return None
+
+            async def wait_for_load_state(self, _state):
+                return None
+
+            async def title(self):
+                return "智慧学习平台登录"
+
+            async def close(self):
+                return None
+
+            async def wait_for_timeout(self, _milliseconds):
+                return None
+
+        class FakeContext:
+            async def new_page(self):
+                return FakePage()
+
+        class FakeBrowserContextManager:
+            async def __aenter__(self):
+                return None, FakeContext()
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            exam_file = root / "exam.json"
+            manual_file = root / "manual.json"
+            urls = [
+                "https://kc.zhixueyun.com/#/exam/exam/answer-paper/a",
+                "https://kc.zhixueyun.com/#/exam/exam/answer-paper/b",
+            ]
+            _write_exam_queue_fixture(exam_file, urls)
+
+            with (
+                patch("core.exam.runner.EXAM_URLS_FILE", exam_file),
+                patch("core.exam.runner.MANUAL_EXAM_FILE", manual_file),
+                patch(
+                    "core.exam.runner.create_browser_context",
+                    return_value=FakeBrowserContextManager(),
+                ),
+                patch("core.exam.runner._build_exam_client", return_value=(object(), "test-model")),
+                patch(
+                    "core.exam.runner._run_paper_ai_exam",
+                    new=AsyncMock(
+                        side_effect=UserCancelRequested(
+                            "已保留当前及剩余考试链接，请先更新登录凭证后重试"
+                        )
+                    ),
+                ),
+            ):
+                with self.assertRaises(UserCancelRequested) as ctx:
+                    await run_ai_exam_batch()
+
+            self.assertIn("更新登录凭证", str(ctx.exception))
+            self.assertEqual(_read_exam_queue_urls(exam_file), urls)
+            self.assertFalse(manual_file.exists())
+
     async def test_run_ai_exam_batch_skips_link_when_current_model_already_failed_it(self):
         from core.exam.runner import run_ai_exam_batch
 
@@ -1170,6 +1358,11 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
                 self.url = "https://kc.zhixueyun.com/#/exam/exam/answer-paper/test-paper"
                 self._locators = {
                     ".banner-handler-btn.themeColor-border-color.themeColor-background-color": FakeLocator(count=0),
+                    "button:has-text('提交')": FakeLocator(count=0),
+                    "button:has-text('确认')": FakeLocator(count=0),
+                    "button:has-text('下一题')": FakeLocator(count=0),
+                    ".single-btn-next": FakeLocator(count=0),
+                    ".btn.new-radius": FakeLocator(count=0),
                     ".question-type-item": FakeLocator(count=5),
                     ".single-title": FakeLocator(count=0),
                     ".single-btns": FakeLocator(count=0),
@@ -1251,6 +1444,11 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
                             '  - waiting for locator(".banner-handler-btn.themeColor-border-color.themeColor-background-color") to be visible\n'
                         ),
                     ),
+                    "button:has-text('提交')": FakeLocator(count=0),
+                    "button:has-text('确认')": FakeLocator(count=0),
+                    "button:has-text('下一题')": FakeLocator(count=0),
+                    ".single-btn-next": FakeLocator(count=0),
+                    ".btn.new-radius": FakeLocator(count=0),
                     "[data-region='modal:modal']": FakeLocator(
                         count=1,
                         text="当前已触发考试次数限制，不能再次进入考试详情页",
@@ -1416,6 +1614,38 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
                     await run_ai_exam_batch()
 
             self.assertFalse(manual_file.exists())
+
+    async def test_run_manual_paper_exam_waits_on_direct_answer_page(self):
+        from core.exam.runner import _run_manual_paper_exam
+
+        class FakePage:
+            def __init__(self):
+                self.events = []
+
+            async def wait_for_event(self, event, timeout=0):
+                self.events.append((event, timeout))
+
+        page = FakePage()
+        with (
+            patch(
+                "core.exam.runner._is_direct_answer_paper_page",
+                new=AsyncMock(return_value=True),
+            ),
+            patch(
+                "core.exam.runner._raise_if_login_required", new=AsyncMock()
+            ) as mock_auth,
+            patch(
+                "core.exam.runner._wait_for_manual_paper_test", new=AsyncMock()
+            ) as mock_wait_popup,
+        ):
+            await _run_manual_paper_exam(
+                page,
+                "https://kc.zhixueyun.com/#/exam/exam/answer-paper/test-paper",
+            )
+
+        self.assertEqual(page.events, [("close", 0)])
+        mock_auth.assert_not_awaited()
+        mock_wait_popup.assert_not_awaited()
 
     async def test_run_ai_exam_batch_returns_to_menu_when_browser_closed_before_new_page(self):
         from core.abort import UserCancelRequested
@@ -1784,6 +2014,57 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
                         "ai_failed_model_configs": [],
                     }
                 ],
+            )
+
+    async def test_run_manual_exam_batch_preserves_queue_on_user_cancel(self):
+        from core.abort import UserCancelRequested
+        from core.exam.runner import run_manual_exam_batch
+
+        class FakePage:
+            async def goto(self, _url, **_kwargs):
+                return None
+
+            async def wait_for_load_state(self, _state):
+                return None
+
+            async def close(self):
+                return None
+
+        class FakeContext:
+            async def new_page(self):
+                return FakePage()
+
+        class FakeBrowserContextManager:
+            async def __aenter__(self):
+                return None, FakeContext()
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        with TemporaryDirectory() as tmp:
+            manual_file = Path(tmp) / "manual.json"
+            urls = [
+                "https://kc.zhixueyun.com/#/study/course/detail/test-course-a",
+                "https://kc.zhixueyun.com/#/study/course/detail/test-course-b",
+            ]
+            _write_manual_exam_queue_fixture(manual_file, urls)
+
+            with (
+                patch(
+                    "core.exam.runner.create_browser_context",
+                    return_value=FakeBrowserContextManager(),
+                ),
+                patch(
+                    "core.exam.runner._run_manual_course_exam",
+                    new=AsyncMock(side_effect=UserCancelRequested("返回主菜单")),
+                ),
+            ):
+                with self.assertRaises(UserCancelRequested):
+                    await run_manual_exam_batch(manual_exam_file=manual_file)
+
+            self.assertEqual(
+                [entry["url"] for entry in _read_manual_exam_queue(manual_file)],
+                urls,
             )
 
     async def test_run_manual_exam_batch_deletes_manual_exam_file_when_all_processed(self):

@@ -34,7 +34,7 @@ course-afk/
     ui/                # CLI + Textual TUI
   data/                # 运行时数据（gitignore）
   tests/
-  tools/capture/       # 本地抓包/反推实验（gitignore）
+  tools/               # 诊断脚本；结果分类归档到 capture/（gitignore）
 ```
 
 首次启动会自动创建 `data/`。运行时文件**只**读写 `data/`，不再识别项目根目录下的旧路径。
@@ -51,7 +51,8 @@ course-afk/
 - `data/log.log`：运行日志。
 - `data/cookies.json` / `data/credential_meta.json`：登录凭证（本地敏感，勿上传）。
 
-本地抓包/反推实验统一放在 `tools/capture/`（已 `.gitignore`，不上传）。
+本地抓包/反推实验结果统一放在 `tools/capture/`（已 `.gitignore`，不上传）。
+按 `exam_page/`、`learning/`、`documents/`、`integration/`、`terminal/`、`class_inspect/`、`topic_inspect/` 等用途分类，可重用的探针脚本保留在 `tools/` 或 `tools/capture/` 对应目录。
 
 ## 配置
 
