@@ -658,16 +658,6 @@ def show_summary(title: str, rows: list[tuple[str, str]]) -> None:
     console.print(build_summary_renderable(title, rows))
 
 
-def pause_with_summary(
-    title: str,
-    rows: list[tuple[str, str]],
-    message: str = "查看完成后返回主菜单",
-) -> None:
-    """显示处理结果汇总，等待单次确认后返回。"""
-    handle = prepare_pause_with_summary(title, rows, message)
-    wait_prepared_prompt(handle)
-
-
 def prepare_pause_with_summary(
     title: str,
     rows: list[tuple[str, str]],

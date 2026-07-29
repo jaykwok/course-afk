@@ -1,4 +1,3 @@
-import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -6,7 +5,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 
 class ExamPageProbeTests(unittest.IsolatedAsyncioTestCase):
-    async def test_login_redirect_failure_is_recorded_without_parsing_page(self):
+    async def test_login_redirect_failure_is_not_parsed_or_saved(self):
         from tools import probe_exam_page
 
         class FakePage:
@@ -66,10 +65,10 @@ class ExamPageProbeTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(
                     probe_exam_page,
                     "_wait_for_target_route_after_auth",
-                    new=AsyncMock(return_value=False),
+                    new=AsyncMock(side_effect=RuntimeError("browser closed")),
                 ) as mock_wait_for_auth,
             ):
-                with self.assertRaisesRegex(RuntimeError, "已停止页面解析"):
+                with self.assertRaisesRegex(RuntimeError, "browser closed"):
                     await probe_exam_page.main(
                         "https://kc.zhixueyun.com/#/exam/exam/answer-paper/test"
                     )
@@ -84,10 +83,7 @@ class ExamPageProbeTests(unittest.IsolatedAsyncioTestCase):
                 timeout_ms=0,
             )
             browser_context.context.page.locator.assert_not_called()
-            result = json.loads(result_file.read_text(encoding="utf-8"))
-            self.assertEqual(result["page_state"], "auth_incomplete")
-            self.assertFalse(result["login_redirect_completed"])
-            self.assertIn("未解析或保存当前登录页", result["error"])
+            self.assertFalse(result_file.exists())
 
 
 if __name__ == "__main__":

@@ -139,54 +139,15 @@ async def main(target_url: Optional[str] = None):
             else None,
         )
         await page.goto(target_url, wait_until="load")
-        login_redirect_completed = await _wait_for_target_route_after_auth(
-            page, target_url, timeout_ms=0
-        )
+        await _wait_for_target_route_after_auth(page, target_url, timeout_ms=0)
 
         final_url = page.url
-        returned_to_target = normalize_url(final_url) == normalize_url(target_url)
-        context_cookies = await context.cookies()
-        if not login_redirect_completed or not returned_to_target:
-            captured_at = datetime.now()
-            result_data = {
-                "page_state": "auth_incomplete",
-                "requested_url": _sanitize_url(target_url),
-                "final_url": _sanitize_url(final_url),
-                "navigation_history": [
-                    _sanitize_url(url) for url in navigation_history
-                ],
-                "login_redirect_completed": False,
-                "authorization_cookie_present": any(
-                    str(item.get("name", "")).strip().lower() == "authorization"
-                    for item in context_cookies
-                ),
-                "probed_at": captured_at.astimezone().isoformat(),
-                "cookies_file": str(COOKIES_FILE),
-                "cookies_loaded": len(cookies) > 0,
-                "source_cookies": [
-                    {
-                        "name": item.get("name", ""),
-                        "domain": item.get("domain", ""),
-                    }
-                    for item in cookies
-                ],
-                "context_cookies": [
-                    {
-                        "name": item.get("name", ""),
-                        "domain": item.get("domain", ""),
-                    }
-                    for item in context_cookies
-                ],
-                "error": "授权后未回到目标考试链接，未解析或保存当前登录页",
-            }
-            result_file, _ = _save_classified_result(
-                result_data,
-                page_state="auth_incomplete",
-                captured_at=captured_at,
-            )
+        if normalize_url(final_url) != normalize_url(target_url):
             raise RuntimeError(
-                f"授权后未回到目标考试链接，已停止页面解析；诊断见 {result_file}"
+                "授权等待完成后页面再次离开目标考试链接；"
+                "已停止解析，且未保存当前页面"
             )
+        context_cookies = await context.cookies()
 
         selector_results = []
         for selector in SELECTORS:
@@ -208,7 +169,6 @@ async def main(target_url: Optional[str] = None):
             "final_url": _sanitize_url(final_url),
             "navigation_history": [_sanitize_url(url) for url in navigation_history],
             "title": page_title,
-            "login_redirect_completed": login_redirect_completed,
             "authorization_cookie_present": await _has_authorization_cookie(page),
             "attempt_limit_message": attempt_limit_message,
             "probed_at": captured_at.astimezone().isoformat(),

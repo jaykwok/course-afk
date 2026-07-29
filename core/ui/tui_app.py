@@ -377,12 +377,10 @@ class MultilineScreen(ModalScreen[tuple[str, Any]]):
         self,
         messages: list[str],
         title: str = "手动选择课程 / 录入链接",
-        cancel_message: str = "已取消",
     ) -> None:
         super().__init__()
         self._messages = messages
         self._title = title
-        self._cancel_message = cancel_message
 
     def compose(self) -> ComposeResult:
         g = ui_glyphs()

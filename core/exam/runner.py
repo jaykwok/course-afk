@@ -6,6 +6,7 @@ import traceback
 from typing import Callable
 
 from openai import OpenAI
+from playwright.async_api import Locator
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from core.abort import UserAbortRequested, UserCancelRequested
@@ -85,7 +86,7 @@ def classify_exam_entry_url(url: str) -> str:
     return "unknown"
 
 
-async def _locate_exam_button(page) -> "Locator | None":
+async def _locate_exam_button(page) -> Locator | None:
     """按入口语义定位开考按钮，兼容不同试卷页布局。"""
     for selector in PAPER_EXAM_BUTTONS:
         try:
@@ -448,7 +449,7 @@ async def _run_paper_ai_exam(
     if await _handle_attempt_limit_if_present(page, url):
         return
 
-    if await _is_direct_answer_paper_page(page):
+    if await _has_ready_answer_question(page):
         logging.info("试卷页已直接进入答题页, 继续 AI 自动考试")
         await ai_exam(
             client,
@@ -462,21 +463,8 @@ async def _run_paper_ai_exam(
 
     exam_button = await _locate_exam_button(page)
     if exam_button is None:
-        if await _is_direct_answer_paper_page(page):
-            logging.info("授权回跳后已直接进入答题页，继续 AI 自动考试")
-            await ai_exam(
-                client,
-                model,
-                page,
-                page.url,
-                auto_submit=auto_submit,
-                ai_model_config=model_config,
-            )
-            return
-        exam_button = await _locate_exam_button(page)
-        if exam_button is None:
-            logging.warning("授权回跳后仍无法定位考试按钮")
-            exam_button = page.locator(PAPER_EXAM_BUTTONS[0])
+        logging.warning("授权回跳后仍无法定位考试按钮")
+        exam_button = page.locator(PAPER_EXAM_BUTTONS[0])
     attempt_limit_message = await _wait_for_paper_exam_button_or_attempt_limit(
         page,
         exam_button,
@@ -691,19 +679,13 @@ async def _run_manual_course_exam(page, url: str) -> None:
 
 async def _run_manual_paper_exam(page, url: str) -> None:
     logging.info(f"开始手动试卷考试: {url}")
-    if await _is_direct_answer_paper_page(page):
+    await _raise_if_login_required(page, url)
+    if await _has_ready_answer_question(page):
         logging.info("试卷已直接进入答题页，等待手动完成并关闭页面")
         await page.wait_for_event("close", timeout=0)
         return
 
     exam_button = await _locate_exam_button(page)
-    if exam_button is None:
-        await _raise_if_login_required(page, url)
-        if await _is_direct_answer_paper_page(page):
-            logging.info("授权回跳后已直接进入答题页，等待手动完成并关闭页面")
-            await page.wait_for_event("close", timeout=0)
-            return
-        exam_button = await _locate_exam_button(page)
     await _wait_for_manual_paper_test(page, exam_button=exam_button)
 
 

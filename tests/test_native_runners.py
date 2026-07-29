@@ -1580,7 +1580,7 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
                 new=AsyncMock(return_value=False),
             ),
             patch(
-                "core.exam.runner._is_direct_answer_paper_page",
+                "core.exam.runner._has_ready_answer_question",
                 new=AsyncMock(return_value=True),
             ),
             patch("core.exam.runner.ai_exam", new=AsyncMock(return_value=None)) as mock_ai_exam,
@@ -1838,7 +1838,7 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
         page = FakePage()
         with (
             patch(
-                "core.exam.runner._is_direct_answer_paper_page",
+                "core.exam.runner._has_ready_answer_question",
                 new=AsyncMock(return_value=True),
             ),
             patch(
@@ -1854,7 +1854,10 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(page.events, [("close", 0)])
-        mock_auth.assert_not_awaited()
+        mock_auth.assert_awaited_once_with(
+            page,
+            "https://kc.zhixueyun.com/#/exam/exam/answer-paper/test-paper",
+        )
         mock_wait_popup.assert_not_awaited()
 
     async def test_run_ai_exam_batch_returns_to_menu_when_browser_closed_before_new_page(self):

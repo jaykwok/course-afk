@@ -118,7 +118,6 @@ class TuiFrontend:
         "prompt_summary_confirmation": "_bridge_prompt_summary_confirmation",
         "prompt_multiline_input": "_bridge_prompt_multiline_input",
         "pause": "_bridge_pause",
-        "pause_with_summary": "_bridge_pause_with_summary",
         "prepare_menu_loading": "_bridge_prepare_menu_loading",
         "prepare_pause_with_summary": "_bridge_prepare_pause_with_summary",
         "wait_prepared_prompt": "_bridge_wait_prepared_prompt",
@@ -270,15 +269,6 @@ class TuiFrontend:
     def _bridge_pause(self, message: str = "按回车返回主菜单") -> None:
         self._prompt(PauseScreen(message), cancellable=True)
 
-    def _bridge_pause_with_summary(
-        self,
-        title: str,
-        rows: list[tuple[str, str]],
-        message: str = "查看完成后返回主菜单",
-    ) -> None:
-        handle = self._bridge_prepare_pause_with_summary(title, rows, message)
-        self._bridge_wait_prepared_prompt(handle)
-
     def _bridge_prepare_pause_with_summary(
         self,
         title: str,
@@ -309,7 +299,7 @@ class TuiFrontend:
         cancel_message: str = "已取消手动选择课程 / 录入链接",
     ) -> str:
         result = self._prompt(
-            MultilineScreen(messages, title, cancel_message), cancellable=True
+            MultilineScreen(messages, title), cancellable=True
         )
         kind, value = result
         if kind == "cancel":
@@ -344,7 +334,10 @@ class TuiFrontend:
 # ------------------------------------------------------------------
 def launch_tui() -> int:
     """启动 Textual TUI，复用 launcher.main() 作为后台控制流。"""
-    import launcher  # 在 Textual 接管控制台前，先触发 launcher 的控制台模式调整
+    import launcher
+
+    # 直接从 tui_bridge 启动时，也要在 Textual 接管控制台前关闭 Quick Edit。
+    launcher._disable_windows_console_input_modes_early()
 
     setup_logging()
 
