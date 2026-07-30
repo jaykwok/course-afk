@@ -112,9 +112,44 @@ async def ensure_no_concurrent_study_limit(frame_or_page) -> None:
         raise ConcurrentStudyLimitError(message, reason_text=message)
 
 
+_WAF_BLOCK_MARKERS: tuple[str, ...] = (
+    "网站安全防护拦截",
+    "405- Method Not Allowed",
+)
+
+
+def match_waf_block(text: str) -> str | None:
+    """识别 NWAF 临时拦截页，命中则返回适合日志和队列的说明。"""
+    content = text or ""
+    if not any(marker in content for marker in _WAF_BLOCK_MARKERS):
+        return None
+    retry_note = "；页面提示约 30 分钟后重试" if "30分钟后" in content else ""
+    return f"平台网站安全防护临时拦截（405 Method Not Allowed）{retry_note}"
+
+
+async def detect_waf_block(frame_or_page) -> str | None:
+    """从页面 HTML 识别网站安全防护临时拦截。"""
+    try:
+        text_content = await frame_or_page.content()
+    except Exception as exc:
+        logging.debug(f"检测网站安全防护拦截时读 content 失败: {exc}")
+        return None
+    return match_waf_block(text_content)
+
+
+async def ensure_no_waf_block(frame_or_page) -> None:
+    """命中 NWAF 拦截则抛 WafBlockError，调用方应停止当前批次。"""
+    from core.abort import WafBlockError
+
+    message = await detect_waf_block(frame_or_page)
+    if message:
+        raise WafBlockError(message)
+
+
 async def ensure_course_page_ready(page) -> None:
-    """课页可学前置：访问权限 + 非并发限流页。须在等进度条/章节前调用。"""
+    """课页可学前置：权限、NWAF 与并发限流。须在等章节前调用。"""
     frame = getattr(page, "main_frame", page)
+    await ensure_no_waf_block(frame)
     await ensure_resource_accessible(frame)
     await ensure_no_concurrent_study_limit(frame)
 
@@ -140,6 +175,37 @@ def is_learned(text: str) -> bool:
     if _ZERO_REMAINING_PROGRESS.search(text):
         return True
     return _PENDING_PROGRESS.search(text) is None
+
+
+async def is_course_section_focused(box) -> bool:
+    """按当前实勘 DOM 的 ``focus`` 类判断目标章节是否已激活。"""
+    try:
+        class_names = (await box.get_attribute("class") or "").split()
+        return "focus" in class_names
+    except Exception as exc:
+        logging.debug(f"读取目标章节激活状态失败: {exc}")
+        return False
+
+
+async def wait_for_course_section_focus(
+    page,
+    box,
+    *,
+    timeout_ms: int = 5000,
+    poll_interval_ms: int = 250,
+) -> bool:
+    """等待刚点击的目标章节获得 focus 状态，避免读取上一节播放器。"""
+    timeout_ms = max(0, int(timeout_ms))
+    poll_interval_ms = max(50, int(poll_interval_ms))
+    elapsed = 0
+    while True:
+        if await is_course_section_focused(box):
+            return True
+        if elapsed >= timeout_ms:
+            return False
+        wait_ms = min(poll_interval_ms, timeout_ms - elapsed)
+        await page.wait_for_timeout(wait_ms)
+        elapsed += wait_ms
 
 
 def _compact_progress_text(text: str, *, limit: int = 80) -> str:

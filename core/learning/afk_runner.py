@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Awaitable, Callable
 
 from core.abort import (
     LearningFlowError,
     NoPermissionError,
     UserAbortRequested,
     UserCancelRequested,
+    WafBlockError,
 )
 from core.browser.session import (
     create_browser_context,
@@ -32,6 +34,7 @@ from core.file_ops import (
 from core.links import normalize_urls
 from core.learning.exam_bridge import is_subject_url_completed
 from core.learning.flows import course_learning, subject_learning
+from core.learning.common import ensure_course_page_ready
 from core.queues.learning import (
     read_learning_failures,
     read_learning_urls,
@@ -43,11 +46,130 @@ from core.browser.overlays import goto_and_prepare_async
 
 
 StatusCallback = Callable[[str], None]
+CaptureCallback = Callable[[object, str], Awaitable[None]]
+_COURSE_INFO_API_MARKER = "/api/v1/course-study/course-front/info/"
+_COURSE_BOOTSTRAP_TIMEOUT_SECONDS = 30
 
 
 @dataclass
 class AfkBatch:
     urls: list[str]
+
+
+class _CourseInfoMonitor:
+    """导航前监听课程详情接口，只保留状态码与业务错误，不保存鉴权数据。"""
+
+    def __init__(self) -> None:
+        self.event = asyncio.Event()
+        self.result: dict[str, object] | None = None
+        self.tasks: set[asyncio.Task] = set()
+
+    def observe(self, response) -> None:
+        response_url = str(getattr(response, "url", "") or "")
+        if _COURSE_INFO_API_MARKER not in response_url:
+            return
+        task = asyncio.create_task(self._record(response))
+        self.tasks.add(task)
+        task.add_done_callback(self.tasks.discard)
+
+    async def _record(self, response) -> None:
+        status = int(getattr(response, "status", 0) or 0)
+        result: dict[str, object] = {"status": status}
+        if status >= 400:
+            try:
+                payload = json.loads(await response.text())
+            except Exception:
+                payload = {}
+            if isinstance(payload, dict):
+                result["error_code"] = payload.get("errorCode")
+                result["message"] = str(payload.get("message") or "")[:300]
+        self.result = result
+        self.event.set()
+
+
+def _install_course_info_monitor(page) -> _CourseInfoMonitor | None:
+    on = getattr(page, "on", None)
+    if not callable(on):
+        return None
+    monitor = _CourseInfoMonitor()
+    on("response", monitor.observe)
+    return monitor
+
+
+def _raise_for_course_info_failure(result: dict[str, object]) -> None:
+    status = int(result.get("status") or 0)
+    if status < 400:
+        return
+    error_code = result.get("error_code")
+    message = str(result.get("message") or "").strip()
+
+    if status == 422 and error_code == 40121:
+        raise NoPermissionError(
+            "课程链接使用了无效的资源 ID（详情接口 422/40121）",
+            reason="invalid_course_link",
+            reason_text=(
+                "课程链接中的 UUID 不是有效课程资源 ID（详情接口 422/40121），"
+                "已从课程链接清理；"
+                "请重新从主题或培训班解析"
+            ),
+        )
+    if status == 404:
+        raise NoPermissionError(
+            "课程详情接口返回 404",
+            reason="resource_gone",
+            reason_text="课程资源不存在，已从课程链接清理",
+        )
+    if status == 403:
+        raise NoPermissionError(
+            "课程详情接口返回 403",
+            reason="no_permission",
+            reason_text="无权限访问该课程资源，已从课程链接清理",
+        )
+
+    detail = {"http_status": status, "error_code": error_code}
+    if message:
+        detail["api_message"] = message
+    raise LearningFlowError(
+        f"课程详情接口返回 {status}",
+        reason="course_info_api_error",
+        reason_text=f"课程详情接口返回 {status}，已保留链接待重试",
+        keep_pending=True,
+        detail=detail,
+    )
+
+
+async def _wait_for_course_bootstrap(page, monitor: _CourseInfoMonitor | None) -> None:
+    """OAuth 回跳后等待课程 API 或章节 DOM，避免在登录页提前等 ``dl``。"""
+    if monitor is None:
+        return
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _COURSE_BOOTSTRAP_TIMEOUT_SECONDS
+    while True:
+        if monitor.result is not None:
+            _raise_for_course_info_failure(monitor.result)
+            return
+
+        await ensure_course_page_ready(page)
+        try:
+            if await page.locator("dl.chapter-list-box").count() > 0:
+                return
+        except Exception as exc:
+            if is_target_closed_exception(exc):
+                raise
+
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            raise LearningFlowError(
+                "课程页面在认证后未返回详情接口或章节 DOM",
+                reason="course_bootstrap_timeout",
+                reason_text="课程页面初始化超时，已保留链接待重试",
+                keep_pending=True,
+            )
+        try:
+            await asyncio.wait_for(monitor.event.wait(), timeout=min(1, remaining))
+        except asyncio.TimeoutError:
+            pass
 
 
 def _write_learning_queue(urls: list[str], *, learning_file: Path | None = None) -> None:
@@ -110,19 +232,46 @@ async def _open_course_page(context):
         raise
 
 
-async def _process_url(context, url: str, handler) -> bool:
+async def _process_url(
+    context,
+    url: str,
+    handler,
+    *,
+    capture_callback: CaptureCallback | None = None,
+    failure_file: Path | None = None,
+) -> bool:
     """
     新开标签处理单条学习链接，结束（成功/失败）后关闭该页。
 
     返回是否需要保留在待学习队列。
     """
     page = None
+    course_monitor: _CourseInfoMonitor | None = None
+    failure_path = failure_file or LEARNING_FAILURES_FILE
+
+    async def _capture(stage: str) -> None:
+        if capture_callback is None or page is None:
+            return
+        try:
+            await capture_callback(page, stage)
+        except Exception as exc:
+            # 诊断捕获不能改变正式挂课结果。
+            logging.debug(f"保存页面探针数据失败 ({stage}): {exc}")
+
     try:
         page = await _open_course_page(context)
+        if is_course_detail_url(url):
+            course_monitor = _install_course_info_monitor(page)
+        # 探针需要在第一次导航前安装网络/控制台监听器。
+        await _capture("page_created")
         await goto_and_prepare_async(page, url)
+        await _capture("after_navigation")
+        await _wait_for_course_bootstrap(page, course_monitor)
         await handler(page)
+        await _capture("after_handler")
         return False
     except Exception as exc:
+        await _capture("error")
         if is_target_closed_exception(exc):
             # 浏览器仍在：仅关标签/页失败 → 保留链接；整窗关闭 → 回主菜单
             if is_browser_connected(context):
@@ -144,7 +293,7 @@ async def _process_url(context, url: str, handler) -> bool:
                 url,
                 reason=reason,
                 reason_text=reason_text,
-                file_path=LEARNING_FAILURES_FILE,
+                file_path=failure_path,
             )
             logging.info(
                 f"不可访问资源已清理并记入失败链接: {url} [{reason}] {reason_text}"
@@ -158,8 +307,10 @@ async def _process_url(context, url: str, handler) -> bool:
                 reason=exc.reason,
                 reason_text=exc.reason_text,
                 detail=getattr(exc, "detail", None) or {},
-                file_path=LEARNING_FAILURES_FILE,
+                file_path=failure_path,
             )
+            if isinstance(exc, WafBlockError):
+                raise
             return bool(exc.keep_pending)
         logging.error(f"发生错误: {exc}")
         logging.error(traceback.format_exc())
@@ -167,7 +318,7 @@ async def _process_url(context, url: str, handler) -> bool:
             url,
             reason="retryable_error",
             reason_text=f"挂课处理失败，后续可重新加入课程链接: {exc}",
-            file_path=LEARNING_FAILURES_FILE,
+            file_path=failure_path,
         )
         return True
     finally:
@@ -332,6 +483,13 @@ async def run_afk_once(status_callback: StatusCallback | None = None) -> None:
                 message,
                 save_pending_urls=save_pending_urls,
             ) from None
+        if isinstance(exc, WafBlockError):
+            _write_learning_queue(pending_learning_urls)
+            message = exc.reason_text or str(exc)
+            logging.warning(f"{message}，本轮挂课已停止")
+            if status_callback:
+                status_callback(f"{message}，本轮挂课已停止")
+            return
         raise
 
     logging.info("本轮自动挂课完成")

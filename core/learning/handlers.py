@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 
+from core.abort import VideoPlayerNotReadyError
+from core.browser.session import is_target_closed_exception
 from core.config import (
     DOCUMENT_POLL_INTERVAL,
     DOCUMENT_WAIT,
@@ -10,6 +13,7 @@ from core.config import (
 from core.learning.common import (
     build_video_timing_plan,
     get_course_url,
+    is_course_section_focused,
     is_learned,
     timer,
     wait_until_learned,
@@ -29,11 +33,128 @@ async def _cleanup_background_tasks(*tasks) -> None:
     await asyncio.gather(*active_tasks, return_exceptions=True)
 
 
-async def _ensure_video_player_ready(page, *, attempts: int = 3) -> None:
-    """等待视频控件就绪；被遮罩/评分弹窗挡住时关弹窗并重试点击续播。"""
-    progress = page.locator(".vjs-progress-control").first
-    duration = page.locator(".vjs-duration-display")
-    last_error: Exception | None = None
+_VIDEO_PLAYER_STATE_SCRIPT = r"""
+() => {
+  const isVisible = (element) => {
+    if (!element) return false;
+    const style = window.getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return style.display !== "none" && style.visibility !== "hidden" &&
+      Number(style.opacity || 1) !== 0 && rect.width > 0 && rect.height > 0;
+  };
+  const visibleCount = (selector) =>
+    Array.from(document.querySelectorAll(selector)).filter(isVisible).length;
+  const videos = Array.from(document.querySelectorAll("video")).map((video) => ({
+    visible: isVisible(video),
+    readyState: Number(video.readyState || 0),
+    networkState: Number(video.networkState || 0),
+    paused: Boolean(video.paused),
+    duration: Number.isFinite(video.duration) ? Number(video.duration) : null,
+    currentTime: Number.isFinite(video.currentTime) ? Number(video.currentTime) : null,
+    errorCode: video.error ? Number(video.error.code || 0) : null,
+    sourceKind: String(video.currentSrc || "").startsWith("blob:") ? "blob" :
+      (video.currentSrc ? "url" : "none"),
+  }));
+  const selectors = {
+    progress: visibleCount(".vjs-progress-control"),
+    duration: visibleCount(".vjs-duration-display"),
+    video: visibleCount("video"),
+    player: visibleCount(".video-js, [class*='video-player']"),
+  };
+  const mediaReady = videos.some((video) =>
+    video.visible && video.errorCode === null && video.readyState >= 1 &&
+      video.duration !== null && video.duration > 0
+  );
+  return {
+    ready: mediaReady || (selectors.progress > 0 && selectors.duration > 0),
+    selectors,
+    videos,
+  };
+}
+"""
+
+
+async def _read_video_player_state(page) -> dict[str, object]:
+    try:
+        state = await page.evaluate(_VIDEO_PLAYER_STATE_SCRIPT)
+        if isinstance(state, dict):
+            return state
+        return {"ready": False, "probe_error": "播放器状态探针返回非对象"}
+    except Exception as exc:
+        if is_target_closed_exception(exc):
+            raise
+        return {
+            "ready": False,
+            "probe_error": f"{type(exc).__name__}: {str(exc)[:300]}",
+        }
+
+
+async def _describe_video_target(box) -> dict[str, object]:
+    detail: dict[str, object] = {}
+    for attribute, key in (
+        ("id", "id"),
+        ("class", "class"),
+        ("data-sectiontype", "section_type"),
+    ):
+        try:
+            detail[key] = await box.get_attribute(attribute)
+        except Exception:
+            detail[key] = None
+    try:
+        text = await box.locator(".section-item-wrapper").inner_text(timeout=2000)
+        detail["text"] = " ".join((text or "").split())[:200]
+    except Exception:
+        pass
+    return detail
+
+
+async def _wait_for_video_player_ready(
+    page,
+    *,
+    box,
+    timeout_ms: int = 15000,
+    poll_interval_ms: int = 500,
+) -> dict[str, object]:
+    timeout_ms = max(0, int(timeout_ms))
+    poll_interval_ms = max(100, int(poll_interval_ms))
+    elapsed = 0
+    last_state: dict[str, object] = {"ready": False}
+    while True:
+        target_focused = await is_course_section_focused(box)
+        last_state = await _read_video_player_state(page)
+        last_state["target_focused"] = target_focused
+        if target_focused and bool(last_state.get("ready")):
+            return last_state
+        if elapsed >= timeout_ms:
+            return last_state
+        wait_ms = min(poll_interval_ms, timeout_ms - elapsed)
+        await page.wait_for_timeout(wait_ms)
+        elapsed += wait_ms
+
+
+async def _reclick_video_target(page, box) -> None:
+    """重试时只重新点击当前目标章节，不猜测全局 active 元素。"""
+    wrapper = box.locator(".section-item-wrapper")
+    try:
+        await wrapper.scroll_into_view_if_needed(timeout=3000)
+    except Exception:
+        pass
+    try:
+        await wrapper.click(timeout=3000)
+    except Exception:
+        await wrapper.click(timeout=3000, force=True)
+    await page.wait_for_timeout(500)
+
+
+async def _ensure_video_player_ready(
+    page,
+    *,
+    box,
+    attempts: int = 3,
+    wait_timeout_ms: int = 15000,
+) -> None:
+    """等待目标视频真正就绪；关闭遮罩，并绑定目标章节进行重试。"""
+    last_state: dict[str, object] = {"ready": False}
 
     for attempt in range(1, attempts + 1):
         try:
@@ -53,33 +174,53 @@ async def _ensure_video_player_ready(page, *, attempts: int = 3) -> None:
             except Exception:
                 pass
 
-            await progress.wait_for(state="visible", timeout=15000)
-            await duration.wait_for(state="visible", timeout=10000)
-            return
-        except Exception as exc:
-            last_error = exc
-            logging.info(
-                f"视频播放器未就绪 (第{attempt}/{attempts}次): {exc}"
+            last_state = await _wait_for_video_player_ready(
+                page,
+                box=box,
+                timeout_ms=wait_timeout_ms,
             )
+            if bool(last_state.get("ready")) and bool(
+                last_state.get("target_focused")
+            ):
+                return
+        except Exception as exc:
+            if is_target_closed_exception(exc):
+                raise
+            last_state = {
+                "ready": False,
+                "probe_error": f"{type(exc).__name__}: {str(exc)[:300]}",
+            }
+
+        logging.info(
+            "视频播放器未就绪 (第%s/%s次): %s",
+            attempt,
+            attempts,
+            json.dumps(last_state, ensure_ascii=False, sort_keys=True),
+        )
+        if attempt < attempts:
             try:
                 await page.wait_for_timeout(800)
-            except Exception:
-                pass
-            # 有时章节未真正点开，回退再点当前章节区域
-            try:
-                await page.locator(".section-item-wrapper.active, .section-item.active").first.click(
-                    timeout=2000, force=True
-                )
-            except Exception:
-                pass
+                await _reclick_video_target(page, box)
+            except Exception as exc:
+                if is_target_closed_exception(exc):
+                    raise
+                logging.debug(f"重新点击目标视频章节失败: {exc}")
 
-    assert last_error is not None
-    raise last_error
+    detail = {
+        "attempts": max(1, int(attempts)),
+        "target": await _describe_video_target(box),
+        "player_state": last_state,
+    }
+    logging.error(
+        "视频播放器最终未就绪，诊断=%s",
+        json.dumps(detail, ensure_ascii=False, sort_keys=True),
+    )
+    raise VideoPlayerNotReadyError(detail=detail)
 
 
 async def handle_video(box, page):
     """处理视频类型课程"""
-    await _ensure_video_player_ready(page)
+    await _ensure_video_player_ready(page, box=box)
 
     await check_and_handle_rating_popup(page)
 

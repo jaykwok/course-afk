@@ -248,6 +248,10 @@ class LearningExamTests(unittest.IsolatedAsyncioTestCase):
                 "core.learning.flows.dismiss_topmost_overlays_async",
                 new=AsyncMock(return_value=0),
             ),
+            patch(
+                "core.learning.flows._activate_course_section",
+                new=AsyncMock(return_value=None),
+            ),
             patch("core.learning.flows._is_course_completed", new=AsyncMock(return_value=False)),
             patch("core.learning.flows.check_exam_passed", new=mock_check),
             patch("core.learning.exam_bridge.check_exam_passed", new=mock_check),

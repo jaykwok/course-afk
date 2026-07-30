@@ -8,6 +8,7 @@ from core.abort import (
     LearningFlowError,
     NoPermissionError,
     PartialCourseFailure,
+    SectionActivationError,
 )
 from core.browser.session import is_page_browser_connected, is_target_closed_exception
 from core.config import (
@@ -21,6 +22,7 @@ from core.learning.common import (
     get_course_url,
     is_learned,
     timer,
+    wait_for_course_section_focus,
 )
 from core.learning.exam_bridge import check_exam_passed, handle_examination
 from core.learning.handlers import handle_document, handle_h5, handle_video
@@ -79,7 +81,7 @@ async def _open_subject_item_popup(page, learn_item, *, attempts: int = 3):
 
 
 async def _activate_course_section(page_detail, box) -> None:
-    """点击课内章节；失败时关遮罩/force 点击后重试。"""
+    """点击课内章节并确认目标 box 已获得 focus；始终重试同一目标。"""
     wrapper = box.locator(".section-item-wrapper")
     last_error: Exception | None = None
 
@@ -104,18 +106,41 @@ async def _activate_course_section(page_detail, box) -> None:
                 await wrapper.click(timeout=5000)
             except Exception:
                 await wrapper.click(timeout=5000, force=True)
-            # 给播放器/文档区一点切换时间
-            await page_detail.wait_for_timeout(500)
-            return
+            if await wait_for_course_section_focus(
+                page_detail,
+                box,
+                timeout_ms=5000,
+            ):
+                return
+            last_error = RuntimeError(
+                "目标章节点击后未进入 focus 状态"
+            )
+            logging.info(
+                f"章节切换未生效 (第{attempt}/3次)，重新点击同一目标"
+            )
         except Exception as exc:
+            if is_target_closed_exception(exc):
+                raise
             last_error = exc
             logging.info(
                 f"点击章节失败 (第{attempt}/3次): {exc}"
             )
-            await page_detail.wait_for_timeout(600)
+        await page_detail.wait_for_timeout(600)
 
     assert last_error is not None
-    raise last_error
+    detail: dict[str, object] = {
+        "last_error": f"{type(last_error).__name__}: {str(last_error)[:300]}",
+    }
+    for attribute, key in (
+        ("id", "target_id"),
+        ("class", "target_class"),
+        ("data-sectiontype", "section_type"),
+    ):
+        try:
+            detail[key] = await box.get_attribute(attribute)
+        except Exception:
+            detail[key] = None
+    raise SectionActivationError(detail=detail)
 
 
 async def handle_subject_exam_item(learn_item) -> str | None:
@@ -248,6 +273,7 @@ async def subject_learning(page):
     learn_count = await learn_locator.count()
 
     has_failed_course = False
+    subject_course_failures: list[dict[str, object]] = []
     for i in range(learn_count):
         learn_item = learn_locator.nth(i)
         if await is_subject_item_completed(learn_item):
@@ -265,10 +291,21 @@ async def subject_learning(page):
                     if is_page_browser_connected(page_detail):
                         logging.info("当前课程标签页已关闭，跳过该课程")
                         has_failed_course = True
+                        subject_course_failures.append(
+                            {
+                                "subject_item_index": i,
+                                "reason": "target_closed",
+                                "reason_text": "课程标签页被关闭",
+                            }
+                        )
                         continue
                     raise
                 if isinstance(exc, NoPermissionError):
                     logging.warning(f"主题内课程不可访问: {exc}")
+                elif isinstance(exc, LearningFlowError):
+                    logging.error(
+                        f"主题内课程失败 [{exc.reason}]: {exc.reason_text}"
+                    )
                 else:
                     logging.error(f"发生错误: {str(exc)}")
                     logging.error(traceback.format_exc())
@@ -283,6 +320,23 @@ async def subject_learning(page):
                 else:
                     # 可恢复失败：记失败后继续后续小节，结束时再统一抛错
                     has_failed_course = True
+                    if isinstance(exc, LearningFlowError):
+                        reason = exc.reason
+                        reason_text = exc.reason_text
+                        error_detail = getattr(exc, "detail", None) or {}
+                    else:
+                        reason = "retryable_error"
+                        reason_text = str(exc)[:500]
+                        error_detail = {"error_type": type(exc).__name__}
+                    subject_course_failures.append(
+                        {
+                            "subject_item_index": i,
+                            "course_url": course_url,
+                            "reason": reason,
+                            "reason_text": reason_text,
+                            "detail": error_detail,
+                        }
+                    )
             finally:
                 await page_detail.close()
 
@@ -340,6 +394,7 @@ async def subject_learning(page):
             "部分主题课程学习失败",
             reason="partial_course_failure",
             reason_text="部分主题课程学习失败，后续可重新加入课程链接",
+            detail={"course_failures": subject_course_failures},
         )
 
 
@@ -426,6 +481,7 @@ async def course_learning(page_detail, learn_item=None):
     # 课程内 data-sectiontype（与主题 chapter-progress 的 sectionType 数字含义不同）:
     # 1/2/3=文档网页, 4=H5, 5/6=视频, 9=课程内考试。主题外链 URL 的 API 类型 3 不在此列。
     has_failed_box = False
+    chapter_failures: list[dict[str, object]] = []
     for index, (track, box) in enumerate(chapters):
         section_type = await box.get_attribute("data-sectiontype")
         box_text = await box.locator(".text-overflow").inner_text()
@@ -438,9 +494,8 @@ async def course_learning(page_detail, learn_item=None):
                 logging.info(f"课程第{index + 1}节({track_label})已学习, 跳过该节\n")
                 continue
 
-        await _activate_course_section(page_detail, box)
-
         try:
+            await _activate_course_section(page_detail, box)
             if section_type in ["5", "6"]:
                 logging.info("该课程为视频类型")
                 await handle_video(box, page_detail)
@@ -493,25 +548,51 @@ async def course_learning(page_detail, learn_item=None):
                 failure_url = (
                     await get_course_url(learn_item) if learn_item else page_detail.url
                 )
+                failure_detail = {
+                    "source": "course_chapter",
+                    "section_index": index,
+                    "section_number": index + 1,
+                    "section_type": section_type,
+                    "track": track,
+                }
                 _record_structured_failure(
                     failure_url,
                     exc,
-                    detail={
-                        "source": "course_chapter",
-                        "section_index": index,
-                        "track": track,
-                    },
+                    detail=failure_detail,
+                )
+                chapter_failures.append(
+                    {
+                        **failure_detail,
+                        "reason": exc.reason,
+                        "reason_text": exc.reason_text,
+                        "detail": getattr(exc, "detail", None) or {},
+                    }
                 )
                 has_failed_box = True
                 continue
             logging.error(f"课程第{index + 1}节({track_label})学习失败: {str(exc)}")
             logging.error(traceback.format_exc())
+            chapter_failures.append(
+                {
+                    "source": "course_chapter",
+                    "section_index": index,
+                    "section_number": index + 1,
+                    "section_type": section_type,
+                    "track": track,
+                    "reason": "retryable_error",
+                    "reason_text": str(exc)[:500],
+                    "error_type": type(exc).__name__,
+                }
+            )
             has_failed_box = True
             continue
         logging.info(f"课程第{index + 1}节({track_label})学习完毕")
 
     if has_failed_box:
-        raise PartialCourseFailure("部分章节学习失败")
+        raise PartialCourseFailure(
+            "部分章节学习失败",
+            detail={"chapter_failures": chapter_failures},
+        )
 
 
 async def _is_course_completed(page) -> bool:

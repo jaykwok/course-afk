@@ -282,7 +282,12 @@ RETRIABLE_LEARNING_FAILURE_REASONS: frozenset[str] = frozenset(
         "retryable_error",
         "sync_timeout",
         "partial_course_failure",
+        "section_activation_failed",
+        "video_player_not_ready",
+        "course_bootstrap_timeout",
+        "course_info_api_error",
         "concurrent_study_limit",
+        "waf_blocked",
     }
 )
 
@@ -291,10 +296,16 @@ LEARNING_FAILURE_REASON_LABELS: dict[str, str] = {
     "retryable_error": "可重试错误",
     "sync_timeout": "进度同步超时",
     "partial_course_failure": "部分章节失败",
+    "section_activation_failed": "章节切换未生效",
+    "video_player_not_ready": "视频播放器未就绪",
+    "course_bootstrap_timeout": "课程页面初始化超时",
+    "course_info_api_error": "课程详情接口异常",
     "concurrent_study_limit": "并发学习限流",
+    "waf_blocked": "网站安全防护临时拦截",
     "no_permission": "无权限",
     "resource_gone": "资源不存在",
     "resource_delisted": "资源已下架",
+    "invalid_course_link": "无效课程资源 ID",
     "non_compliant_url": "不合规链接",
     "unknown_learning_type": "未知类型",
     "url_type_pending": "URL 待复查",
@@ -320,6 +331,7 @@ ACCESS_DENIED_LEARNING_FAILURE_REASONS: frozenset[str] = frozenset(
         "no_permission",
         "resource_gone",
         "resource_delisted",
+        "invalid_course_link",
         "non_compliant_url",
     }
 )

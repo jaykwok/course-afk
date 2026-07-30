@@ -27,7 +27,7 @@ from core.browser.overlays import prepare_page_after_navigation_async
 # - GET .../subject/chapter-progress?courseId={subjectId}
 # - 章节 courseChapterSections[].sectionType 分流（方案 C）——注意：
 #   此处数字与「课程内」DOM data-sectiontype 不是同一套（课程内 3=文档，主题 3=外链）
-#   * 10 → 课程 course/detail/{id} → 学习队列
+#   * 10 → 课程 course/detail/{attachmentId/resourceId} → 学习队列
 #   * 9  → 考试 exam/answer-paper/{resourceId} → 考试队列
 #   * 3  → URL（外链，字段 url）→ 不入队，保留 subject 残留由 DOM 处理
 #   * 其它未知类型 → 保留 subject 残留
@@ -141,8 +141,14 @@ def _section_uuid(section: dict, keys: tuple[str, ...]) -> str | None:
 
 
 def _section_course_id(section: dict) -> str | None:
-    """课程详情 UUID：优先 section.id（实勘与 course/detail 一致）。"""
-    return _section_uuid(section, ("id", "referenceId"))
+    """课程详情 UUID：使用资源 UUID，不能使用主题章节记录 UUID。
+
+    实勘 ``chapter-progress`` 中：``id/referenceId`` 是主题章节记录，直接
+    拼到 ``course/detail`` 会令详情接口返回 422；真正课程 UUID 同时出现在
+    ``attachmentId`` 与 ``resourceId``。缺少资源 UUID 时保留主题给 DOM 处理，
+    不再生成一个看似合法、实际无效的课程链接。
+    """
+    return _section_uuid(section, ("attachmentId", "resourceId"))
 
 
 def _section_exam_id(section: dict) -> str | None:

@@ -101,6 +101,17 @@ class LearningUtilityTests(unittest.TestCase):
         )
         self.assertIsNone(match_concurrent_study_limit("正常课程页"))
 
+    def test_match_waf_block(self):
+        from core.learning.common import match_waf_block
+
+        message = match_waf_block(
+            "405- Method Not Allowed 网站安全防护拦截，30分钟后请刷新页面重试"
+        )
+
+        self.assertIn("网站安全防护临时拦截", message)
+        self.assertIn("30 分钟后重试", message)
+        self.assertIsNone(match_waf_block("正常课程内容"))
+
     def test_match_access_denial_classifies_reasons(self):
         from core.learning.common import match_access_denial
 

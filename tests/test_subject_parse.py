@@ -46,17 +46,19 @@ class SubjectParseUnitTests(unittest.TestCase):
         self.assertEqual(courses, [course])
         self.assertEqual(subjects, [subject])
 
-    def test_chapter_progress_maps_section_type_10_to_course(self):
+    def test_chapter_progress_maps_section_type_10_resource_to_course(self):
         payload = [
             {
                 "courseChapterSections": [
                     {
                         "id": "d5832449-44e7-41da-a593-c661f27842ed",
+                        "attachmentId": "f8f48345-5a1a-48f7-a5e8-7b8bd09b7d04",
                         "name": "课A",
                         "sectionType": 10,
                     },
                     {
                         "id": "077a0c34-2c24-435e-8959-bc92a4e8f47a",
+                        "resourceId": "bd2635dc-bc8c-4daa-ae67-1d4122cbfd8a",
                         "name": "课B",
                         "sectionType": 10,
                     },
@@ -68,9 +70,9 @@ class SubjectParseUnitTests(unittest.TestCase):
             links,
             [
                 "https://kc.zhixueyun.com/#/study/course/detail/"
-                "d5832449-44e7-41da-a593-c661f27842ed",
+                "f8f48345-5a1a-48f7-a5e8-7b8bd09b7d04",
                 "https://kc.zhixueyun.com/#/study/course/detail/"
-                "077a0c34-2c24-435e-8959-bc92a4e8f47a",
+                "bd2635dc-bc8c-4daa-ae67-1d4122cbfd8a",
             ],
         )
         result = expand_chapter_progress(
@@ -95,6 +97,7 @@ class SubjectParseUnitTests(unittest.TestCase):
                 "courseChapterSections": [
                     {
                         "id": "d5832449-44e7-41da-a593-c661f27842ed",
+                        "attachmentId": "f8f48345-5a1a-48f7-a5e8-7b8bd09b7d04",
                         "sectionType": 10,
                     },
                     {
@@ -110,7 +113,7 @@ class SubjectParseUnitTests(unittest.TestCase):
             result.course_urls,
             [
                 "https://kc.zhixueyun.com/#/study/course/detail/"
-                "d5832449-44e7-41da-a593-c661f27842ed"
+                "f8f48345-5a1a-48f7-a5e8-7b8bd09b7d04"
             ],
         )
         self.assertEqual(result.exam_urls, [])
@@ -128,6 +131,7 @@ class SubjectParseUnitTests(unittest.TestCase):
                 "courseChapterSections": [
                     {
                         "id": "24a514df-0e89-4630-82d2-1ba5db348afc",
+                        "resourceId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
                         "sectionType": 10,
                     },
                     {
@@ -195,6 +199,7 @@ class SubjectParseUnitTests(unittest.TestCase):
                 "courseChapterSections": [
                     {
                         "id": "d5832449-44e7-41da-a593-c661f27842ed",
+                        "attachmentId": "f8f48345-5a1a-48f7-a5e8-7b8bd09b7d04",
                         "sectionType": 10,
                     },
                     {
@@ -261,6 +266,16 @@ class SubjectParseUnitTests(unittest.TestCase):
         result = expand_chapter_progress(payload, subject_url=subject_url)
         self.assertEqual(len(result.course_urls), 13)
         self.assertTrue(all("/study/course/detail/" in item for item in result.course_urls))
+        self.assertEqual(
+            result.course_urls[0],
+            "https://kc.zhixueyun.com/#/study/course/detail/"
+            "f8f48345-5a1a-48f7-a5e8-7b8bd09b7d04",
+        )
+        self.assertNotIn(
+            "https://kc.zhixueyun.com/#/study/course/detail/"
+            "d5832449-44e7-41da-a593-c661f27842ed",
+            result.course_urls,
+        )
         self.assertEqual(result.exam_urls, [])
         # 实勘主题全为 sectionType=10，无残留
         self.assertIsNone(result.residual_subject_url)

@@ -65,6 +65,10 @@ class LearningHandlerTests(unittest.IsolatedAsyncioTestCase):
             return task
 
         with (
+            patch(
+                "core.learning.handlers._ensure_video_player_ready",
+                new=AsyncMock(return_value=None),
+            ),
             patch("core.learning.handlers.timer", new=never_finishing_timer),
             patch(
                 "core.learning.handlers.check_rating_popup_periodically",

@@ -11,6 +11,7 @@ import os
 import sys
 import threading
 from datetime import datetime
+from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -20,13 +21,27 @@ from urllib.parse import urlparse
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(PROJECT_ROOT / ".env")
 
-# 运行时数据（队列、凭证、日志、参考资料）统一放在 data/
+# 运行时数据按用途分目录，避免凭证、队列和日志混在 data/ 根目录。
 DATA_DIR = PROJECT_ROOT / "data"
+CREDENTIALS_DIR = DATA_DIR / "credentials"
+LINKS_DIR = DATA_DIR / "links"
+LOGS_DIR = DATA_DIR / "logs"
+REFERENCE_OUTPUT_DIR = DATA_DIR / "references"
+
+COOKIES_FILE = CREDENTIALS_DIR / "cookies.json"
+CREDENTIAL_META_FILE = CREDENTIALS_DIR / "credential_meta.json"
+LEARNING_URLS_FILE = LINKS_DIR / "课程链接.json"
+LEARNING_FAILURES_FILE = LINKS_DIR / "挂课失败链接.json"
+EXAM_URLS_FILE = LINKS_DIR / "考试链接.json"
+MANUAL_EXAM_FILE = LINKS_DIR / "人工考试链接.json"
+
+INFO_LOG_FILE = LOGS_DIR / "app-info.log"
+WARN_LOG_FILE = LOGS_DIR / "app-warn.log"
+ERROR_LOG_FILE = LOGS_DIR / "app-error.log"
 
 # ============================================================
 # 日志配置
 # ============================================================
-LOG_FILE = DATA_DIR / "log.log"
 LOG_LEVEL = logging.DEBUG
 CONSOLE_LOG_LEVEL = logging.INFO
 LOG_FORMAT = (
@@ -220,11 +235,67 @@ def _default_browser_channel(browser_type: str) -> str | None:
     return None
 
 
-def _build_file_handler():
-    handler = logging.FileHandler(LOG_FILE, mode="a", encoding="utf-8")
-    handler.setLevel(LOG_LEVEL)
+class _LevelRangeFilter(logging.Filter):
+    def __init__(self, *, minimum: int, maximum: int | None = None):
+        super().__init__()
+        self.minimum = minimum
+        self.maximum = maximum
+
+    def filter(self, record):
+        return record.levelno >= self.minimum and (
+            self.maximum is None or record.levelno <= self.maximum
+        )
+
+
+def _dated_log_namer(default_name: str) -> str:
+    """将 ``app-info.log.2026-07-29`` 改成用户可读的归档名。"""
+    path = Path(default_name)
+    marker = ".log."
+    if marker not in path.name:
+        return default_name
+    base_name, date_suffix = path.name.split(marker, 1)
+    return str(path.with_name(f"{base_name}-{date_suffix}.log"))
+
+
+def _build_file_handler(
+    path: Path,
+    *,
+    minimum: int,
+    maximum: int | None = None,
+):
+    handler = TimedRotatingFileHandler(
+        path,
+        when="midnight",
+        interval=1,
+        backupCount=0,
+        encoding="utf-8",
+    )
+    handler.suffix = "%Y-%m-%d"
+    handler.namer = _dated_log_namer
+    handler.setLevel(minimum)
+    handler.addFilter(_LevelRangeFilter(minimum=minimum, maximum=maximum))
     handler.setFormatter(logging.Formatter(LOG_FORMAT))
     return handler
+
+
+def _build_file_handlers() -> list[logging.Handler]:
+    # DEBUG 没有单独文件，和 INFO 一并进入 app-info；三个文件互不重复。
+    return [
+        _build_file_handler(
+            INFO_LOG_FILE,
+            minimum=logging.DEBUG,
+            maximum=logging.INFO,
+        ),
+        _build_file_handler(
+            WARN_LOG_FILE,
+            minimum=logging.WARNING,
+            maximum=logging.WARNING,
+        ),
+        _build_file_handler(
+            ERROR_LOG_FILE,
+            minimum=logging.ERROR,
+        ),
+    ]
 
 
 def _get_console_log_level() -> int:
@@ -330,8 +401,15 @@ def _log_startup_banner(root_logger):
 
 
 def ensure_data_layout() -> None:
-    """确保 data/ 存在。运行时路径仅认 data/，不兼容项目根目录旧文件布局。"""
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    """只创建当前版本的分类目录；不读取或迁移旧版平铺路径。"""
+    for directory in (
+        DATA_DIR,
+        CREDENTIALS_DIR,
+        LINKS_DIR,
+        LOGS_DIR,
+        REFERENCE_OUTPUT_DIR,
+    ):
+        directory.mkdir(parents=True, exist_ok=True)
 
 
 def setup_logging(show_startup_banner: bool | None = None):
@@ -352,7 +430,8 @@ def setup_logging(show_startup_banner: bool | None = None):
             pass
 
     root_logger.setLevel(LOG_LEVEL)
-    root_logger.addHandler(_build_file_handler())
+    for handler in _build_file_handlers():
+        root_logger.addHandler(handler)
     root_logger.addHandler(_build_console_handler())
     _silence_noisy_loggers()
     _LOGGING_CONFIGURED = True
@@ -441,17 +520,6 @@ ZHIXUEYUN_COURSE_PREFIX = "https://kc.zhixueyun.com/#/study/course/detail/"
 ZHIXUEYUN_SUBJECT_PREFIX = "https://kc.zhixueyun.com/#/study/subject/detail/"
 ZHIXUEYUN_TRAIN_CLASS_PREFIX = "https://kc.zhixueyun.com/#/train-new/class-detail/"
 ZHIXUEYUN_EXAM_PREFIX = "https://kc.zhixueyun.com/#/exam/exam/answer-paper/"
-
-# ============================================================
-# 文件路径（均位于 data/）
-# ============================================================
-COOKIES_FILE = DATA_DIR / "cookies.json"
-CREDENTIAL_META_FILE = DATA_DIR / "credential_meta.json"
-LEARNING_URLS_FILE = DATA_DIR / "课程链接.json"
-LEARNING_FAILURES_FILE = DATA_DIR / "挂课失败链接.json"
-EXAM_URLS_FILE = DATA_DIR / "考试链接.json"
-MANUAL_EXAM_FILE = DATA_DIR / "人工考试链接.json"
-REFERENCE_OUTPUT_DIR = DATA_DIR / "参考资料"
 
 # ============================================================
 # 超时 / 等待时间（秒）

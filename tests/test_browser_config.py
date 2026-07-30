@@ -54,9 +54,9 @@ class BrowserLaunchConfigTests(unittest.TestCase):
                 browser, "BROWSER_ARGS", ["--mute-audio", "--start-maximized"]
             ),
         ):
-            options = browser.build_browser_launch_options(headless=True)
+            options = browser.build_browser_launch_options(headless=False)
 
-        self.assertEqual(options, {"headless": True})
+        self.assertEqual(options, {"headless": False})
 
     def test_build_browser_context_options_uses_no_viewport_for_visible_browser(self):
         self.assertEqual(
@@ -64,18 +64,11 @@ class BrowserLaunchConfigTests(unittest.TestCase):
             {"no_viewport": True},
         )
 
-    def test_build_browser_context_options_keeps_headless_context_default(self):
-        self.assertEqual(browser.build_browser_context_options(headless=True), {})
-
-    def test_build_browser_launch_options_does_not_force_maximized_for_headless(self):
-        with (
-            unittest.mock.patch.object(browser, "BROWSER_TYPE", "chromium"),
-            unittest.mock.patch.object(browser, "BROWSER_CHANNEL", "msedge"),
-            unittest.mock.patch.object(browser, "BROWSER_ARGS", ["--mute-audio"]),
-        ):
-            options = browser.build_browser_launch_options(headless=True)
-
-        self.assertEqual(options["args"], ["--mute-audio"])
+    def test_browser_configuration_rejects_headless_mode(self):
+        with self.assertRaisesRegex(ValueError, "禁止使用 headless"):
+            browser.build_browser_launch_options(headless=True)
+        with self.assertRaisesRegex(ValueError, "禁止使用 headless"):
+            browser.build_browser_context_options(headless=True)
 
     def test_launch_async_browser_uses_selected_browser_type(self):
         fake_browser = object()
@@ -91,10 +84,10 @@ class BrowserLaunchConfigTests(unittest.TestCase):
             unittest.mock.patch.object(browser, "BROWSER_CHANNEL", None),
             unittest.mock.patch.object(browser, "BROWSER_ARGS", []),
         ):
-            launched = asyncio.run(browser.launch_async_browser(fake_playwright, headless=True))
+            launched = asyncio.run(browser.launch_async_browser(fake_playwright, headless=False))
 
         self.assertIs(launched, fake_browser)
-        fake_launcher.launch.assert_awaited_once_with(headless=True)
+        fake_launcher.launch.assert_awaited_once_with(headless=False)
 
 
 class BrowserStealthTests(unittest.IsolatedAsyncioTestCase):

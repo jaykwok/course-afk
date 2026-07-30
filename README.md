@@ -33,26 +33,46 @@ course-afk/
     app/               # 工作流与菜单控制
     ui/                # CLI + Textual TUI
   data/                # 运行时数据（gitignore）
+    credentials/       # Cookie 与凭证元数据
+    links/             # 课程、考试及失败队列
+    logs/              # 分级日志与历史归档
+    references/        # 课程参考资料
   tests/
   tools/               # 诊断脚本；结果分类归档到 capture/（gitignore）
 ```
 
-首次启动会自动创建 `data/`。运行时文件**只**读写 `data/`，不再识别项目根目录下的旧路径。
+首次启动只会创建当前版本的分类目录。旧版平铺在 `data/` 下的 JSON、`log.log` 和 `参考资料/` 不再识别，也不会自动迁移。
 
 ## 输出文件与状态
 
-均位于 `data/`：
+均位于 `data/` 的分类目录：
 
-- `data/课程链接.json`：待处理的课程和主题。
-- `data/挂课失败链接.json`：挂课失败原因和详情。
-- `data/考试链接.json`：待 AI 处理的考试及失败模型配置。
-- `data/人工考试链接.json`：需要人工处理的考试。
-- `data/参考资料/`：课程课件（PDF/文档）与视频 AI 导学资料。
-- `data/log.log`：运行日志。
-- `data/cookies.json` / `data/credential_meta.json`：登录凭证（本地敏感，勿上传）。
+- `data/links/课程链接.json`：待处理的课程和主题。
+- `data/links/挂课失败链接.json`：挂课失败原因和详情。
+- `data/links/考试链接.json`：待 AI 处理的考试及失败模型配置。
+- `data/links/人工考试链接.json`：需要人工处理的考试。
+- `data/references/`：课程参考资料（PDF/文档）与视频 AI 导学资料。
+- `data/credentials/cookies.json` / `credential_meta.json`：登录凭证（本地敏感，勿上传）。
+- `data/logs/app-info.log`：DEBUG 与 INFO。
+- `data/logs/app-warn.log`：WARNING。
+- `data/logs/app-error.log`：ERROR 与 CRITICAL。
+
+日志每天自动归档，文件名为 `app-info-2026-07-29.log`、`app-warn-2026-07-29.log`、`app-error-2026-07-29.log`；不跨级重复写入。
 
 本地抓包/反推实验结果统一放在 `tools/capture/`（已 `.gitignore`，不上传）。
 按 `exam_page/`、`learning/`、`documents/`、`integration/`、`terminal/`、`class_inspect/`、`topic_inspect/` 等用途分类，可重用的探针脚本保留在 `tools/` 或 `tools/capture/` 对应目录。
+
+### 课程页探针
+
+`tools/probe_course_page.py` 复用正式的浏览器上下文、Cookie、导航与挂课处理函数，只额外保存脱敏后的 DOM、网络、控制台和结构化失败数据：
+
+```powershell
+.\.venv\Scripts\python.exe tools\probe_course_page.py "<课程或主题 URL>"
+.\.venv\Scripts\python.exe tools\probe_course_page.py "<课程 URL>" --section-index 8
+.\.venv\Scripts\python.exe tools\probe_course_page.py "<课程或主题 URL>" --run-flow --flow-timeout 300
+```
+
+结果写入 `tools/capture/course_page/probe_<时间戳>/`，并更新 `latest.json`。Cookie、Authorization、access token 和常见签名参数不会写入捕获文件。整个项目强制使用可见浏览器；任何 `headless=True` 调用都会直接报错。
 
 ## 配置
 

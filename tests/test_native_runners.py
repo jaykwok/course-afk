@@ -340,6 +340,203 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                 ],
             )
 
+    async def test_process_url_capture_hook_uses_formal_lifecycle_and_probe_failure_file(self):
+        from core.learning.afk_runner import _process_url
+
+        page = _AfkCoursePage()
+
+        class FakeContext:
+            async def new_page(self):
+                return page
+
+        async def failing_handler(_page):
+            raise RuntimeError("probe boom")
+
+        capture = AsyncMock()
+        with TemporaryDirectory() as tmp:
+            normal_failures = Path(tmp) / "normal-failures.json"
+            probe_failures = Path(tmp) / "probe-failures.json"
+            with (
+                patch(
+                    "core.learning.afk_runner.LEARNING_FAILURES_FILE",
+                    normal_failures,
+                ),
+                patch(
+                    "core.learning.afk_runner.ensure_controller_page",
+                    new=AsyncMock(),
+                ),
+            ):
+                keep_pending = await _process_url(
+                    FakeContext(),
+                    "https://kc.zhixueyun.com/#/study/course/detail/probe",
+                    failing_handler,
+                    capture_callback=capture,
+                    failure_file=probe_failures,
+                )
+
+            self.assertTrue(keep_pending)
+            self.assertTrue(page.closed)
+            self.assertFalse(normal_failures.exists())
+            self.assertEqual(
+                [item.args[1] for item in capture.await_args_list],
+                ["page_created", "after_navigation", "error"],
+            )
+            self.assertEqual(
+                _read_learning_failures(probe_failures)[0]["reason"],
+                "retryable_error",
+            )
+
+    async def test_process_url_records_and_reraises_waf_block(self):
+        from core.abort import WafBlockError
+        from core.learning.afk_runner import _process_url
+
+        page = _AfkCoursePage()
+
+        class FakeContext:
+            async def new_page(self):
+                return page
+
+        async def blocked_handler(_page):
+            raise WafBlockError()
+
+        with TemporaryDirectory() as tmp:
+            probe_failures = Path(tmp) / "probe-failures.json"
+            with patch(
+                "core.learning.afk_runner.ensure_controller_page",
+                new=AsyncMock(),
+            ):
+                with self.assertRaises(WafBlockError):
+                    await _process_url(
+                        FakeContext(),
+                        "https://kc.zhixueyun.com/#/study/course/detail/waf",
+                        blocked_handler,
+                        failure_file=probe_failures,
+                    )
+
+            self.assertTrue(page.closed)
+            self.assertEqual(
+                _read_learning_failures(probe_failures)[0]["reason"],
+                "waf_blocked",
+            )
+
+    async def test_process_url_classifies_invalid_course_resource_id_from_api(self):
+        from core.learning.afk_runner import _process_url
+
+        class FakeResponse:
+            url = (
+                "https://kc.zhixueyun.com/api/v1/course-study/"
+                "course-front/info/d5832449-44e7-41da-a593-c661f27842ed"
+            )
+            status = 422
+
+            async def text(self):
+                return json.dumps(
+                    {"errorCode": 40121, "message": "Invalid input."}
+                )
+
+        class FakeLocator:
+            async def count(self):
+                return 0
+
+        class FakePage(_AfkCoursePage):
+            def __init__(self):
+                super().__init__()
+                self.handlers = {}
+
+            def on(self, event, handler):
+                self.handlers[event] = handler
+
+            def locator(self, _selector):
+                return FakeLocator()
+
+            async def content(self):
+                return "<html><body></body></html>"
+
+            async def goto(self, url, **kwargs):
+                await super().goto(url, **kwargs)
+                self.handlers["response"](FakeResponse())
+
+        page = FakePage()
+
+        class FakeContext:
+            async def new_page(self):
+                return page
+
+        handler = AsyncMock()
+        with TemporaryDirectory() as tmp:
+            failures_file = Path(tmp) / "failures.json"
+            with patch(
+                "core.learning.afk_runner.ensure_controller_page",
+                new=AsyncMock(),
+            ):
+                keep_pending = await _process_url(
+                    FakeContext(),
+                    (
+                        "https://kc.zhixueyun.com/#/study/course/detail/"
+                        "d5832449-44e7-41da-a593-c661f27842ed"
+                    ),
+                    handler,
+                    failure_file=failures_file,
+                )
+
+            self.assertFalse(keep_pending)
+            self.assertTrue(page.closed)
+            handler.assert_not_awaited()
+            failure = _read_learning_failures(failures_file)[0]
+            self.assertEqual(failure["reason"], "invalid_course_link")
+            self.assertIn("422/40121", failure["reason_text"])
+
+    async def test_run_afk_once_stops_batch_after_first_waf_block(self):
+        from core.abort import WafBlockError
+        from core.learning.afk_runner import AfkBatch, run_afk_once
+
+        class FakeBrowserContextManager:
+            async def __aenter__(self):
+                return None, object()
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        urls = [
+            "https://kc.zhixueyun.com/#/study/course/detail/a",
+            "https://kc.zhixueyun.com/#/study/course/detail/b",
+        ]
+        status_messages = []
+        process = AsyncMock(side_effect=WafBlockError())
+        recheck = AsyncMock()
+        with TemporaryDirectory() as tmp:
+            learning_file = Path(tmp) / "learning.json"
+            with (
+                patch("core.learning.afk_runner.LEARNING_URLS_FILE", learning_file),
+                patch(
+                    "core.learning.afk_runner.prepare_afk_batch",
+                    return_value=AfkBatch(urls=urls),
+                ),
+                patch(
+                    "core.learning.afk_runner.create_browser_context",
+                    return_value=FakeBrowserContextManager(),
+                ),
+                patch(
+                    "core.learning.afk_runner.normalize_urls",
+                    side_effect=lambda values: list(values or []),
+                ),
+                patch(
+                    "core.learning.afk_runner.is_compliant_url_regex",
+                    return_value=True,
+                ),
+                patch("core.learning.afk_runner._process_url", new=process),
+                patch(
+                    "core.learning.afk_runner._recheck_url_type_links",
+                    new=recheck,
+                ),
+            ):
+                await run_afk_once(status_callback=status_messages.append)
+
+            self.assertEqual(process.await_count, 1)
+            recheck.assert_not_awaited()
+            self.assertEqual(_read_learning_queue_urls(learning_file), urls)
+            self.assertTrue(any("本轮挂课已停止" in item for item in status_messages))
+
     async def test_process_url_clears_no_permission_and_records_reason(self):
         """无权限/资源不存在：移出课程链接，失败文档写明原因。"""
         from core.abort import NoPermissionError

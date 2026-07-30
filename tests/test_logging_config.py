@@ -2,12 +2,38 @@ import logging
 import unittest
 from unittest.mock import patch
 from os import environ
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from core import config
 
 
 class LoggingConfigTests(unittest.TestCase):
     def setUp(self):
+        self.temp_dir = TemporaryDirectory()
+        data_dir = Path(self.temp_dir.name) / "data"
+        credentials_dir = data_dir / "credentials"
+        links_dir = data_dir / "links"
+        logs_dir = data_dir / "logs"
+        references_dir = data_dir / "references"
+        self.path_patcher = patch.multiple(
+            config,
+            DATA_DIR=data_dir,
+            CREDENTIALS_DIR=credentials_dir,
+            LINKS_DIR=links_dir,
+            LOGS_DIR=logs_dir,
+            REFERENCE_OUTPUT_DIR=references_dir,
+            COOKIES_FILE=credentials_dir / "cookies.json",
+            CREDENTIAL_META_FILE=credentials_dir / "credential_meta.json",
+            LEARNING_URLS_FILE=links_dir / "课程链接.json",
+            LEARNING_FAILURES_FILE=links_dir / "挂课失败链接.json",
+            EXAM_URLS_FILE=links_dir / "考试链接.json",
+            MANUAL_EXAM_FILE=links_dir / "人工考试链接.json",
+            INFO_LOG_FILE=logs_dir / "app-info.log",
+            WARN_LOG_FILE=logs_dir / "app-warn.log",
+            ERROR_LOG_FILE=logs_dir / "app-error.log",
+        )
+        self.path_patcher.start()
         self.root_logger = logging.getLogger()
         self.original_handlers = self.root_logger.handlers[:]
         self.original_level = self.root_logger.level
@@ -25,12 +51,23 @@ class LoggingConfigTests(unittest.TestCase):
         self.root_logger.handlers.extend(self.original_handlers)
         self.root_logger.setLevel(self.original_level)
         config._LOGGING_CONFIGURED = self.original_flag
+        self.path_patcher.stop()
+        self.temp_dir.cleanup()
 
     def test_setup_logging_uses_info_level_console_handler(self):
         config.setup_logging()
         handlers = logging.getLogger().handlers
-        self.assertEqual(len(handlers), 2)
-        self.assertEqual(handlers[1].level, logging.INFO)
+        file_handlers = [
+            handler for handler in handlers if isinstance(handler, logging.FileHandler)
+        ]
+        console_handlers = [
+            handler
+            for handler in handlers
+            if not isinstance(handler, logging.FileHandler)
+        ]
+        self.assertEqual(len(file_handlers), 3)
+        self.assertEqual(len(console_handlers), 1)
+        self.assertEqual(console_handlers[0].level, logging.INFO)
 
     def test_setup_logging_is_idempotent(self):
         config.setup_logging()
@@ -56,8 +93,58 @@ class LoggingConfigTests(unittest.TestCase):
     def test_setup_logging_uses_debug_console_level_when_debug_mode_enabled(self):
         with patch.dict(environ, {"DEBUG_MODE": "1"}, clear=False):
             config.setup_logging()
-        handlers = logging.getLogger().handlers
-        self.assertEqual(handlers[1].level, logging.DEBUG)
+        console_handlers = [
+            handler
+            for handler in logging.getLogger().handlers
+            if not isinstance(handler, logging.FileHandler)
+        ]
+        self.assertEqual(console_handlers[0].level, logging.DEBUG)
+
+    def test_file_handlers_split_levels_without_duplicates(self):
+        config.setup_logging(show_startup_banner=False)
+        root = logging.getLogger()
+        root.debug("debug-only-token")
+        root.info("info-only-token")
+        root.warning("warn-only-token")
+        root.error("error-only-token")
+        for handler in root.handlers:
+            handler.flush()
+
+        info_text = config.INFO_LOG_FILE.read_text(encoding="utf-8")
+        warn_text = config.WARN_LOG_FILE.read_text(encoding="utf-8")
+        error_text = config.ERROR_LOG_FILE.read_text(encoding="utf-8")
+
+        self.assertIn("debug-only-token", info_text)
+        self.assertIn("info-only-token", info_text)
+        self.assertNotIn("warn-only-token", info_text)
+        self.assertNotIn("error-only-token", info_text)
+        self.assertIn("warn-only-token", warn_text)
+        self.assertNotIn("info-only-token", warn_text)
+        self.assertNotIn("error-only-token", warn_text)
+        self.assertIn("error-only-token", error_text)
+        self.assertNotIn("warn-only-token", error_text)
+
+    def test_dated_log_namer_places_date_before_extension(self):
+        default = str(config.LOGS_DIR / "app-error.log.2026-07-29")
+        self.assertEqual(
+            config._dated_log_namer(default),
+            str(config.LOGS_DIR / "app-error-2026-07-29.log"),
+        )
+
+    def test_data_layout_does_not_migrate_legacy_flat_files(self):
+        config.DATA_DIR.mkdir(parents=True, exist_ok=True)
+        legacy_cookie = config.DATA_DIR / "cookies.json"
+        legacy_log = config.DATA_DIR / "log.log"
+        legacy_cookie.write_text("[]", encoding="utf-8")
+        legacy_log.write_text("old log", encoding="utf-8")
+
+        config.ensure_data_layout()
+
+        self.assertTrue(legacy_cookie.exists())
+        self.assertTrue(legacy_log.exists())
+        self.assertFalse(config.COOKIES_FILE.exists())
+        self.assertFalse(config.INFO_LOG_FILE.exists())
+        self.assertTrue(config.REFERENCE_OUTPUT_DIR.is_dir())
 
     def test_build_console_handler_upgrades_console_streams_to_utf8_when_possible(self):
         class DummyStream:

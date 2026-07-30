@@ -36,6 +36,12 @@ BROWSER_STEALTH_INIT_SCRIPT = """
   } catch (_) {}
 })();
 """
+_HEADLESS_DISABLED_MESSAGE = "项目禁止使用 headless 浏览器，请使用可视浏览器运行"
+
+
+def _ensure_visible_browser(headless: bool) -> None:
+    if headless:
+        raise ValueError(_HEADLESS_DISABLED_MESSAGE)
 
 
 def _get_browser_launcher(playwright):
@@ -51,6 +57,7 @@ def build_browser_launch_options(
     slow_mo=None,
     extra_args: list[str] | None = None,
 ):
+    _ensure_visible_browser(headless)
     options = {"headless": headless}
 
     if BROWSER_TYPE == "chromium":
@@ -90,8 +97,7 @@ async def maximize_browser_window_for_page(page, *, headless: bool) -> None:
 
 
 def build_browser_context_options(*, headless: bool) -> dict[str, object]:
-    if headless:
-        return {}
+    _ensure_visible_browser(headless)
     return {"no_viewport": True}
 
 
@@ -263,6 +269,8 @@ async def create_browser_context(
     cookies_path=COOKIES_FILE, headless=False, slow_mo=None
 ):
     """浏览器初始化上下文管理器, 封装重复的启动/认证/关闭流程"""
+
+    _ensure_visible_browser(headless)
 
     cookies = load_cookies(cookies_path)
 

@@ -8,20 +8,23 @@ from core import config
 class PathConfigTests(unittest.TestCase):
     def test_runtime_files_live_under_data_dir(self):
         self.assertEqual(config.DATA_DIR, config.PROJECT_ROOT / "data")
-        self.assertEqual(config.LEARNING_URLS_FILE.parent, config.DATA_DIR)
-        self.assertEqual(config.LEARNING_FAILURES_FILE.parent, config.DATA_DIR)
-        self.assertEqual(config.EXAM_URLS_FILE.parent, config.DATA_DIR)
-        self.assertEqual(config.MANUAL_EXAM_FILE.parent, config.DATA_DIR)
-        self.assertEqual(config.COOKIES_FILE.parent, config.DATA_DIR)
-        self.assertEqual(config.CREDENTIAL_META_FILE.parent, config.DATA_DIR)
-        self.assertEqual(config.LOG_FILE.parent, config.DATA_DIR)
+        self.assertEqual(config.LEARNING_URLS_FILE.parent, config.LINKS_DIR)
+        self.assertEqual(config.LEARNING_FAILURES_FILE.parent, config.LINKS_DIR)
+        self.assertEqual(config.EXAM_URLS_FILE.parent, config.LINKS_DIR)
+        self.assertEqual(config.MANUAL_EXAM_FILE.parent, config.LINKS_DIR)
+        self.assertEqual(config.COOKIES_FILE.parent, config.CREDENTIALS_DIR)
+        self.assertEqual(config.CREDENTIAL_META_FILE.parent, config.CREDENTIALS_DIR)
+        self.assertEqual(config.INFO_LOG_FILE.parent, config.LOGS_DIR)
+        self.assertEqual(config.WARN_LOG_FILE.parent, config.LOGS_DIR)
+        self.assertEqual(config.ERROR_LOG_FILE.parent, config.LOGS_DIR)
         self.assertEqual(config.REFERENCE_OUTPUT_DIR.parent, config.DATA_DIR)
         # 断兼容：路径常量不得回落到项目根
         self.assertNotEqual(config.LEARNING_URLS_FILE, config.PROJECT_ROOT / "课程链接.json")
         self.assertNotEqual(config.COOKIES_FILE, config.PROJECT_ROOT / "cookies.json")
-        self.assertEqual(config.LOG_FILE, config.DATA_DIR / "log.log")
-        self.assertNotEqual(config.LOG_FILE, config.PROJECT_ROOT / "log.txt")
-        self.assertNotEqual(config.LOG_FILE, config.PROJECT_ROOT / "log.log")
+        self.assertEqual(config.INFO_LOG_FILE.name, "app-info.log")
+        self.assertEqual(config.WARN_LOG_FILE.name, "app-warn.log")
+        self.assertEqual(config.ERROR_LOG_FILE.name, "app-error.log")
+        self.assertFalse(hasattr(config, "LOG_FILE"))
 
     def test_learning_links_file_is_project_relative(self):
         self.assertTrue(str(config.LEARNING_URLS_FILE).endswith("课程链接.json"))
