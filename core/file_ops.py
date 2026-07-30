@@ -99,7 +99,9 @@ def normalize_url(url):
                     .../qrScan?businessType=2&businessId=UUID...  →  .../subject/detail/UUID
                     .../qrScan?businessType=6&businessId=UUID...  →  .../train-new/class-detail/UUID
     2. paas-container 等中转: ...classId=UUID...  →  .../train-new/class-detail/UUID
-    3. detail带前缀格式: .../detail/11&UUID...  →  .../detail/UUID
+    3. detail带前缀格式:
+       .../detail/11&UUID...   →  .../detail/UUID
+       .../detail/99@@UUID... →  .../detail/UUID
 
     已是标准格式的链接原样返回。
     """
@@ -107,11 +109,13 @@ def normalize_url(url):
     decoded_url = unquote(url)
     candidates = list(dict.fromkeys([url, decoded_url]))
 
-    # 标准 detail 链接可能带有尾部查询参数，保存时只保留稳定的 UUID 链接。
+    # 已知详情链接只保留末尾 UUID。兼容平台在 UUID 前插入的数字标记，
+    # 例如 /detail/99@@UUID、/detail/11&UUID。
     for candidate in candidates:
         standard_match = re.search(
             rf"({_COURSE_PREFIX_ESCAPED}|{_SUBJECT_PREFIX_ESCAPED}|"
-            rf"{_TRAIN_CLASS_PREFIX_ESCAPED}|{_EXAM_PREFIX_ESCAPED})({_UUID})",
+            rf"{_TRAIN_CLASS_PREFIX_ESCAPED}|{_EXAM_PREFIX_ESCAPED})"
+            rf"(?:\d+(?:&|@@))?({_UUID})(?=$|[?&#])",
             candidate,
         )
         if standard_match:
@@ -137,13 +141,6 @@ def normalize_url(url):
         class_match = re.search(rf"classId=({_UUID})", candidate, re.IGNORECASE)
         if class_match:
             return f"{ZHIXUEYUN_TRAIN_CLASS_PREFIX}{class_match.group(1)}"
-
-    # detail带前缀格式: /detail/数字&UUID → /detail/UUID
-    for candidate in candidates:
-        detail_match = re.search(rf"/detail/\d+&({_UUID})", candidate)
-        if detail_match:
-            prefix = candidate[: candidate.index("/detail/")]
-            return f"{prefix}/detail/{detail_match.group(1)}"
 
     return url
 

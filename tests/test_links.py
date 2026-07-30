@@ -139,6 +139,33 @@ class LinkParsingTests(unittest.TestCase):
             "12345678-1234-1234-1234-123456789abc",
         )
 
+    def test_normalize_url_keeps_final_uuid_after_numeric_detail_marker(self):
+        subject_raw_url = (
+            "https://kc.zhixueyun.com/#/study/subject/detail/"
+            "99@@b6e4e78b-78ed-4a15-8706-9b70e3667b7d"
+        )
+        subject_expected = (
+            "https://kc.zhixueyun.com/#/study/subject/detail/"
+            "b6e4e78b-78ed-4a15-8706-9b70e3667b7d"
+        )
+        course_raw_url = (
+            "https://kc.zhixueyun.com/#/study/course/detail/"
+            "99@@12345678-1234-1234-1234-123456789abc"
+        )
+        course_expected = (
+            "https://kc.zhixueyun.com/#/study/course/detail/"
+            "12345678-1234-1234-1234-123456789abc"
+        )
+
+        self.assertEqual(normalize_url(subject_raw_url), subject_expected)
+        self.assertTrue(is_subject_detail_url(subject_raw_url))
+        self.assertEqual(normalize_url(course_raw_url), course_expected)
+        self.assertTrue(is_course_detail_url(course_raw_url))
+        self.assertEqual(
+            split_manual_selection_urls([subject_raw_url, course_raw_url]),
+            ([subject_expected, course_expected], [], [], [], []),
+        )
+
     def test_normalize_url_decodes_business_parameters(self):
         self.assertEqual(
             normalize_url(
