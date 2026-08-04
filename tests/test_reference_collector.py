@@ -8,13 +8,16 @@ from core.discovery.reference_collector import (
     SectionResource,
     SubjectCourse,
     _fetch_course_infos,
+    build_course_markdown_name,
     build_resource_output_name,
     collect_reference_materials,
     collect_section_resources,
     decode_preview_bytes,
     full_preview_url,
     is_trusted_preview_host,
-    render_video_guides_markdown,
+    render_course_catalog_markdown,
+    render_course_failures_markdown,
+    render_course_markdown,
     safe_filename,
 )
 from core.discovery.subject_parse import extract_subject_id
@@ -113,6 +116,7 @@ class ReferenceCollectorTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(resources[0].course_name, "课程 名称")
         self.assertEqual(resources[0].section_name, "章节 标题")
+        self.assertEqual(resources[0].chapter_index, 1)
 
     def test_full_preview_url_allows_trusted_preview_hosts(self):
         self.assertTrue(is_trusted_preview_host("zhixueyun.com"))
@@ -135,16 +139,45 @@ class ReferenceCollectorTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ValueError, "白名单"):
             full_preview_url("https://evil.example.com/file.pdf")
 
-    def test_render_video_guides_markdown_contains_segment_titles(self):
-        markdown = render_video_guides_markdown(
+    def test_course_markdown_groups_chapters_sections_and_guides(self):
+        video = SectionResource(
+            course_index=1,
+            course_id="course-id",
+            course_name="课程",
+            topic="主题",
+            section_index=1,
+            section_name="视频章节",
+            attachment_id="video-att",
+            file_type="mp4",
+            chapter_index=1,
+            chapter_name="第一章",
+        )
+        document = SectionResource(
+            course_index=1,
+            course_id="course-id",
+            course_name="课程",
+            topic="主题",
+            section_index=2,
+            section_name="课件",
+            attachment_id="doc-att",
+            file_type="pdf",
+            chapter_index=1,
+            chapter_name="第一章",
+        )
+        markdown = render_course_markdown(
+            {
+                "course_id": "course-id",
+                "topic": "主题",
+                "data": {"name": "课程", "lecturer": "讲师"},
+            },
+            [video, document],
             [
                 {
-                    "course_index": 1,
+                    "course_id": "course-id",
                     "course_name": "课程",
-                    "section_index": 2,
-                    "section_name": "视频",
-                    "topic": "主题",
-                    "attachment_id": "att",
+                    "section_index": 1,
+                    "section_name": "视频章节",
+                    "attachment_id": "video-att",
                     "status": 200,
                     "items": [
                         {
@@ -155,11 +188,43 @@ class ReferenceCollectorTests(unittest.IsolatedAsyncioTestCase):
                         }
                     ],
                 }
-            ]
+            ],
+            [
+                {
+                    "ok": True,
+                    "course_id": "course-id",
+                    "attachment_id": "doc-att",
+                    "saved": {"path": "C:/output/课件.pdf", "bytes": 123},
+                }
+            ],
         )
-        self.assertIn("01 课程 / 02 视频", markdown)
+        self.assertIn("# 课程", markdown)
+        self.assertIn("## 01 第一章", markdown)
+        self.assertIn("### 01 视频章节", markdown)
+        self.assertIn("### 02 课件", markdown)
+        self.assertIn("#### 知识点（00:01-01:01）", markdown)
         self.assertIn("知识点（00:01-01:01）", markdown)
         self.assertIn("总结内容", markdown)
+        self.assertIn("[打开 课件.pdf](<../docs/课件.pdf>)", markdown)
+
+    def test_course_catalog_and_failure_markdown(self):
+        info = {
+            "course_id": "course-id",
+            "data": {"name": "课程|名称"},
+        }
+        filename = build_course_markdown_name(1, info)
+        catalog = render_course_catalog_markdown(
+            [(info, filename)],
+            [],
+        )
+        self.assertIn("课程\\|名称", catalog)
+        self.assertIn(f"[打开](<courses/{filename}>)", catalog)
+        self.assertIn(
+            "Invalid input",
+            render_course_failures_markdown(
+                [{"course_id": "bad", "error": "Invalid input"}]
+            ),
+        )
 
     async def test_collect_reference_materials_records_video_guide_errors(self):
         resource = SectionResource(
@@ -225,8 +290,19 @@ class ReferenceCollectorTests(unittest.IsolatedAsyncioTestCase):
                 )
 
             self.assertEqual(result["video_count"], 1)
-            summary_path = Path(result["output_dir"]) / "video_guides_all.json"
-            self.assertIn("guide failed", summary_path.read_text(encoding="utf-8"))
+            output_dir = Path(result["output_dir"])
+            course_files = list((output_dir / "courses").glob("*.md"))
+            self.assertEqual(len(course_files), 1)
+            self.assertIn("guide failed", course_files[0].read_text(encoding="utf-8"))
+            self.assertFalse((output_dir / "README.md").exists())
+            self.assertEqual(list(output_dir.rglob("*.json")), [])
+            self.assertFalse((output_dir / "video_guides").exists())
+            for name in (
+                "课程目录.md",
+                "课程详情读取失败.md",
+                "文档索引.md",
+            ):
+                self.assertTrue((output_dir / name).exists(), name)
 
 
 if __name__ == "__main__":

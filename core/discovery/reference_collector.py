@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-import json
 import logging
 import re
 from dataclasses import dataclass
@@ -46,6 +45,8 @@ class SectionResource:
     section_name: str
     attachment_id: str
     file_type: str
+    chapter_index: int | None = None
+    chapter_name: str = ""
     section_type: int | None = None
     guide_study_flag: bool = False
     total_time: int | None = None
@@ -111,27 +112,104 @@ def _format_time(milliseconds: int | None) -> str:
     return f"{minutes:02d}:{second:02d}"
 
 
-def render_video_guides_markdown(records: list[dict]) -> str:
+def _markdown_cell(value: object) -> str:
+    return normalize_resource_label(value).replace("|", "\\|")
+
+
+def build_course_markdown_name(course_index: int, course_info: dict) -> str:
+    data = course_info.get("data") or {}
+    course_id = str(course_info.get("course_id") or "unknown")
+    course_name = normalize_resource_label(
+        data.get("name") or course_info.get("title"),
+        fallback=course_id,
+    )
+    return (
+        f"{course_index:02d}_{safe_filename(course_name, max_length=64)}"
+        f"__{safe_filename(course_id, max_length=36)}.md"
+    )
+
+
+def render_course_markdown(
+    course_info: dict,
+    resources: list[SectionResource],
+    video_records: list[dict],
+    document_results: list[dict],
+) -> str:
+    data = course_info.get("data") or {}
+    course_id = str(course_info.get("course_id") or "")
+    course_name = normalize_resource_label(
+        data.get("name") or course_info.get("title"),
+        fallback=course_id,
+    )
     lines = [
-        "# 视频课程 AI 导学总结",
+        f"# {course_name}",
         "",
-        f"共 {len(records)} 个视频章节，"
-        f"{sum(1 for record in records if record.get('items'))} 个有导学内容。",
+        f"- 课程ID：{course_id}",
+        f"- 主题：{course_info.get('topic') or ''}",
+        f"- 讲师：{data.get('lecturer') or ''}",
+        f"- 章节资源：{len(resources)} 个",
         "",
     ]
-    for record in records:
+    if not resources:
+        lines.extend(["暂无可导出的章节资源。", ""])
+        return "\n".join(lines)
+
+    video_by_attachment = {
+        str(record.get("attachment_id")): record
+        for record in video_records
+        if record.get("course_id") == course_id
+    }
+    document_by_attachment = {
+        str(result.get("attachment_id")): result
+        for result in document_results
+        if result.get("course_id") == course_id
+    }
+    current_chapter: tuple[int | None, str] | None = None
+    for resource in resources:
+        chapter_key = (resource.chapter_index, resource.chapter_name)
+        if chapter_key != current_chapter:
+            current_chapter = chapter_key
+            chapter_label = resource.chapter_name or "课程章节"
+            prefix = (
+                f"{resource.chapter_index:02d} "
+                if resource.chapter_index is not None
+                else ""
+            )
+            lines.extend([f"## {prefix}{chapter_label}", ""])
+
         lines.extend(
             [
-                f"## {record['course_index']:02d} {record['course_name']} / "
-                f"{record['section_index']:02d} {record['section_name']}",
+                f"### {resource.section_index:02d} {resource.section_name}",
                 "",
-                f"- 主题：{record.get('topic') or ''}",
-                f"- 附件ID：{record.get('attachment_id') or ''}",
-                f"- 接口状态：{record.get('status')}",
+                f"- 文件类型：{resource.file_type or '未知'}",
+                f"- 附件ID：{resource.attachment_id}",
+                f"- 章节类型：{resource.section_type}",
                 "",
             ]
         )
-        items = record.get("items") or []
+
+        document = document_by_attachment.get(str(resource.attachment_id))
+        if document:
+            if document.get("ok"):
+                saved = document.get("saved") or {}
+                filename = Path(saved.get("path") or "").name
+                lines.extend(
+                    [
+                        f"- 文档：[打开 {filename}](<../docs/{filename}>)",
+                        f"- 文件大小：{saved.get('bytes') or 0} 字节",
+                        "",
+                    ]
+                )
+            else:
+                lines.extend([f"> 文档下载失败：{document.get('error') or ''}", ""])
+
+        video = video_by_attachment.get(str(resource.attachment_id))
+        if not video:
+            continue
+        lines.extend([f"- AI导学接口状态：{video.get('status')}", ""])
+        if video.get("error"):
+            lines.extend([f"> AI导学获取失败：{video['error']}", ""])
+        items = video.get("items") or []
         if not items:
             lines.extend(["暂无导学总结内容。", ""])
             continue
@@ -142,7 +220,53 @@ def render_video_guides_markdown(records: list[dict]) -> str:
                     f"{title}（{_format_time(item.get('beginTime'))}-"
                     f"{_format_time(item.get('endTime'))}）"
                 )
-            lines.extend([f"### {title}", "", (item.get("content") or "").strip(), ""])
+            lines.extend(
+                [f"#### {title}", "", (item.get("content") or "").strip(), ""]
+            )
+    return "\n".join(lines)
+
+
+def render_course_catalog_markdown(
+    course_files: list[tuple[dict, str]],
+    resources: list[SectionResource],
+) -> str:
+    resource_counts: dict[str, int] = {}
+    for resource in resources:
+        resource_counts[resource.course_id] = (
+            resource_counts.get(resource.course_id, 0) + 1
+        )
+    lines = [
+        "# 课程目录",
+        "",
+        f"共 {len(course_files)} 门可读取课程。",
+        "",
+        "| 序号 | 课程名称 | 课程ID | 章节资源 | 课程文件 |",
+        "| ---: | --- | --- | ---: | --- |",
+    ]
+    for index, (info, filename) in enumerate(course_files, start=1):
+        data = info.get("data") or {}
+        course_id = str(info.get("course_id") or "")
+        course_name = data.get("name") or info.get("title") or course_id
+        lines.append(
+            f"| {index} | {_markdown_cell(course_name)} | {_markdown_cell(course_id)} | "
+            f"{resource_counts.get(course_id, 0)} | [打开](<courses/{filename}>) |"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def render_course_failures_markdown(failures: list[dict]) -> str:
+    lines = ["# 课程详情读取失败", "", f"共 {len(failures)} 门课程无法读取。", ""]
+    for index, failure in enumerate(failures, start=1):
+        lines.extend(
+            [
+                f"## {index:02d} {failure.get('title') or failure.get('course_id')}",
+                "",
+                f"- 课程ID：{failure.get('course_id') or ''}",
+                f"- 主题：{failure.get('topic') or ''}",
+                f"- 错误：{failure.get('error') or ''}",
+                "",
+            ]
+        )
     return "\n".join(lines)
 
 
@@ -155,7 +279,10 @@ def collect_section_resources(course_infos: list[dict]) -> list[SectionResource]
             fallback=info["course_id"],
         )
         section_index = 0
-        for chapter in course_data.get("courseChapters") or []:
+        for chapter_index, chapter in enumerate(
+            course_data.get("courseChapters") or [], start=1
+        ):
+            chapter_name = normalize_resource_label(chapter.get("name"))
             for section in chapter.get("courseChapterSections") or []:
                 attachment_id = section.get("attachmentId") or section.get("resourceId")
                 if not attachment_id:
@@ -173,6 +300,8 @@ def collect_section_resources(course_infos: list[dict]) -> list[SectionResource]
                         ),
                         attachment_id=attachment_id,
                         file_type=str(section.get("fileType") or "").lower(),
+                        chapter_index=chapter_index,
+                        chapter_name=chapter_name,
                         section_type=section.get("sectionType"),
                         guide_study_flag=bool(section.get("guideStudyFlag")),
                         total_time=section.get("totalTime"),
@@ -330,6 +459,7 @@ async def _download_document_resource(
     return {
         "ok": True,
         "course_index": resource.course_index,
+        "course_id": resource.course_id,
         "section_index": resource.section_index,
         "course_name": resource.course_name,
         "section_name": resource.section_name,
@@ -371,46 +501,15 @@ async def _fetch_video_guide(page, resource: SectionResource, *, auth_header: st
     return record
 
 
-def _write_json(path: Path, payload: object) -> None:
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
 def _write_document_index(output_dir: Path, docs_dir: Path) -> None:
     files = sorted(path for path in docs_dir.iterdir() if path.is_file())
     lines = ["# 文档索引", "", f"共 {len(files)} 个文档文件。", ""]
     for path in files:
-        lines.append(f"- {path.name} ({path.stat().st_size / 1024 / 1024:.1f} MB)")
+        lines.append(
+            f"- [{path.name}](<docs/{path.name}>) "
+            f"({path.stat().st_size / 1024 / 1024:.1f} MB)"
+        )
     (output_dir / "文档索引.md").write_text("\n".join(lines), encoding="utf-8")
-
-
-def _write_readme(
-    output_dir: Path,
-    *,
-    document_count: int,
-    video_count: int,
-    video_with_items: int,
-    course_failed_count: int,
-) -> None:
-    lines = [
-        "# 知学云参考资料整理",
-        "",
-        "本目录由课程自动化工具生成。流程只读取知学云课程资料，不提交考试、不修改答案。",
-        "",
-        "## 目录",
-        "",
-        f"- docs/：PDF/文档预览资料，共 {document_count} 个。",
-        f"- video_guides/：视频章节 AI 导学 JSON，共 {video_count} 个。",
-        f"- 视频课程AI导学总结.md：视频导学总结合并版，{video_with_items} 个视频有内容。",
-        "- 文档索引.md：文档文件清单。",
-        "- course_infos.json / sections_meta.json：课程与章节元数据。",
-        f"- course_info_failures.json：无法读取的课程，共 {course_failed_count} 门。",
-        "",
-        "## 说明",
-        "",
-        "- MP4 视频本体会被跳过，只保存平台提供的 AI 导学/总结文本。",
-        "- DOCX/PPTX 等 Office 资源按平台预览结果保存，通常为 PDF 预览版。",
-    ]
-    (output_dir / "README.md").write_text("\n".join(lines), encoding="utf-8")
 
 
 async def collect_reference_materials(
@@ -429,9 +528,9 @@ async def collect_reference_materials(
 
     output_dir = output_root / f"知学云资料_{datetime.now():%Y%m%d_%H%M%S}"
     docs_dir = output_dir / "docs"
-    video_guides_dir = output_dir / "video_guides"
+    courses_dir = output_dir / "courses"
     docs_dir.mkdir(parents=True, exist_ok=True)
-    video_guides_dir.mkdir(parents=True, exist_ok=True)
+    courses_dir.mkdir(parents=True, exist_ok=True)
 
     all_course_infos: list[dict] = []
     course_info_failures: list[dict] = []
@@ -495,6 +594,7 @@ async def collect_reference_materials(
                         {
                             "ok": False,
                             "course_index": resource.course_index,
+                            "course_id": resource.course_id,
                             "section_index": resource.section_index,
                             "course_name": resource.course_name,
                             "section_name": resource.section_name,
@@ -531,34 +631,36 @@ async def collect_reference_materials(
                         "error": str(exc),
                     }
                 video_records.append(record)
-                _write_json(
-                    video_guides_dir / f"{build_resource_output_name(resource)}.json",
-                    record,
-                )
         await page.close()
 
-    _write_json(output_dir / "course_infos.json", all_course_infos)
-    _write_json(output_dir / "course_info_failures.json", course_info_failures)
-    _write_json(
-        output_dir / "sections_meta.json",
-        [resource.__dict__ for resource in all_resources],
+    course_files: list[tuple[dict, str]] = []
+    for course_index, course_info in enumerate(all_course_infos, start=1):
+        course_id = str(course_info.get("course_id") or "")
+        filename = build_course_markdown_name(course_index, course_info)
+        course_files.append((course_info, filename))
+        course_resources = [
+            resource for resource in all_resources if resource.course_id == course_id
+        ]
+        (courses_dir / filename).write_text(
+            render_course_markdown(
+                course_info,
+                course_resources,
+                video_records,
+                document_results,
+            ),
+            encoding="utf-8",
+        )
+    (output_dir / "课程目录.md").write_text(
+        render_course_catalog_markdown(course_files, all_resources),
+        encoding="utf-8",
     )
-    _write_json(output_dir / "document_downloads.json", document_results)
-    _write_json(output_dir / "video_guides_all.json", video_records)
-    (output_dir / "视频课程AI导学总结.md").write_text(
-        render_video_guides_markdown(video_records),
+    (output_dir / "课程详情读取失败.md").write_text(
+        render_course_failures_markdown(course_info_failures),
         encoding="utf-8",
     )
     _write_document_index(output_dir, docs_dir)
     document_count = sum(1 for result in document_results if result.get("ok"))
     video_with_items = sum(1 for record in video_records if record.get("items"))
-    _write_readme(
-        output_dir,
-        document_count=document_count,
-        video_count=len(video_records),
-        video_with_items=video_with_items,
-        course_failed_count=len(course_info_failures),
-    )
 
     return {
         "output_dir": str(output_dir),
