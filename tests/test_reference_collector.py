@@ -6,8 +6,11 @@ from unittest.mock import AsyncMock, patch
 
 from core.discovery.reference_collector import (
     SectionResource,
+    SubjectCourse,
+    _fetch_course_infos,
     build_resource_output_name,
     collect_reference_materials,
+    collect_section_resources,
     decode_preview_bytes,
     full_preview_url,
     is_trusted_preview_host,
@@ -18,6 +21,37 @@ from core.discovery.subject_parse import extract_subject_id
 
 
 class ReferenceCollectorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_fetch_course_infos_skips_invalid_course_and_continues(self):
+        courses = [
+            SubjectCourse(course_id="invalid-course", title="已下架课程"),
+            SubjectCourse(course_id="valid-course", title="有效课程"),
+        ]
+        failures = []
+        statuses = []
+
+        with patch(
+            "core.discovery.reference_collector.fetch_json",
+            new=AsyncMock(
+                side_effect=[
+                    RuntimeError("请求失败 422: Invalid input."),
+                    {"name": "有效课程", "courseChapters": []},
+                ]
+            ),
+        ):
+            infos = await _fetch_course_infos(
+                object(),
+                courses,
+                subject_id="subject-id",
+                auth_header="Bearer__token",
+                status_callback=statuses.append,
+                failure_results=failures,
+            )
+
+        self.assertEqual([item["course_id"] for item in infos], ["valid-course"])
+        self.assertEqual(failures[0]["course_id"], "invalid-course")
+        self.assertIn("Invalid input", failures[0]["error"])
+        self.assertTrue(any("已跳过" in status for status in statuses))
+
     def test_extract_subject_id_from_subject_url(self):
         self.assertEqual(
             extract_subject_id(
@@ -53,6 +87,32 @@ class ReferenceCollectorTests(unittest.IsolatedAsyncioTestCase):
             build_resource_output_name(resource),
             "01_课程__02_课件__attachment-123",
         )
+
+    def test_resource_labels_normalize_nonbreaking_whitespace(self):
+        resources = collect_section_resources(
+            [
+                {
+                    "course_id": "course-id",
+                    "data": {
+                        "name": "课程\u00a0名称",
+                        "courseChapters": [
+                            {
+                                "courseChapterSections": [
+                                    {
+                                        "name": "章节\u00a0标题",
+                                        "attachmentId": "attachment-id",
+                                        "fileType": "mp4",
+                                    }
+                                ]
+                            }
+                        ],
+                    },
+                }
+            ]
+        )
+
+        self.assertEqual(resources[0].course_name, "课程 名称")
+        self.assertEqual(resources[0].section_name, "章节 标题")
 
     def test_full_preview_url_allows_trusted_preview_hosts(self):
         self.assertTrue(is_trusted_preview_host("zhixueyun.com"))

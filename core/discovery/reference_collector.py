@@ -57,11 +57,19 @@ def safe_filename(value: str, *, max_length: int = 120) -> str:
     return (cleaned or "untitled")[:max_length]
 
 
+def normalize_resource_label(value: object, *, fallback: str = "") -> str:
+    """Normalize platform labels before terminal display and filename generation."""
+    normalized = re.sub(r"\s+", " ", str(value or fallback)).strip()
+    return normalized or fallback
+
+
 def build_resource_output_name(resource: SectionResource) -> str:
     attachment_suffix = safe_filename(resource.attachment_id, max_length=36)
     return (
-        f"{resource.course_index:02d}_{safe_filename(resource.course_name)}"
-        f"__{resource.section_index:02d}_{safe_filename(resource.section_name)}"
+        f"{resource.course_index:02d}_"
+        f"{safe_filename(resource.course_name, max_length=48)}"
+        f"__{resource.section_index:02d}_"
+        f"{safe_filename(resource.section_name, max_length=48)}"
         f"__{attachment_suffix}"
     )
 
@@ -142,7 +150,10 @@ def collect_section_resources(course_infos: list[dict]) -> list[SectionResource]
     resources: list[SectionResource] = []
     for course_index, info in enumerate(course_infos, start=1):
         course_data = info.get("data") or {}
-        course_name = course_data.get("name") or info.get("title") or info["course_id"]
+        course_name = normalize_resource_label(
+            course_data.get("name") or info.get("title"),
+            fallback=info["course_id"],
+        )
         section_index = 0
         for chapter in course_data.get("courseChapters") or []:
             for section in chapter.get("courseChapterSections") or []:
@@ -155,9 +166,11 @@ def collect_section_resources(course_infos: list[dict]) -> list[SectionResource]
                         course_index=course_index,
                         course_id=info["course_id"],
                         course_name=course_name,
-                        topic=info.get("topic") or "",
+                        topic=normalize_resource_label(info.get("topic")),
                         section_index=section_index,
-                        section_name=section.get("name") or chapter.get("name") or "",
+                        section_name=normalize_resource_label(
+                            section.get("name") or chapter.get("name")
+                        ),
                         attachment_id=attachment_id,
                         file_type=str(section.get("fileType") or "").lower(),
                         section_type=section.get("sectionType"),
@@ -199,12 +212,16 @@ async def _collect_courses_from_subject_page(page, subject_url: str) -> list[Sub
     courses = await page.evaluate(
         """() => Array.from(document.querySelectorAll('[id*="studyBtn-"]'))
             .map((element) => {
-                const match = String(element.id || "").match(/studyBtn-([0-9a-f-]{36})/i);
+                const courseId = String(
+                    element.getAttribute("data-resource-id") || ""
+                ).trim();
                 const text = (element.innerText || "")
                     .replace(/课程|\\[必修\\]|开始学习/g, " ")
                     .replace(/\\s+/g, " ")
                     .trim();
-                return match ? {course_id: match[1], title: text, topic: ""} : null;
+                return /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(courseId)
+                    ? {course_id: courseId, title: text, topic: ""}
+                    : null;
             })
             .filter(Boolean)"""
     )
@@ -227,6 +244,7 @@ async def _fetch_course_infos(
     subject_id: str,
     auth_header: str,
     status_callback=None,
+    failure_results: list[dict] | None = None,
 ) -> list[dict]:
     headers = {
         "Authorization": auth_header,
@@ -237,12 +255,34 @@ async def _fetch_course_infos(
     for index, course in enumerate(courses, start=1):
         if status_callback:
             status_callback(f"正在读取课程详情 {index}/{len(courses)}：{course.title}")
-        data = await fetch_json(
-            page,
-            f"{COURSE_INFO_API.format(course_id=course.course_id)}"
-            f"?type=6&sourceId={subject_id}",
-            headers=headers,
-        )
+        try:
+            data = await fetch_json(
+                page,
+                f"{COURSE_INFO_API.format(course_id=course.course_id)}"
+                f"?type=6&sourceId={subject_id}",
+                headers=headers,
+            )
+        except Exception as exc:
+            failure = {
+                "course_id": course.course_id,
+                "title": course.title,
+                "topic": course.topic,
+                "error": str(exc),
+            }
+            if failure_results is not None:
+                failure_results.append(failure)
+            logging.warning(
+                "课程详情读取失败，跳过 courseId=%s subjectId=%s: %s",
+                course.course_id,
+                subject_id,
+                exc,
+            )
+            if status_callback:
+                status_callback(
+                    f"课程详情读取失败，已跳过 {index}/{len(courses)}："
+                    f"{course.title}（{exc}）"
+                )
+            continue
         infos.append(
             {
                 "course_id": course.course_id,
@@ -349,6 +389,7 @@ def _write_readme(
     document_count: int,
     video_count: int,
     video_with_items: int,
+    course_failed_count: int,
 ) -> None:
     lines = [
         "# 知学云参考资料整理",
@@ -362,6 +403,7 @@ def _write_readme(
         f"- 视频课程AI导学总结.md：视频导学总结合并版，{video_with_items} 个视频有内容。",
         "- 文档索引.md：文档文件清单。",
         "- course_infos.json / sections_meta.json：课程与章节元数据。",
+        f"- course_info_failures.json：无法读取的课程，共 {course_failed_count} 门。",
         "",
         "## 说明",
         "",
@@ -392,6 +434,7 @@ async def collect_reference_materials(
     video_guides_dir.mkdir(parents=True, exist_ok=True)
 
     all_course_infos: list[dict] = []
+    course_info_failures: list[dict] = []
     all_resources: list[SectionResource] = []
     document_results: list[dict] = []
     video_records: list[dict] = []
@@ -412,6 +455,7 @@ async def collect_reference_materials(
                     subject_id=subject_id,
                     auth_header=auth_header,
                     status_callback=status_callback,
+                    failure_results=course_info_failures,
                 )
             except Exception as exc:
                 if status_callback:
@@ -494,6 +538,7 @@ async def collect_reference_materials(
         await page.close()
 
     _write_json(output_dir / "course_infos.json", all_course_infos)
+    _write_json(output_dir / "course_info_failures.json", course_info_failures)
     _write_json(
         output_dir / "sections_meta.json",
         [resource.__dict__ for resource in all_resources],
@@ -512,11 +557,13 @@ async def collect_reference_materials(
         document_count=document_count,
         video_count=len(video_records),
         video_with_items=video_with_items,
+        course_failed_count=len(course_info_failures),
     )
 
     return {
         "output_dir": str(output_dir),
         "course_count": len(all_course_infos),
+        "course_failed_count": len(course_info_failures),
         "section_count": len(all_resources),
         "document_count": document_count,
         "document_failed_count": sum(

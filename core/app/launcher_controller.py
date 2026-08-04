@@ -371,6 +371,7 @@ def handle_reference_collection(ui) -> None:
         [
             ("输出目录", result["output_dir"]),
             ("课程数量", str(result["course_count"])),
+            ("课程详情跳过", str(result.get("course_failed_count", 0))),
             ("章节资源", str(result["section_count"])),
             ("文档保存成功", str(result["document_count"])),
             ("文档保存失败", str(result["document_failed_count"])),
