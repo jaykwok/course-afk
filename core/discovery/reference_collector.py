@@ -26,6 +26,8 @@ COURSE_INFO_API = "https://kc.zhixueyun.com/api/v1/course-study/course-front/inf
 FILE_PREVIEW_API = "https://kc.zhixueyun.com/api/v1/tools-center-v2/file-cloud/preview"
 DOCUMENT_FILE_TYPES = {"pdf", "doc", "docx", "ppt", "pptx"}
 TRUSTED_PREVIEW_HOST_SUFFIXES = ("zhixueyun.com", "mylearning.cn")
+DOCUMENT_DOWNLOAD_ATTEMPTS = 3
+DOCUMENT_DOWNLOAD_TIMEOUT_MILLISECONDS = 120_000
 
 
 @dataclass(frozen=True)
@@ -47,6 +49,7 @@ class SectionResource:
     file_type: str
     chapter_index: int | None = None
     chapter_name: str = ""
+    resource_kind: str = "section"
     section_type: int | None = None
     guide_study_flag: bool = False
     total_time: int | None = None
@@ -62,6 +65,17 @@ def normalize_resource_label(value: object, *, fallback: str = "") -> str:
     """Normalize platform labels before terminal display and filename generation."""
     normalized = re.sub(r"\s+", " ", str(value or fallback)).strip()
     return normalized or fallback
+
+
+def sanitize_error_text(value: object) -> str:
+    text = str(value or "")
+    text = re.sub(r"Bearer__[A-Za-z0-9._~-]+", "Bearer__<redacted>", text)
+    return re.sub(
+        r"([?&]auth_key=)[^&\s]+",
+        r"\1<redacted>",
+        text,
+        flags=re.IGNORECASE,
+    )
 
 
 def build_resource_output_name(resource: SectionResource) -> str:
@@ -183,7 +197,8 @@ def render_course_markdown(
                 "",
                 f"- 文件类型：{resource.file_type or '未知'}",
                 f"- 附件ID：{resource.attachment_id}",
-                f"- 章节类型：{resource.section_type}",
+                f"- 资源来源：{'课程附件' if resource.resource_kind == 'course_attachment' else '课程章节'}",
+                f"- 章节类型：{resource.section_type if resource.section_type is not None else '无'}",
                 "",
             ]
         )
@@ -201,14 +216,16 @@ def render_course_markdown(
                     ]
                 )
             else:
-                lines.extend([f"> 文档下载失败：{document.get('error') or ''}", ""])
+                lines.extend(
+                    [f"> 文档下载失败：{sanitize_error_text(document.get('error'))}", ""]
+                )
 
         video = video_by_attachment.get(str(resource.attachment_id))
         if not video:
             continue
         lines.extend([f"- AI导学接口状态：{video.get('status')}", ""])
         if video.get("error"):
-            lines.extend([f"> AI导学获取失败：{video['error']}", ""])
+            lines.extend([f"> AI导学获取失败：{sanitize_error_text(video['error'])}", ""])
         items = video.get("items") or []
         if not items:
             lines.extend(["暂无导学总结内容。", ""])
@@ -263,7 +280,7 @@ def render_course_failures_markdown(failures: list[dict]) -> str:
                 "",
                 f"- 课程ID：{failure.get('course_id') or ''}",
                 f"- 主题：{failure.get('topic') or ''}",
-                f"- 错误：{failure.get('error') or ''}",
+                f"- 错误：{sanitize_error_text(failure.get('error'))}",
                 "",
             ]
         )
@@ -279,6 +296,7 @@ def collect_section_resources(course_infos: list[dict]) -> list[SectionResource]
             fallback=info["course_id"],
         )
         section_index = 0
+        seen_attachment_ids: set[str] = set()
         for chapter_index, chapter in enumerate(
             course_data.get("courseChapters") or [], start=1
         ):
@@ -287,6 +305,8 @@ def collect_section_resources(course_infos: list[dict]) -> list[SectionResource]
                 attachment_id = section.get("attachmentId") or section.get("resourceId")
                 if not attachment_id:
                     continue
+                attachment_id = str(attachment_id)
+                seen_attachment_ids.add(attachment_id)
                 section_index += 1
                 resources.append(
                     SectionResource(
@@ -307,6 +327,34 @@ def collect_section_resources(course_infos: list[dict]) -> list[SectionResource]
                         total_time=section.get("totalTime"),
                     )
                 )
+        for attachment in course_data.get("courseAttachments") or []:
+            if not isinstance(attachment, dict):
+                continue
+            attachment_id = str(
+                attachment.get("attachmentId") or attachment.get("id") or ""
+            ).strip()
+            if not attachment_id or attachment_id in seen_attachment_ids:
+                continue
+            seen_attachment_ids.add(attachment_id)
+            attachment_name = normalize_resource_label(
+                attachment.get("name"), fallback=attachment_id
+            )
+            file_type = Path(attachment_name).suffix.lower().lstrip(".")
+            section_index += 1
+            resources.append(
+                SectionResource(
+                    course_index=course_index,
+                    course_id=info["course_id"],
+                    course_name=course_name,
+                    topic=normalize_resource_label(info.get("topic")),
+                    section_index=section_index,
+                    section_name=attachment_name,
+                    attachment_id=attachment_id,
+                    file_type=file_type,
+                    chapter_name="课程附件",
+                    resource_kind="course_attachment",
+                )
+            )
     return resources
 
 
@@ -392,11 +440,12 @@ async def _fetch_course_infos(
                 headers=headers,
             )
         except Exception as exc:
+            error_text = sanitize_error_text(exc)
             failure = {
                 "course_id": course.course_id,
                 "title": course.title,
                 "topic": course.topic,
-                "error": str(exc),
+                "error": error_text,
             }
             if failure_results is not None:
                 failure_results.append(failure)
@@ -404,12 +453,12 @@ async def _fetch_course_infos(
                 "课程详情读取失败，跳过 courseId=%s subjectId=%s: %s",
                 course.course_id,
                 subject_id,
-                exc,
+                error_text,
             )
             if status_callback:
                 status_callback(
                     f"课程详情读取失败，已跳过 {index}/{len(courses)}："
-                    f"{course.title}（{exc}）"
+                    f"{course.title}（{error_text}）"
                 )
             continue
         infos.append(
@@ -447,6 +496,7 @@ async def _download_document_resource(
             "Version": "12.1.1",
             "Accept": "*/*",
         },
+        timeout=DOCUMENT_DOWNLOAD_TIMEOUT_MILLISECONDS,
     )
     if not response.ok:
         raise RuntimeError(f"下载失败 {response.status}: {preview['url']}")
@@ -569,6 +619,7 @@ async def collect_reference_materials(
                 resource
                 for resource in resources
                 if resource.file_type in DOCUMENT_FILE_TYPES
+                or resource.resource_kind == "course_attachment"
             ]
             video_resources = [
                 resource for resource in resources if resource.file_type == "mp4"
@@ -580,28 +631,40 @@ async def collect_reference_materials(
                         f"正在保存文档 {index}/{len(document_resources)}："
                         f"{resource.course_name} / {resource.section_name}"
                     )
-                try:
-                    document_results.append(
-                        await _download_document_resource(
+                result = None
+                last_error = ""
+                for attempt in range(1, DOCUMENT_DOWNLOAD_ATTEMPTS + 1):
+                    try:
+                        result = await _download_document_resource(
                             page,
                             resource,
                             docs_dir=docs_dir,
                             auth_header=auth_header,
                         )
-                    )
-                except Exception as exc:
-                    document_results.append(
-                        {
-                            "ok": False,
-                            "course_index": resource.course_index,
-                            "course_id": resource.course_id,
-                            "section_index": resource.section_index,
-                            "course_name": resource.course_name,
-                            "section_name": resource.section_name,
-                            "attachment_id": resource.attachment_id,
-                            "error": str(exc),
-                        }
-                    )
+                        break
+                    except Exception as exc:
+                        last_error = sanitize_error_text(exc)
+                        if attempt < DOCUMENT_DOWNLOAD_ATTEMPTS:
+                            if status_callback:
+                                status_callback(
+                                    f"文档下载超时或失败，准备重试 "
+                                    f"{attempt + 1}/{DOCUMENT_DOWNLOAD_ATTEMPTS}："
+                                    f"{resource.course_name} / {resource.section_name}"
+                                )
+                            await page.wait_for_timeout(1000)
+                document_results.append(
+                    result
+                    or {
+                        "ok": False,
+                        "course_index": resource.course_index,
+                        "course_id": resource.course_id,
+                        "section_index": resource.section_index,
+                        "course_name": resource.course_name,
+                        "section_name": resource.section_name,
+                        "attachment_id": resource.attachment_id,
+                        "error": last_error,
+                    }
+                )
 
             for index, resource in enumerate(video_resources, start=1):
                 if status_callback:
@@ -628,7 +691,7 @@ async def collect_reference_materials(
                         "total_time": resource.total_time,
                         "status": None,
                         "items": [],
-                        "error": str(exc),
+                        "error": sanitize_error_text(exc),
                     }
                 video_records.append(record)
         await page.close()

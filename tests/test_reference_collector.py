@@ -18,6 +18,7 @@ from core.discovery.reference_collector import (
     render_course_catalog_markdown,
     render_course_failures_markdown,
     render_course_markdown,
+    sanitize_error_text,
     safe_filename,
 )
 from core.discovery.subject_parse import extract_subject_id
@@ -74,6 +75,18 @@ class ReferenceCollectorTests(unittest.IsolatedAsyncioTestCase):
     def test_safe_filename_removes_windows_forbidden_chars(self):
         self.assertEqual(safe_filename('A:B/C*D?"E<>|'), "A_B_C_D_E_")
 
+    def test_sanitize_error_text_redacts_authorization_and_signed_url(self):
+        error = (
+            "Authorization: Bearer__secret-token "
+            "https://cdn.test/file?auth_key=timestamp-signature&x=1"
+        )
+        sanitized = sanitize_error_text(error)
+
+        self.assertNotIn("secret-token", sanitized)
+        self.assertNotIn("timestamp-signature", sanitized)
+        self.assertIn("Bearer__<redacted>", sanitized)
+        self.assertIn("auth_key=<redacted>", sanitized)
+
     def test_resource_output_name_includes_attachment_id_to_avoid_collisions(self):
         resource = SectionResource(
             course_index=1,
@@ -117,6 +130,32 @@ class ReferenceCollectorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resources[0].course_name, "课程 名称")
         self.assertEqual(resources[0].section_name, "章节 标题")
         self.assertEqual(resources[0].chapter_index, 1)
+
+    def test_collect_section_resources_includes_course_attachments(self):
+        resources = collect_section_resources(
+            [
+                {
+                    "course_id": "course-id",
+                    "data": {
+                        "name": "课程",
+                        "courseChapters": [],
+                        "courseAttachments": [
+                            {
+                                "attachmentId": "attachment-id",
+                                "attachmentType": "1",
+                                "name": "课程讲义.pptx",
+                            }
+                        ],
+                    },
+                }
+            ]
+        )
+
+        self.assertEqual(len(resources), 1)
+        self.assertEqual(resources[0].attachment_id, "attachment-id")
+        self.assertEqual(resources[0].file_type, "pptx")
+        self.assertEqual(resources[0].chapter_name, "课程附件")
+        self.assertEqual(resources[0].resource_kind, "course_attachment")
 
     def test_full_preview_url_allows_trusted_preview_hosts(self):
         self.assertTrue(is_trusted_preview_host("zhixueyun.com"))
