@@ -1,0 +1,3 @@
+# Optional dependencies for menu 7 PDF -> Markdown conversion.
+# Install the appropriate PaddlePaddle CPU/GPU backend first; see README.md.
+paddleocr[doc-parser]==3.7.0

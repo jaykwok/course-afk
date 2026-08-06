@@ -723,6 +723,13 @@ async def collect_reference_materials(
     )
     _write_document_index(output_dir, docs_dir)
     document_count = sum(1 for result in document_results if result.get("ok"))
+    pdf_count = sum(
+        1
+        for result in document_results
+        if result.get("ok")
+        and Path((result.get("saved") or {}).get("path") or "").suffix.lower()
+        == ".pdf"
+    )
     video_with_items = sum(1 for record in video_records if record.get("items"))
 
     return {
@@ -731,6 +738,7 @@ async def collect_reference_materials(
         "course_failed_count": len(course_info_failures),
         "section_count": len(all_resources),
         "document_count": document_count,
+        "pdf_count": pdf_count,
         "document_failed_count": sum(
             1 for result in document_results if not result.get("ok")
         ),

@@ -17,6 +17,36 @@ uv run launcher.py
 python launcher.py
 ```
 
+### 可选：PDF 转 Markdown（PP-OCRv6）
+
+菜单 7 下载完课程资料后，仅在检测到 PDF 时询问是否转换。选择“是”会使用
+PP-StructureV3 进行版面分析、PP-OCRv6_medium 进行文字识别，每个 PDF 输出一个
+适合 LLM/RAG 阅读的 Markdown；PPTX、DOCX、XLSX 等不会进入 OCR 流程。
+成功转换后会删除对应 PDF，并把课程 Markdown 与 `文档索引.md` 中的 PDF 链接
+替换为 `.md` 链接；转换失败的 PDF 会保留，避免资料丢失。
+
+该功能依赖 PaddlePaddle，目前请使用 Python 3.9-3.13。OCR 依赖是可选的，不放入
+基础 `requirements.txt`。Windows PowerShell 一键安装：
+
+```powershell
+# 自动检测 NVIDIA GPU；无 GPU 时安装 CPU 版
+.\tools\setup_ocr.ps1
+
+# 也可明确指定
+.\tools\setup_ocr.ps1 -Backend Cpu
+.\tools\setup_ocr.ps1 -Backend Gpu -Cuda cu130
+
+# 只检测官方是否提供该版本，不执行安装
+.\tools\setup_ocr.ps1 -Backend Gpu -Cuda cu130 -CheckOnly
+```
+
+脚本会查询 PaddlePaddle 官方软件源，报告当前 Windows/Python 环境最新可用的 CUDA
+wheel，并自动选择不高于本机驱动能力的最新版本。明确指定 `-Cuda cuXYZ` 时也会先
+验证；切换 CUDA 版本或 CPU/GPU 后端时会替换原后端。随后脚本安装
+适合机器的 PaddlePaddle 3.3.0 后端，再安装
+`requirements-ocr.txt` 中的 PaddleOCR 3.7 文档解析组件。可通过
+`COURSE_AFK_OCR_DEVICE=cpu` 或 `gpu:0` 覆盖运行设备；默认自动选择。
+
 ## 目录结构
 
 ```text

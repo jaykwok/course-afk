@@ -674,6 +674,142 @@ class LauncherControllerTests(unittest.TestCase):
         self.assertIn(("有AI导学内容的视频", "1"), ui.summary[1])
         self.assertIn("pause", ui.messages)
 
+    def test_handle_reference_collection_can_convert_downloaded_pdfs(self):
+        from core.app.launcher_controller import handle_reference_collection
+
+        class FakeUi:
+            def __init__(self):
+                self.messages = []
+                self.summary = None
+
+            def prompt_multiline_input(self, _prompts, **_kwargs):
+                return (
+                    "https://kc.zhixueyun.com/#/study/subject/detail/"
+                    "12345678-1234-1234-1234-123456789abc"
+                )
+
+            def prompt_yes_no(self, message, default="N"):
+                self.messages.append((message, default))
+                return True
+
+            def begin_operation(self, title, message):
+                self.messages.append((title, message))
+
+            def show_info(self, message):
+                self.messages.append(message)
+
+            def show_warning(self, message):
+                self.messages.append(message)
+
+            def show_summary(self, title, rows):
+                self.summary = (title, rows)
+
+            def pause(self):
+                self.messages.append("pause")
+
+        ui = FakeUi()
+        collection_result = {
+            "output_dir": "D:/course-afk/data/references/run",
+            "course_count": 2,
+            "section_count": 3,
+            "document_count": 2,
+            "pdf_count": 2,
+            "document_failed_count": 0,
+            "video_count": 1,
+            "video_with_items": 1,
+        }
+        ocr_result = {
+            "ocr_output_dir": "D:/course-afk/data/references/run/ocr",
+            "pdf_count": 2,
+            "ocr_converted_count": 2,
+            "ocr_failed_count": 0,
+            "ocr_reused_count": 0,
+            "ocr_linked_count": 2,
+            "pdf_deleted_count": 2,
+        }
+
+        with (
+            patch(
+                "core.app.workflows.run_reference_collection_workflow",
+                new=unittest.mock.AsyncMock(return_value=collection_result),
+            ),
+            patch(
+                "core.app.workflows.run_pdf_markdown_workflow",
+                new=unittest.mock.AsyncMock(return_value=ocr_result),
+            ) as mock_ocr,
+        ):
+            handle_reference_collection(ui)
+
+        mock_ocr.assert_awaited_once_with(
+            collection_result["output_dir"],
+            status_callback=ui.show_info,
+        )
+        self.assertIn(
+            ("已下载 2 个 PDF，是否使用 PP-OCRv6 转换为 Markdown？", "N"),
+            ui.messages,
+        )
+        self.assertIn(("PDF 转 Markdown", "已完成"), ui.summary[1])
+        self.assertIn(("PDF 新转换", "2"), ui.summary[1])
+        self.assertIn(("已删除 PDF 源文件", "2"), ui.summary[1])
+
+    def test_handle_reference_collection_can_skip_pdf_conversion(self):
+        from core.app.launcher_controller import handle_reference_collection
+
+        class FakeUi:
+            def __init__(self):
+                self.messages = []
+                self.summary = None
+
+            def prompt_multiline_input(self, _prompts, **_kwargs):
+                return (
+                    "https://kc.zhixueyun.com/#/study/subject/detail/"
+                    "12345678-1234-1234-1234-123456789abc"
+                )
+
+            def prompt_yes_no(self, message, default="N"):
+                self.messages.append((message, default))
+                return False
+
+            def begin_operation(self, title, message):
+                self.messages.append((title, message))
+
+            def show_info(self, message):
+                self.messages.append(message)
+
+            def show_summary(self, title, rows):
+                self.summary = (title, rows)
+
+            def pause(self):
+                self.messages.append("pause")
+
+        ui = FakeUi()
+        collection_result = {
+            "output_dir": "D:/course-afk/data/references/run",
+            "course_count": 1,
+            "section_count": 1,
+            "document_count": 1,
+            "pdf_count": 1,
+            "document_failed_count": 0,
+            "video_count": 0,
+            "video_with_items": 0,
+        }
+
+        with (
+            patch(
+                "core.app.workflows.run_reference_collection_workflow",
+                new=unittest.mock.AsyncMock(return_value=collection_result),
+            ),
+            patch(
+                "core.app.workflows.run_pdf_markdown_workflow",
+                new=unittest.mock.AsyncMock(),
+            ) as mock_ocr,
+        ):
+            handle_reference_collection(ui)
+
+        mock_ocr.assert_not_awaited()
+        self.assertIn(("PDF 转 Markdown", "已跳过"), ui.summary[1])
+        self.assertNotIn(("已删除 PDF 源文件", "1"), ui.summary[1])
+
 
 if __name__ == "__main__":
     unittest.main()

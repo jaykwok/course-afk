@@ -543,6 +543,23 @@ async def run_reference_collection_workflow(
     return result
 
 
+async def run_pdf_markdown_workflow(
+    output_dir: str,
+    status_callback: StatusCallback | None = None,
+) -> dict:
+    from core.discovery.pdf_ocr import convert_downloaded_pdfs_to_markdown
+
+    if status_callback:
+        status_callback("开始将已下载 PDF 转换为适合 LLM 阅读的 Markdown")
+    result = await convert_downloaded_pdfs_to_markdown(
+        output_dir,
+        status_callback=status_callback,
+    )
+    if status_callback:
+        status_callback(f"PDF Markdown 转换完成：{result['ocr_output_dir']}")
+    return result
+
+
 async def run_recommended_flow(
     status_callback: StatusCallback | None = None,
     *,

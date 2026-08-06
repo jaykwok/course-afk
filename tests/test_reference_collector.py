@@ -329,6 +329,7 @@ class ReferenceCollectorTests(unittest.IsolatedAsyncioTestCase):
                 )
 
             self.assertEqual(result["video_count"], 1)
+            self.assertEqual(result["pdf_count"], 0)
             output_dir = Path(result["output_dir"])
             course_files = list((output_dir / "courses").glob("*.md"))
             self.assertEqual(len(course_files), 1)

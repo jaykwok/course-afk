@@ -90,6 +90,18 @@ class DistributionFilesTests(unittest.TestCase):
         self.assertNotIn("参考资料/", ignored_lines)
         self.assertNotIn("_capture/", ignored_lines)
 
+    def test_ocr_setup_discovers_and_switches_cuda_builds(self):
+        setup_script = config.PROJECT_ROOT / "tools" / "setup_ocr.ps1"
+        content = setup_script.read_text(encoding="utf-8")
+
+        self.assertIn('ValidatePattern("^(?i:Auto|cu\\d{3,4})$")', content)
+        self.assertIn("Get-OfficialCudaBuilds", content)
+        self.assertIn("Test-CompatibleCudaBuild", content)
+        self.assertIn("当前环境最新可用版本", content)
+        self.assertIn('"--reinstall-package", "paddlepaddle-gpu"', content)
+        self.assertIn("[switch]$CheckOnly", content)
+        self.assertIn("Add-NvidiaDllDirectoriesToPath", content)
+
 
 if __name__ == "__main__":
     unittest.main()
