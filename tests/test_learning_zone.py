@@ -2,9 +2,11 @@ import unittest
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, patch
 
+from core.learning import zone as learning_zone_module
 from core.learning.zone import (
     collect_learning_links_from_learning_zone_urls,
     extract_learning_links_from_learning_zone_html,
+    extract_learning_links_from_runtime_values,
 )
 
 
@@ -49,6 +51,91 @@ class LearningZoneParsingTests(unittest.TestCase):
             "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
             links,
         )
+
+    def test_extract_case_pool_vue_runtime_card_urls(self):
+        values = [
+            "https://kc.zhixueyun.com/#/study/course/detail/"
+            "11111111-1111-1111-1111-111111111111",
+            "https://kc.zhixueyun.com/app/#/resource?businessType=2&"
+            "businessId=22222222-2222-2222-2222-222222222222",
+            "https://www.ctexpert.cn/unrelated",
+        ]
+
+        self.assertEqual(
+            extract_learning_links_from_runtime_values(values),
+            [
+                "https://kc.zhixueyun.com/#/study/course/detail/"
+                "11111111-1111-1111-1111-111111111111",
+                "https://kc.zhixueyun.com/#/study/subject/detail/"
+                "22222222-2222-2222-2222-222222222222",
+            ],
+        )
+
+
+class FakeCasePoolSsoPage:
+    def __init__(self):
+        self.url = "https://www.ctexpert.cn/expert-assist-web/casePool"
+        self.frames = [self]
+        self.clicked = False
+        self.has_token = False
+        self.waits = []
+
+    async def evaluate(self, script):
+        if "localStorage.getItem('userID')" in script:
+            return {"hasToken": self.has_token, "hasAuthCode": False}
+        if "const exact = new Set" in script:
+            if self.clicked:
+                return {"ok": False}
+            self.clicked = True
+            self.url = "https://sso.example.test/authorize"
+            return {"ok": True, "text": "登录"}
+        raise AssertionError("unexpected script")
+
+    async def wait_for_timeout(self, milliseconds):
+        self.waits.append(milliseconds)
+        if self.clicked:
+            self.has_token = True
+            self.url = "https://www.ctexpert.cn/expert-assist-web/casePool"
+
+
+class LearningZoneAuthenticationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_case_pool_clicks_login_and_waits_for_return_to_a(self):
+        page = FakeCasePoolSsoPage()
+        messages = []
+
+        await learning_zone_module._ensure_ctexpert_case_pool_authenticated(
+            page,
+            "https://www.ctexpert.cn/expert-assist-web/casePool",
+            status_callback=messages.append,
+        )
+
+        self.assertTrue(page.clicked)
+        self.assertTrue(page.has_token)
+        self.assertTrue(any("已点击“登录”" in item for item in messages))
+        self.assertTrue(any("认证完成" in item for item in messages))
+
+    async def test_case_pool_direct_api_result_is_normalized(self):
+        class FakeApiPage:
+            async def evaluate(self, script):
+                self.script = script
+                return {
+                    "values": [
+                        "https://kc.zhixueyun.com/#/study/course/detail/"
+                        "11111111-1111-1111-1111-111111111111",
+                        "https://kc.zhixueyun.com/app/#/resource?businessType=2&"
+                        "businessId=22222222-2222-2222-2222-222222222222",
+                    ],
+                    "records": 435,
+                    "total": 435,
+                    "pages": 5,
+                }
+
+        page = FakeApiPage()
+        links, stats = await learning_zone_module._fetch_ctexpert_case_pool_links(page)
+
+        self.assertIn("case/getCaseHomeList", page.script)
+        self.assertEqual(len(links), 2)
+        self.assertEqual(stats, {"records": 435, "total": 435, "pages": 5})
 
 
 class FakeLearningZonePage:
@@ -99,7 +186,75 @@ class FakeLearningZoneContext:
         return self.page
 
 
+class FakeDirectTopicResponse:
+    ok = True
+
+    def __init__(self, url, html):
+        self.url = url
+        self._html = html
+
+    async def text(self):
+        return self._html
+
+
+class FakeDirectTopicRequest:
+    def __init__(self, response):
+        self.response = response
+        self.calls = []
+
+    async def get(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        return self.response
+
+
+class FakeDirectTopicContext(FakeLearningZoneContext):
+    def __init__(self, page, url, html):
+        super().__init__(page)
+        self.request = FakeDirectTopicRequest(
+            FakeDirectTopicResponse(url, html)
+        )
+
+
 class LearningZoneCollectionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_collection_reads_topic_html_directly_before_page_navigation(self):
+        topic_url = "https://cms.mylearning.cn/safe/topic/example/pc.html"
+        course_url = (
+            "https://kc.zhixueyun.com/#/study/course/detail/"
+            "11111111-1111-1111-1111-111111111111"
+        )
+        page = FakeLearningZonePage()
+        context = FakeDirectTopicContext(
+            page,
+            topic_url,
+            f'<a href="{course_url}">课程</a>',
+        )
+        messages = []
+
+        with patch(
+            "core.learning.zone.enqueue_learning_links_with_subject_expand",
+            new=AsyncMock(
+                return_value={
+                    "course_links": 1,
+                    "subject_links": 0,
+                    "course_added": 1,
+                    "subject_learning_added": 0,
+                    "learning_added": 1,
+                    "exam_added": 0,
+                }
+            ),
+        ) as mock_enqueue:
+            added = await collect_learning_links_from_learning_zone_urls(
+                [topic_url],
+                context=context,
+                status_callback=messages.append,
+            )
+
+        self.assertEqual(added, 1)
+        self.assertFalse(hasattr(page, "wait_until"))
+        self.assertEqual(context.request.calls[0][0], topic_url)
+        self.assertEqual(mock_enqueue.await_args.args[0], [course_url])
+        self.assertTrue(any("HTTP 直接读取" in item for item in messages))
+
     async def test_collection_closes_popup_and_waits_for_dynamic_links(self):
         page = FakeLearningZonePage()
         context = FakeLearningZoneContext(page)

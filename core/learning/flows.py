@@ -25,6 +25,7 @@ from core.learning.common import (
     wait_for_course_section_focus,
 )
 from core.learning.exam_bridge import check_exam_passed, handle_examination
+from core.learning.exam_api import queue_course_exams_from_api
 from core.learning.handlers import handle_document, handle_h5, handle_video
 from core.queues.learning import record_learning_failure
 from core.learning.popups import handle_archive_continue_popup, handle_rating_popup
@@ -461,6 +462,19 @@ async def course_learning(page_detail, learn_item=None):
         logging.warning("未找到章节列表（必修/选修）")
         return
 
+    course_exam_api_result = await queue_course_exams_from_api(page_detail)
+    course_exams_handled_by_api = bool(
+        course_exam_api_result and course_exam_api_result.discovered > 0
+    )
+    if course_exams_handled_by_api:
+        logging.info(
+            "课程内考试已通过接口处理: "
+            f"发现 {course_exam_api_result.discovered}，"
+            f"AI +{course_exam_api_result.ai_queued}，"
+            f"人工 +{course_exam_api_result.manual_queued}，"
+            f"已完成 {course_exam_api_result.completed}"
+        )
+
     # 预检：可判定类型是否全部已学
     all_learned = True
     has_non_detectable_types = False
@@ -493,6 +507,10 @@ async def course_learning(page_detail, learn_item=None):
             if is_learned(progress_text):
                 logging.info(f"课程第{index + 1}节({track_label})已学习, 跳过该节\n")
                 continue
+
+        if section_type == "9" and course_exams_handled_by_api:
+            logging.info("课程内考试已由接口完成状态判断与入队，跳过页面解析")
+            continue
 
         try:
             await _activate_course_section(page_detail, box)

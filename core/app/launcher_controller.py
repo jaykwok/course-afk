@@ -22,8 +22,8 @@ def _manual_selection_result_rows(result: dict[str, int]) -> list[tuple[str, str
         ("识别到的输入链接", str(result["input_url_count"])),
         ("直接写入的学习链接", str(result["direct_learning_count"])),
         ("直接写入的考试链接", str(result["direct_exam_count"])),
-        ("学习专区链接数量", str(result["learning_zone_url_count"])),
-        ("学习专区自动解析数量", str(result["learning_zone_parsed_count"])),
+        ("课程集合页链接数量", str(result["learning_zone_url_count"])),
+        ("课程集合页自动解析数量", str(result["learning_zone_parsed_count"])),
         ("培训班链接数量", str(result.get("train_class_url_count", 0))),
         ("培训班自动解析数量", str(result.get("train_class_parsed_count", 0))),
         ("需要手动打开的入口链接", str(result["entry_url_count"])),
@@ -117,7 +117,7 @@ def choose_learning_zone_mode(learning_zone_urls, prompt_choice_func) -> str:
         return "manual"
 
     choice = prompt_choice_func(
-        "检测到学习专区链接，请选择处理方式",
+        "检测到课程集合页（学习专区 / 案例库），请选择处理方式",
         [
             "全部学习：自动解析并写入学习链接",
             "手动选择学习模块：打开页面后自己点击课程",
@@ -219,7 +219,7 @@ def handle_manual_selection(prompts, ui) -> None:
         ("有效链接（去重）", str(len(parsed_urls))),
         ("课程 / 主题链接", str(len(direct_learning_urls))),
         ("考试链接", str(len(direct_exam_urls))),
-        ("学习专区链接", str(len(learning_zone_urls))),
+        ("课程集合页（学习专区 / 案例库）", str(len(learning_zone_urls))),
         ("培训班链接（自动解析）", str(len(train_class_urls))),
         ("其他入口链接", str(len(entry_urls))),
     ]

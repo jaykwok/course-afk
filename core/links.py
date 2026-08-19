@@ -12,6 +12,11 @@ from core.file_ops import (
 
 URL_PATTERN = re.compile(r"https?://[^\s<>'\"，,；;]+", re.IGNORECASE)
 LEARNING_ZONE_PATTERN = re.compile(r"/topic(?:/|[?#])", re.IGNORECASE)
+CTEXPERT_CASE_POOL_PATTERN = re.compile(
+    r"^https?://(?:www\.)?ctexpert\.cn/"
+    r"expert-assist-(?:web|h5)/casePool(?:/|[?#]|$)",
+    re.IGNORECASE,
+)
 
 
 def unique_urls(urls: list[str] | None) -> list[str]:
@@ -40,7 +45,14 @@ def normalize_urls(urls: list[str] | None) -> list[str]:
 
 
 def is_learning_zone_url(url: str) -> bool:
-    return bool(LEARNING_ZONE_PATTERN.search((url or "").strip()))
+    value = (url or "").strip()
+    return bool(LEARNING_ZONE_PATTERN.search(value)) or is_ctexpert_case_pool_url(value)
+
+
+def is_ctexpert_case_pool_url(url: str) -> bool:
+    """判断是否为天翼专家助手案例库课程集合页。"""
+
+    return bool(CTEXPERT_CASE_POOL_PATTERN.search((url or "").strip()))
 
 
 def split_manual_selection_urls(

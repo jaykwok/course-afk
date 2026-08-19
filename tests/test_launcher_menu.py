@@ -34,7 +34,7 @@ class LauncherMenuTests(unittest.TestCase):
         joined = "\n".join(MANUAL_SELECTION_PROMPTS)
         self.assertIn("请粘贴入口链接", joined)
         self.assertIn("考试链接", joined)
-        self.assertIn("学习专区链接", joined)
+        self.assertIn("课程集合页（学习专区 / 案例库）", joined)
         self.assertIn("如页面提示需要报名", joined)
         self.assertIn("课程链接.json", joined)
         self.assertIn("考试链接.json", joined)

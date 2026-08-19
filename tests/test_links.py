@@ -8,6 +8,7 @@ from core.file_ops import (
 )
 from core.links import (
     extract_urls_from_text,
+    is_ctexpert_case_pool_url,
     is_learning_zone_url,
     normalize_urls,
     split_manual_selection_urls,
@@ -138,6 +139,21 @@ class LinkParsingTests(unittest.TestCase):
             "https://kc.zhixueyun.com/#/study/course/detail/"
             "12345678-1234-1234-1234-123456789abc",
         )
+
+    def test_case_pool_is_routed_as_learning_collection_page(self):
+        case_pool = "https://www.ctexpert.cn/expert-assist-web/casePool"
+        case_pool_with_code = case_pool + "?code=temporary-code"
+
+        self.assertTrue(is_ctexpert_case_pool_url(case_pool))
+        self.assertTrue(is_learning_zone_url(case_pool_with_code))
+        self.assertFalse(
+            is_ctexpert_case_pool_url(
+                "https://www.ctexpert.cn/expert-assist-web/coursePool"
+            )
+        )
+
+        parts = split_manual_selection_urls([case_pool_with_code])
+        self.assertEqual(parts, ([], [], [case_pool_with_code], [], []))
 
     def test_normalize_url_keeps_final_uuid_after_numeric_detail_marker(self):
         subject_raw_url = (

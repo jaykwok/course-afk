@@ -497,7 +497,7 @@ class LauncherControllerTests(unittest.TestCase):
         self.assertEqual(rows["有效链接（去重）"], "4")
         self.assertEqual(rows["课程 / 主题链接"], "1")
         self.assertEqual(rows["考试链接"], "1")
-        self.assertEqual(rows["学习专区链接"], "1")
+        self.assertEqual(rows["课程集合页（学习专区 / 案例库）"], "1")
         self.assertEqual(rows["培训班链接（自动解析）"], "0")
         self.assertEqual(rows["其他入口链接"], "1")
         self.assertIn("继续处理", message)

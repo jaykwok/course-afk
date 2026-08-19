@@ -256,6 +256,10 @@ class LearningExamTests(unittest.IsolatedAsyncioTestCase):
             patch("core.learning.flows.check_exam_passed", new=mock_check),
             patch("core.learning.exam_bridge.check_exam_passed", new=mock_check),
             patch(
+                "core.learning.flows.queue_course_exams_from_api",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
                 "core.learning.exam_bridge.queue_exam_url_by_attempt_text",
                 return_value="ai",
             ),
@@ -263,6 +267,47 @@ class LearningExamTests(unittest.IsolatedAsyncioTestCase):
             await course_learning(page)
 
         self.assertEqual(mock_check.await_count, 1)
+
+    async def test_course_learning_skips_dom_exam_when_api_handled_it(self):
+        from core.learning.exam_api import CourseExamQueueResult
+        from core.learning.flows import course_learning
+
+        page = FakeCoursePage()
+        api_result = CourseExamQueueResult(
+            discovered=1,
+            ai_queued=1,
+            manual_queued=0,
+            completed=0,
+        )
+
+        with (
+            patch(
+                "core.learning.flows.ensure_course_page_ready",
+                new=AsyncMock(return_value=None),
+            ),
+            patch("core.learning.flows.handle_rating_popup", new=AsyncMock(return_value=False)),
+            patch(
+                "core.learning.flows.dismiss_topmost_overlays_async",
+                new=AsyncMock(return_value=0),
+            ),
+            patch("core.learning.flows._is_course_completed", new=AsyncMock(return_value=False)),
+            patch(
+                "core.learning.flows.queue_course_exams_from_api",
+                new=AsyncMock(return_value=api_result),
+            ),
+            patch(
+                "core.learning.flows._activate_course_section",
+                new=AsyncMock(),
+            ) as mock_activate,
+            patch(
+                "core.learning.flows.check_exam_passed",
+                new=AsyncMock(),
+            ) as mock_check,
+        ):
+            await course_learning(page)
+
+        mock_activate.assert_not_awaited()
+        mock_check.assert_not_awaited()
 
     async def test_handle_subject_exam_item_saves_exam_paper_url_for_pending_exam(self):
         from core.learning.flows import handle_subject_exam_item
