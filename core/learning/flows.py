@@ -144,6 +144,53 @@ async def _activate_course_section(page_detail, box) -> None:
     raise SectionActivationError(detail=detail)
 
 
+async def _ensure_course_learning_view(page_detail) -> bool:
+    """课程详情默认进入 AI 伴学时，切回可记录进度的课程学习视图。
+
+    新版详情页的两个视图共用章节列表，但 AI 伴学视图不展示
+    ``需学/需再学`` 时长，也不能可靠触发原课程学习的进度同步。
+    旧版页面没有此切换标签，因此找不到时直接沿用原流程。
+    """
+    try:
+        course_tabs = page_detail.locator(".guide-tab > span").filter(
+            has_text="课程学习"
+        )
+        tab_count = await course_tabs.count()
+    except Exception:
+        return False
+
+    last_error: Exception | None = None
+    for index in range(tab_count):
+        tab = course_tabs.nth(index)
+        try:
+            if not await tab.is_visible():
+                continue
+            tab_classes = (await tab.get_attribute("class") or "").split()
+            if "guide-tab--selected" in tab_classes:
+                logging.debug("课程学习页面已处于激活状态")
+                return False
+            try:
+                await tab.scroll_into_view_if_needed(timeout=3000)
+            except Exception:
+                pass
+            try:
+                await tab.click(timeout=5000)
+            except Exception:
+                await tab.click(timeout=5000, force=True)
+            # 这是 SPA 内部视图切换，没有 load 事件；给章节进度文案一次渲染机会。
+            await page_detail.wait_for_timeout(800)
+            logging.info("已切换到课程学习页面")
+            return True
+        except Exception as exc:
+            if is_target_closed_exception(exc):
+                raise
+            last_error = exc
+
+    if last_error is not None:
+        raise RuntimeError(f"无法切换到课程学习页面: {last_error}") from last_error
+    return False
+
+
 async def handle_subject_exam_item(learn_item) -> str | None:
     status_texts = [
         status.strip()
@@ -443,6 +490,10 @@ async def course_learning(page_detail, learn_item=None):
 
     # 访问权限 / 资源不存在 / 并发限流：须在等进度条与章节列表之前
     await ensure_course_page_ready(page_detail)
+
+    # 新版详情页可能默认落在 AI 伴学；必须先回到原课程学习视图，
+    # 后续章节文案才包含剩余时长，且播放进度会进入原同步链路。
+    await _ensure_course_learning_view(page_detail)
 
     if await handle_rating_popup(page_detail):
         logging.info("五星评价完成")

@@ -96,11 +96,11 @@ course-afk/
 - `data/links/人工考试链接.json`：需要人工处理的考试。
 - `data/references/`：课程参考资料（PDF/文档）与视频 AI 导学资料。
 - `data/credentials/cookies.json` / `credential_meta.json`：登录凭证（本地敏感，勿上传）。
-- `data/logs/app-info.log`：DEBUG 与 INFO。
-- `data/logs/app-warn.log`：WARNING。
-- `data/logs/app-error.log`：ERROR 与 CRITICAL。
+- `data/logs/app-info.log`：当天正在写入的 DEBUG 与 INFO。
+- `data/logs/app-warn.log`：当天正在写入的 WARNING。
+- `data/logs/app-error.log`：当天正在写入的 ERROR 与 CRITICAL。
 
-日志每天自动归档，文件名为 `app-info-2026-07-29.log`、`app-warn-2026-07-29.log`、`app-error-2026-07-29.log`；不跨级重复写入。
+每天零点会把上一天的当前日志重命名归档为 `app-info-2026-07-29.log`、`app-warn-2026-07-29.log`、`app-error-2026-07-29.log`，再继续写新的无日期文件。无日期文件不是“全部日期总日志”，同一条记录也不会跨级重复写入。
 
 本地抓包/反推实验结果统一放在 `tools/capture/`（已 `.gitignore`，不上传）。
 按 `exam_page/`、`learning/`、`documents/`、`integration/`、`terminal/`、`class_inspect/`、`topic_inspect/` 等用途分类，可重用的探针脚本保留在 `tools/` 或 `tools/capture/` 对应目录。
