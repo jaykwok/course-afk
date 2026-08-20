@@ -90,9 +90,17 @@ class CourseLearningViewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(selected_tab.click_calls, [])
         self.assertEqual(page.waits, [])
 
-    async def test_course_learning_switches_view_before_completion_check(self):
+    async def test_course_learning_handles_rating_before_switching_view(self):
         events = []
         page = _FakePage([_FakeTab()])
+
+        async def handle_rating(_page):
+            events.append("rating")
+            return True
+
+        async def handle_archive(_page):
+            events.append("archive")
+            return False
 
         async def ensure_ready(_page):
             events.append("ready")
@@ -108,7 +116,7 @@ class CourseLearningViewTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch(
                 "core.learning.flows.handle_archive_continue_popup",
-                new=AsyncMock(return_value=False),
+                new=handle_archive,
             ),
             patch(
                 "core.learning.flows.ensure_course_page_ready",
@@ -120,7 +128,7 @@ class CourseLearningViewTests(unittest.IsolatedAsyncioTestCase):
             ),
             patch(
                 "core.learning.flows.handle_rating_popup",
-                new=AsyncMock(return_value=False),
+                new=handle_rating,
             ),
             patch("core.learning.flows._is_course_completed", new=completed),
         ):
@@ -130,7 +138,10 @@ class CourseLearningViewTests(unittest.IsolatedAsyncioTestCase):
             page.locator = lambda selector: title
             await course_learning(page)
 
-        self.assertEqual(events, ["ready", "course-view", "completed-check"])
+        self.assertEqual(
+            events,
+            ["rating", "archive", "ready", "course-view", "completed-check"],
+        )
 
 
 if __name__ == "__main__":

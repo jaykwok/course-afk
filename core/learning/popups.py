@@ -77,26 +77,33 @@ async def handle_rating_popup(page):
     无弹窗是常态：用 count/短探测，避免每次 DEBUG 刷 Playwright Timeout + Call log。
     """
     try:
-        dialog = page.locator(".ant-modal-content")
+        dialogs = page.locator(".ant-modal-content")
         # 先廉价探测：多数章节没有评分弹窗
         try:
-            if await dialog.count() == 0:
-                return False
-            if not await dialog.first.is_visible():
+            dialog_count = await dialogs.count()
+            if dialog_count == 0:
                 return False
         except Exception:
             return False
 
-        try:
-            await dialog.first.wait_for(state="visible", timeout=800)
-        except Exception:
+        # 页面可能保留已隐藏的历史 modal；只操作当前可见弹窗。
+        dialog = None
+        for index in range(dialog_count):
+            candidate = dialogs.nth(index)
+            try:
+                if await candidate.is_visible():
+                    dialog = candidate
+                    break
+            except Exception:
+                continue
+        if dialog is None:
             return False
 
         logging.info("检测到评分弹窗")
 
         # 归档确认也是 ant-modal，勿当评分弹窗硬点「确定」
         try:
-            dialog_text = await dialog.first.inner_text(timeout=500)
+            dialog_text = await dialog.inner_text(timeout=500)
         except Exception:
             dialog_text = ""
         if "归档" in (dialog_text or ""):
@@ -110,21 +117,37 @@ async def handle_rating_popup(page):
             return False
 
         try:
-            fifth_star = dialog.locator("ul.ant-rate li:nth-child(5) div[role='radio']")
+            # Ant Rate 的选择事件绑定在 li 上；点击内部 radio div 虽不报错，
+            # 部分页面不会更新 v-model，导致「确定」一直 disabled。
+            fifth_star = stars_container.locator("li:nth-child(5)")
             await fifth_star.wait_for(state="visible", timeout=1000)
-            await page.evaluate(
-                "document.querySelector('ul.ant-rate').scrollIntoView({block: 'center'})"
-            )
-            await fifth_star.click(force=True)
-            logging.info("已五星评价")
+            try:
+                await fifth_star.scroll_into_view_if_needed(timeout=1000)
+            except Exception:
+                pass
+            try:
+                await fifth_star.click(timeout=3000)
+            except Exception:
+                await fifth_star.click(timeout=3000, force=True)
         except Exception as exc:
             logging.warning(f"点击星星失败: {exc}")
-
-        await page.wait_for_timeout(500)
+            return False
 
         try:
-            confirm_button = page.get_by_role("button", name="确 定")
-            await confirm_button.click()
+            confirm_button = dialog.get_by_role("button", name="确 定")
+            await confirm_button.wait_for(state="visible", timeout=1000)
+
+            # 按钮启用才说明评分状态真正写入组件；最多短等 1 秒。
+            for _ in range(10):
+                if await confirm_button.is_enabled():
+                    break
+                await page.wait_for_timeout(100)
+            else:
+                logging.warning("选择五星后确定按钮仍未启用，未提交评分")
+                return False
+
+            logging.info("已选择五星评分")
+            await confirm_button.click(timeout=5000)
             logging.info("已点击确定按钮")
             return True
         except Exception as exc:
