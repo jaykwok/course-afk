@@ -152,6 +152,9 @@ class CoursePageProbeTests(unittest.IsolatedAsyncioTestCase):
                     "_process_url",
                     new=AsyncMock(side_effect=fake_process),
                 ),
+                patch.object(
+                    probe_course_page, "sample_afk_slow_mo", return_value=2345
+                ),
             ):
                 result = await probe_course_page.main(
                     "https://kc.zhixueyun.com/#/study/course/detail/test",
@@ -159,11 +162,13 @@ class CoursePageProbeTests(unittest.IsolatedAsyncioTestCase):
                     flow_timeout=30,
                 )
 
+            # slow_mo 每次运行随机取样：取到的值同时用于启动和快照记录
             create_context.assert_called_once_with(
                 cookies_path=probe_course_page.COOKIES_FILE,
                 headless=False,
-                slow_mo=probe_course_page.AFK_SLOW_MO,
+                slow_mo=2345,
             )
+            self.assertEqual(result["browser_slow_mo"], 2345)
             self.assertEqual(result["flow"]["status"], "completed")
             self.assertEqual(result["headless"], False)
             self.assertEqual(len(result["captures"]), 1)

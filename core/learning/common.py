@@ -15,6 +15,7 @@ from core.config import (
     ZHIXUEYUN_COURSE_PREFIX,
     ZHIXUEYUN_EXAM_PREFIX,
 )
+from core.humanize import jitter
 
 
 @dataclass(frozen=True)
@@ -215,7 +216,7 @@ def _compact_progress_text(text: str, *, limit: int = 80) -> str:
     return compact[: limit - 1] + "…"
 
 
-async def _read_section_progress_text(box) -> str:
+async def read_section_progress_text(box) -> str:
     """读取章节进度文案；尽量滚入视口，降低 SPA 列表虚拟化导致的 stale 文案。"""
     wrapper = box.locator(".section-item-wrapper")
     try:
@@ -239,7 +240,9 @@ async def wait_until_learned(
 ) -> None:
     """轮询章节进度直至 is_learned 或超时抛 SyncTimeoutError。
 
-    进入本函数前若已学完会立即返回。``max_wait`` / ``poll_interval`` 单位秒。
+    进入本函数前若已学完会立即返回。``max_wait`` / ``poll_interval`` 单位秒，
+    实际每轮间隔在 ``poll_interval`` 附近抖动（整段总时长仍不超过 max_wait），
+    避免「每 30 秒整点一次进度请求」这种一眼可见的固定节拍。
     超时前会再强制读一次 DOM（滚入视口），避免「其实已同步却判超时」。
     """
     from core.abort import SyncTimeoutError
@@ -247,7 +250,7 @@ async def wait_until_learned(
     max_wait = max(0, int(max_wait))
     poll_interval = max(1, int(poll_interval)) if max_wait > 0 else 0
 
-    current_text = await _read_section_progress_text(box)
+    current_text = await read_section_progress_text(box)
     if is_learned(current_text):
         logging.info("课程进度已同步到服务器")
         return
@@ -255,7 +258,7 @@ async def wait_until_learned(
     if max_wait <= 0:
         # 最后再读一次，避免刚写完 0 秒剩余时的瞬时 stale
         await page.wait_for_timeout(500)
-        current_text = await _read_section_progress_text(box)
+        current_text = await read_section_progress_text(box)
         if is_learned(current_text):
             logging.info("课程进度已同步到服务器")
             return
@@ -268,27 +271,32 @@ async def wait_until_learned(
             reason_text="课程进度同步超时（无额外等待窗），后续可重新加入课程链接",
         )
 
-    elapsed_sync_wait = 0
+    elapsed_sync_wait = 0.0
     while elapsed_sync_wait < max_wait:
-        wait_seconds = min(poll_interval, max_wait - elapsed_sync_wait)
-        await page.wait_for_timeout(wait_seconds * 1000)
+        wait_seconds = min(
+            jitter(poll_interval, ratio=0.3, minimum=1),
+            max_wait - elapsed_sync_wait,
+        )
+        if wait_seconds <= 0.05:
+            break
+        await page.wait_for_timeout(int(wait_seconds * 1000))
         elapsed_sync_wait += wait_seconds
         if on_tick is not None:
             await on_tick()
-        current_text = await _read_section_progress_text(box)
+        current_text = await read_section_progress_text(box)
         if is_learned(current_text):
             logging.info(
-                f"课程进度已同步到服务器, 额外等待 {elapsed_sync_wait} 秒"
+                f"课程进度已同步到服务器, 额外等待 {round(elapsed_sync_wait)} 秒"
             )
             return
         logging.info(
-            f"课程进度仍未同步完成, 已额外等待 {elapsed_sync_wait} 秒"
+            f"课程进度仍未同步完成, 已额外等待 {round(elapsed_sync_wait)} 秒"
             f" (文案: {_compact_progress_text(current_text)}), 继续等待..."
         )
 
     # 超时边界再确认一次：平台有时刚好在最后一次轮询后刷掉「需再学」
     await page.wait_for_timeout(800)
-    current_text = await _read_section_progress_text(box)
+    current_text = await read_section_progress_text(box)
     if is_learned(current_text):
         logging.info(
             f"课程进度已同步到服务器, 额外等待 {max_wait} 秒（超时边界复核）"

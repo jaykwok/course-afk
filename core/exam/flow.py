@@ -168,6 +168,8 @@ async def ai_exam(client, model, page, course_url, auto_submit=True, ai_model_co
 
             logging.info("点击下一题")
             await next_button.click()
+            # 每题的间隔天然随机：get_ai_answers 的模型思考耗时本身就在抖动，
+            # 不必再叠加固定区间的停顿。
             await page.wait_for_timeout(1000)
     else:
         await _wait_for_exam_page_stable(page)

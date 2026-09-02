@@ -13,10 +13,13 @@ from core.abort import (
 from core.browser.session import is_page_browser_connected, is_target_closed_exception
 from core.config import (
     PAPER_EXAM_ATTEMPT_THRESHOLD,
+    SECTION_GAP_MAX,
+    SECTION_GAP_MIN,
     URL_TYPE_WAIT,
 )
 from core.exam.routing import queue_exam_url_by_attempt_text
 from core.browser.overlays import dismiss_topmost_overlays_async
+from core.humanize import jitter, pause_between
 from core.learning.common import (
     ensure_course_page_ready,
     get_course_url,
@@ -85,6 +88,9 @@ async def _activate_course_section(page_detail, box) -> None:
     """点击课内章节并确认目标 box 已获得 focus；始终重试同一目标。"""
     wrapper = box.locator(".section-item-wrapper")
     last_error: Exception | None = None
+
+    # 上一节刚结束就立刻点开下一节是很显眼的机器节奏，先随机歇一下
+    await pause_between(page_detail, SECTION_GAP_MIN, SECTION_GAP_MAX)
 
     for attempt in range(1, 4):
         try:
@@ -398,11 +404,13 @@ async def subject_learning(page):
                 detail={"source": "subject", "section_type": section_type},
             )
             page_detail = await _open_subject_item_popup(page, learn_item)
+            # 每个外链都恰好停留 10 秒同样是固定节拍，这里抖开
+            url_wait = max(1, round(jitter(URL_TYPE_WAIT, ratio=0.4, minimum=1)))
             timeout_task = asyncio.create_task(
-                page_detail.wait_for_timeout(URL_TYPE_WAIT * 1000)
+                page_detail.wait_for_timeout(url_wait * 1000)
             )
             timer_task = asyncio.create_task(
-                timer(URL_TYPE_WAIT, description="URL 类型学习等待")
+                timer(url_wait, description="URL 类型学习等待")
             )
             try:
                 await asyncio.gather(timeout_task, timer_task)

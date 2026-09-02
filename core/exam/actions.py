@@ -4,7 +4,14 @@ import logging
 import traceback
 
 from core.abort import UserAbortRequested
-from core.config import MANUAL_EXAM_FILE
+from core.config import (
+    EXAM_OPTION_GAP_MAX,
+    EXAM_OPTION_GAP_MIN,
+    EXAM_SUBMIT_GAP_MAX,
+    EXAM_SUBMIT_GAP_MIN,
+    MANUAL_EXAM_FILE,
+)
+from core.humanize import pause_between
 from core.queues.manual_exam import append_manual_exam_entry
 
 
@@ -115,7 +122,8 @@ async def select_answers(
                     await page.locator(selector).nth(option_index).click(timeout=2000)
                     logging.info(f"{log_prefix}已点击选项: {answer}")
                     selected_count += 1
-                    await page.wait_for_timeout(300)
+                    # 多选逐个点：固定 300ms 一下的节拍太规整
+                    await pause_between(page, EXAM_OPTION_GAP_MIN, EXAM_OPTION_GAP_MAX)
                 except Exception as exc:
                     _raise_if_exam_auto_submitted(exc)
                     logging.warning(f"{log_prefix}点击选项 {answer} 失败: {exc}")
@@ -147,9 +155,10 @@ async def close_exam_notice_if_present(page):
 
 async def submit_exam(page):
     await page.locator("text=我要交卷").click()
-    await page.wait_for_timeout(1000)
+    # 交卷两步确认之间随机停顿：真人会看一眼确认框再点
+    await pause_between(page, EXAM_SUBMIT_GAP_MIN, EXAM_SUBMIT_GAP_MAX)
     await page.locator("button:has-text('确 定')").click()
-    await page.wait_for_timeout(1000)
+    await pause_between(page, EXAM_SUBMIT_GAP_MIN, EXAM_SUBMIT_GAP_MAX)
     close_button = page.locator(
         "[data-region='modal:modal'] .btn.white.border:has-text('确定')"
     )

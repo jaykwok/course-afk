@@ -25,10 +25,13 @@ from core.browser.session import (
     is_target_closed_exception,
 )
 from core.config import (
-    AFK_SLOW_MO,
+    COURSE_GAP_MAX,
+    COURSE_GAP_MIN,
     LEARNING_FAILURES_FILE,
     LEARNING_URLS_FILE,
+    sample_afk_slow_mo,
 )
+from core.humanize import sample_between
 from core.file_ops import (
     is_compliant_url_regex,
     is_course_detail_url,
@@ -80,6 +83,22 @@ async def browser_still_usable(context) -> bool:
     if not is_browser_connected(context):  # 闩锁可能在落定期内置位
         return False
     return any(_is_page_open(page) for page in pages)
+
+
+async def _pause_between_courses(status_callback=None) -> float:
+    """两门课之间随机歇一会。
+
+    整批链接无缝连做（上一门结束的同一秒就开下一门）在后台是一条很直的线，
+    真人总要挑下一门、切页面。用 ``asyncio.sleep`` 以便 Ctrl+C / 取消能立刻打断。
+    """
+    pause_seconds = sample_between(COURSE_GAP_MIN, COURSE_GAP_MAX)
+    if pause_seconds <= 0:
+        return 0.0
+    logging.info(f"课程间隔休息 {pause_seconds:.0f} 秒")
+    if status_callback:
+        status_callback(f"课程间隔休息 {pause_seconds:.0f} 秒")
+    await asyncio.sleep(pause_seconds)
+    return pause_seconds
 
 
 @dataclass
@@ -461,7 +480,7 @@ async def run_afk_once(status_callback: StatusCallback | None = None) -> None:
     _write_learning_queue(pending_learning_urls)
 
     try:
-        async with create_browser_context(slow_mo=AFK_SLOW_MO) as (_, context):
+        async with create_browser_context(slow_mo=sample_afk_slow_mo()) as (_, context):
             # 心跳页（mylearning 主控页）关闭通知：只提示、不打断——
             # 「当前课程挂完后停止」是用户确认的设计语义（确定性：课程主路径
             # 不查连接状态，停止点固定在下一门开课前的 browser_still_usable）。
@@ -487,6 +506,7 @@ async def run_afk_once(status_callback: StatusCallback | None = None) -> None:
                     on("close", _announce_heartbeat_closed)
 
             # 一门一页 + 处理完 close，避免同页 goto 触发 /study/errors 限流页
+            processed_any = False
             for index, url in enumerate(normalized_urls, start=1):
                 _watch_heartbeat()  # 控制器页极少被重建，重建后补挂通知
                 if status_callback:
@@ -527,7 +547,12 @@ async def run_afk_once(status_callback: StatusCallback | None = None) -> None:
                         _write_learning_queue(pending_learning_urls)
                     continue
 
+                # 只在「真的刚学完一门」之后歇，跳过的无效链接不算
+                if processed_any:
+                    await _pause_between_courses(status_callback)
+
                 keep_pending = await _process_url(context, url, handler)
+                processed_any = True
 
                 if not keep_pending and url in pending_learning_urls:
                     pending_learning_urls.remove(url)

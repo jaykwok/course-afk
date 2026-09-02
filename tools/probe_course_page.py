@@ -29,10 +29,10 @@ if str(ROOT) not in sys.path:
 
 from core.browser.session import create_browser_context
 from core.config import (
-    AFK_SLOW_MO,
     COOKIES_FILE,
     PROJECT_ROOT,
     ensure_data_layout,
+    sample_afk_slow_mo,
 )
 from core.discovery.subject_parse import expand_subject_from_page
 from core.file_ops import is_subject_detail_url, load_cookies
@@ -473,6 +473,8 @@ async def main(
     console_events: list[dict[str, object]] = []
     response_tasks: set[asyncio.Task] = set()
     observed_page_ids: set[int] = set()
+    # 与挂课一致：每次运行取一次 slow_mo，并如实记进快照便于复现
+    browser_slow_mo = sample_afk_slow_mo()
     result: dict[str, object] = {
         "requested_url": _sanitize_url(target_url),
         "probed_at": started_at.astimezone().isoformat(),
@@ -485,7 +487,7 @@ async def main(
         "run_flow": run_flow,
         "flow_timeout_seconds": flow_timeout if run_flow or section_index else None,
         "target_section_index": section_index,
-        "browser_slow_mo": AFK_SLOW_MO,
+        "browser_slow_mo": browser_slow_mo,
         "headless": False,
         "capture_dir": str(run_dir),
         "captures": captures,
@@ -546,7 +548,7 @@ async def main(
     async with create_browser_context(
         cookies_path=COOKIES_FILE,
         headless=False,
-        slow_mo=AFK_SLOW_MO,
+        slow_mo=browser_slow_mo,
     ) as (_, context):
         try:
             keep_pending = await asyncio.wait_for(

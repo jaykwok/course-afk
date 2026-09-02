@@ -24,20 +24,138 @@ _CONTEXT_HEADLESS: dict[int, bool] = {}
 # 闩锁短路连接判断，否则整窗关闭会被误判成「仅关标签」而继续下一门。
 _CONTEXT_WINDOW_CLOSED: dict[int, bool] = {}
 _START_MAXIMIZED_ARG = "--start-maximized"
+# 反自动化探测脚本（context.add_init_script，document_start 在每个 frame 执行）。
+#
+# 只修自动化真正改坏的痕迹，不伪造本来就真实的指纹：本项目强制可视浏览器 +
+# 真实 msedge/chrome 通道，plugins / languages / window.chrome / WebGL 等都是
+# 真值，硬去 hook 反而会造出「假得过头」的新特征。故此处只处理三件事：
+#   1) Function.prototype.toString 伪装——补丁函数的源码是最直接的破绽；
+#   2) navigator.webdriver——原型级 getter，且不在实例上留 own property；
+#   3) 同源子 frame——init script 未必落到 JS 动态建的 about:blank/srcdoc，
+#      检测脚本惯用 iframe.contentWindow 取「干净」的 navigator。
+#
+# 仍无法在页面内消除的：CDP Runtime 域开启后的 Error.stack 探针、
+# --disable-blink-features 之外的启动参数指纹——那些得在浏览器侧解决。
 BROWSER_STEALTH_INIT_SCRIPT = """
 (() => {
-  try {
-    Object.defineProperty(Navigator.prototype, "webdriver", {
-      configurable: true,
-      get: () => false,
+  "use strict";
+
+  const patchedRealms = new WeakSet();
+
+  const applyStealth = (win) => {
+    if (!win || patchedRealms.has(win)) return;
+
+    // 跨源 window：下面任一属性访问都会抛 SecurityError，交给调用方吞掉
+    const functionProto = win.Function.prototype;
+    const nav = win.navigator;
+    if (!functionProto || !nav) return;
+    patchedRealms.add(win);
+
+    // --- 1. toString 伪装 ---------------------------------------------
+    // 补丁函数直接 toString() 会吐出 "() => false"，检测脚本一眼看穿。
+    // 维护「函数 -> 原生源码串」映射，并用 Proxy 接管 toString 本身，
+    // 连 Function.prototype.toString.toString() 也返回原生串。
+    const nativeSources = new win.WeakMap();
+    const rawToString = functionProto.toString;
+
+    const markNative = (fn, source) => {
+      try {
+        nativeSources.set(fn, source);
+      } catch (_) {}
+      return fn;
+    };
+
+    const maskedToString = new win.Proxy(rawToString, {
+      apply(target, thisArg, args) {
+        try {
+          if (typeof thisArg === "function" && nativeSources.has(thisArg)) {
+            return nativeSources.get(thisArg);
+          }
+        } catch (_) {}
+        return Reflect.apply(target, thisArg, args);
+      },
     });
-  } catch (_) {}
+    markNative(maskedToString, "function toString() { [native code] }");
+    try {
+      Object.defineProperty(functionProto, "toString", {
+        value: maskedToString,
+        writable: true,
+        enumerable: false,
+        configurable: true,
+      });
+    } catch (_) {}
+
+    // 造一个「看起来像 WebIDL 原生 getter」的取值函数
+    const nativeGetter = (prop, impl) => {
+      const getter = function () {
+        return impl.call(this);
+      };
+      try {
+        Object.defineProperty(getter, "name", {
+          value: "get " + prop,
+          configurable: true,
+        });
+      } catch (_) {}
+      return markNative(getter, "function get " + prop + "() { [native code] }");
+    };
+
+    // --- 2. navigator.webdriver ---------------------------------------
+    // 真实 Chrome：Navigator.prototype 上一个返回 false 的原生 getter，
+    // 实例上没有同名 own property。旧写法额外在实例上 defineProperty，
+    // Object.getOwnPropertyNames(navigator) 一查就露馅，故先删掉再补原型。
+    try {
+      delete nav.webdriver;
+    } catch (_) {}
+
+    const navigatorProto = win.Navigator
+      ? win.Navigator.prototype
+      : Object.getPrototypeOf(nav);
+    if (navigatorProto) {
+      try {
+        Object.defineProperty(navigatorProto, "webdriver", {
+          configurable: true,
+          enumerable: true,
+          get: nativeGetter("webdriver", () => false),
+          set: undefined,
+        });
+      } catch (_) {}
+    }
+
+    // --- 3. 同源子 frame 逃逸 ------------------------------------------
+    // 取 contentWindow / contentDocument 时顺手给子 realm 打同样的补丁。
+    const hookFrameWindow = (target, prop, resolveWindow) => {
+      if (!target) return;
+      const descriptor = Object.getOwnPropertyDescriptor(target, prop);
+      if (!descriptor || typeof descriptor.get !== "function") return;
+      const originalGet = descriptor.get;
+      const patchedGet = nativeGetter(prop, function () {
+        const value = originalGet.call(this);
+        try {
+          applyStealth(resolveWindow(value));
+        } catch (_) {}
+        return value;
+      });
+      try {
+        Object.defineProperty(target, prop, {
+          configurable: true,
+          enumerable: descriptor.enumerable,
+          get: patchedGet,
+          set: descriptor.set,
+        });
+      } catch (_) {}
+    };
+
+    const iframeProto = win.HTMLIFrameElement
+      ? win.HTMLIFrameElement.prototype
+      : null;
+    hookFrameWindow(iframeProto, "contentWindow", (value) => value);
+    hookFrameWindow(iframeProto, "contentDocument", (value) =>
+      value ? value.defaultView : null
+    );
+  };
 
   try {
-    Object.defineProperty(navigator, "webdriver", {
-      configurable: true,
-      get: () => false,
-    });
+    applyStealth(window);
   } catch (_) {}
 })();
 """

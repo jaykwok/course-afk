@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from core.humanize import jitter
+
 
 async def handle_archive_continue_popup(page) -> bool:
     """归档课确认：「该课程已归档，是否继续学习？」→ 点「继续学习」。
@@ -183,10 +185,17 @@ async def check_and_handle_rating_popup(page):
 
 
 async def check_rating_popup_periodically(page, duration, interval=30):
-    """定期检查视频内评价弹窗, 持续指定时间"""
-    elapsed = 0
+    """定期检查视频内评价弹窗, 持续指定时间。
+
+    间隔在 ``interval`` 附近抖动：整段挂机里每 30 秒一次的整点巡检本身就是
+    一条固定节拍, 抖开后总时长不变、也不会漏检（弹窗不会自己消失）。
+    """
+    elapsed = 0.0
+    duration = max(0.0, float(duration))
     while elapsed < duration:
-        wait_time = min(interval, duration - elapsed)
+        wait_time = min(jitter(interval, ratio=0.35, minimum=5), duration - elapsed)
+        if wait_time <= 0.05:
+            break
         await asyncio.sleep(wait_time)
         await check_and_handle_rating_popup(page)
         elapsed += wait_time

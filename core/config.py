@@ -8,6 +8,7 @@ import asyncio
 import ctypes
 import logging
 import os
+import random
 import sys
 import threading
 from datetime import datetime
@@ -227,6 +228,17 @@ def _env_text(name: str, default: str | None = None) -> str | None:
         return default
     stripped = value.strip()
     return stripped or default
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = _env_text(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logging.warning(f"{name} 不是整数，回退默认值 {default}: {raw!r}")
+        return default
 
 
 def _default_browser_channel(browser_type: str) -> str | None:
@@ -500,13 +512,43 @@ BROWSER_CHANNEL = _env_text("BROWSER_CHANNEL", _default_browser_channel(BROWSER_
 # (localhost), 触发 Edge「kc.zhixueyun.com 想要访问此设备上的其他应用和服务」授权弹窗,
 # 该弹窗会阻塞页面加载、导致自动化超时卡死。Playwright 的 grant_permissions
 # ("local-network-access") 目前压不住该提示(见 playwright#37861), 改用启动参数直接禁用。
+#
+# 注意 --disable-features 只能出现一次：Chromium 的 CommandLine 用 map 存开关，
+# 重名后到者覆盖前者。Playwright 自己会先塞一份 --disable-features=...（含
+# msForceBrowserSignIn / Translate / HttpsUpgrades / PaintHolding 等），用户 args
+# 追加在其后，直接再写一个就会把它整份顶掉——Edge 强制登录、翻译弹窗都会回来。
+# 所以这里把 Playwright 的默认项一起列出再追加自己的三项。
+# 来源: playwright-core 1.62 chromiumSwitches.ts 的 disabledFeatures。
+_PLAYWRIGHT_DISABLED_FEATURES = (
+    "AvoidUnnecessaryBeforeUnloadCheckSync",
+    "BoundaryEventDispatchTracksNodeRemoval",
+    "DestroyProfileOnBrowserClose",
+    "DialMediaRouteProvider",
+    "GlobalMediaControls",
+    "HttpsUpgrades",
+    "LensOverlay",
+    "MediaRouter",
+    "PaintHolding",
+    "ThirdPartyStoragePartitioning",
+    "BlockOriginHeaderModificationOnRedirect",
+    "Translate",
+    "AutoDeElevate",
+    "OptimizationHints",
+    "msForceBrowserSignIn",
+    "msEdgeUpdateLaunchServicesPreferredVersion",
+)
+
+_PROJECT_DISABLED_FEATURES = (
+    "LocalNetworkAccessChecks",
+    "BlockInsecurePrivateNetworkRequests",
+    "BlockInsecurePrivateNetworkRequestsForPermissions",
+)
+
 BROWSER_ARGS = [
     "--mute-audio",
     "--disable-blink-features=AutomationControlled",
     "--disable-features="
-    "LocalNetworkAccessChecks,"
-    "BlockInsecurePrivateNetworkRequests,"
-    "BlockInsecurePrivateNetworkRequestsForPermissions",
+    + ",".join(_PLAYWRIGHT_DISABLED_FEATURES + _PROJECT_DISABLED_FEATURES),
 ]
 
 # ============================================================
@@ -541,12 +583,54 @@ DOCUMENT_POLL_INTERVAL = 10
 # URL 学习类型等待时间
 URL_TYPE_WAIT = 10  # 秒
 
-# 挂课流程的 slow_mo 参数
-AFK_SLOW_MO = 3000  # 毫秒
+# 视频挂机：把整段等待切成随机长度的小段（秒），每段结束核对播放位置与章节进度
+VIDEO_WATCH_SLICE_MIN = _env_int("VIDEO_WATCH_SLICE_MIN", 20)
+VIDEO_WATCH_SLICE_MAX = _env_int("VIDEO_WATCH_SLICE_MAX", 55)
+
+# 计划观看时长之外的随机余量（秒）。剩余时长被向上取整到整分钟，不加余量
+# 则每节都恰好在整分钟离开，是最显眼的固定节拍。
+VIDEO_WATCH_OVERSHOOT_MIN = _env_int("VIDEO_WATCH_OVERSHOOT_MIN", 5)
+VIDEO_WATCH_OVERSHOOT_MAX = _env_int("VIDEO_WATCH_OVERSHOOT_MAX", 45)
+
+# 播放停滞（缓冲 / 被弹窗暂停）时累计最多顺延多少秒，避免无限等待
+VIDEO_STALL_MAX_EXTRA_WAIT = _env_int("VIDEO_STALL_MAX_EXTRA_WAIT", 300)
+
+# 挂课流程的 slow_mo 区间（毫秒）。
+# Playwright 在每个动作前固定等待 slow_mo，写死 3000 会让整轮动作间隔完全
+# 一致；这里改成每次启动浏览器在区间内取样。注意 slow_mo 只能做到「每次
+# 运行不同」，同一轮内仍是定值——逐次动作/轮询的抖动由 core.humanize 在
+# 各等待点补齐。
+AFK_SLOW_MO_MIN = _env_int("AFK_SLOW_MO_MIN", 1500)
+AFK_SLOW_MO_MAX = _env_int("AFK_SLOW_MO_MAX", 4500)
+
+
+def sample_afk_slow_mo() -> int:
+    """每次启动浏览器取一个 slow_mo（毫秒）。"""
+    low, high = sorted((max(0, AFK_SLOW_MO_MIN), max(0, AFK_SLOW_MO_MAX)))
+    return random.randint(low, high)
+
+# 章节之间的随机停顿（秒）：一节结束立刻点开下一节是很显眼的机器节奏
+SECTION_GAP_MIN = _env_int("SECTION_GAP_MIN", 2)
+SECTION_GAP_MAX = _env_int("SECTION_GAP_MAX", 7)
+
+# 课程之间的随机停顿（秒）：整批链接无缝连做同理
+COURSE_GAP_MIN = _env_int("COURSE_GAP_MIN", 8)
+COURSE_GAP_MAX = _env_int("COURSE_GAP_MAX", 40)
 
 # ============================================================
 # 考试配置
 # ============================================================
+# 每题之间不额外加停顿：get_ai_answers 的模型思考耗时本身就是随机的，
+# 已经把答题时间线抖开了。
+
+# 多选题逐个点选之间的随机停顿（秒）——同一题内的连点，模型耗时盖不到
+EXAM_OPTION_GAP_MIN = float(_env_text("EXAM_OPTION_GAP_MIN", "0.25") or "0.25")
+EXAM_OPTION_GAP_MAX = float(_env_text("EXAM_OPTION_GAP_MAX", "0.9") or "0.9")
+
+# 交卷两步确认之间的随机停顿（秒）
+EXAM_SUBMIT_GAP_MIN = float(_env_text("EXAM_SUBMIT_GAP_MIN", "0.8") or "0.8")
+EXAM_SUBMIT_GAP_MAX = float(_env_text("EXAM_SUBMIT_GAP_MAX", "2.5") or "2.5")
+
 # 课程内考试: 剩余次数 <= 此值时转为人工考试（1 即“小于 2 次”）
 COURSE_EXAM_ATTEMPT_THRESHOLD = 1
 # 试卷链接考试: 剩余次数 <= 此值时转为人工考试（1 即“小于 2 次”）
