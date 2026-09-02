@@ -42,20 +42,6 @@ def _g():
     return ui_glyphs()
 
 
-# 输出图标：按终端自动选 Unicode / ASCII（见 terminal_compat.ui_glyphs）。
-# 通过模块 __getattr__ 懒解析，保证 import 后改 COURSE_AFK_UI_CHARS 仍生效。
-def __getattr__(name: str):
-    if name == "ICON_INFO":
-        return ui_glyphs().icon_info
-    if name == "ICON_SUCCESS":
-        return ui_glyphs().icon_success
-    if name == "ICON_WARNING":
-        return ui_glyphs().icon_warning
-    if name == "ICON_FAILURE":
-        return ui_glyphs().icon_failure
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
 def _detect_legacy_windows_mode() -> bool | None:
     # Rich：WT 等明确非 legacy；纯 cmd 交 auto（None）或 True
     if prefers_unicode_ui():
@@ -376,10 +362,11 @@ def begin_operation(title: str, message: str) -> None:
 
 
 def prepare_menu_loading() -> None:
-    """主菜单重新加载前的过渡占位。
+    """主菜单重新加载前的过渡钩子。
 
-    用于填满“结果页确认 → 主菜单挂载”之间的 held-screen 间隙：TUI 下由桥接层
-    替换为忙碌状态，慢机器上不再像卡住；CLI 同步顺序输出、无此间隙，故为空操作。
+    TUI 下由桥接层实现为「结束长任务」：收起状态条并清除操作中标记，
+    让常驻外壳在结果页与主菜单交接时保持可见；CLI 同步顺序输出、无此
+    间隙，故为空操作。
     """
     return None
 
@@ -409,11 +396,10 @@ def _credential_display(state: ProjectState, metadata) -> Text:
     return Text(f"{g.icon_success} 有效", style=f"bold {SUCCESS}")
 
 
-def build_dashboard_renderable(state: ProjectState, *, expand: bool = False):
-    """构造仪表盘渲染对象（CLI 与 TUI 共用，避免两处重复实现漂移）。
+def build_dashboard_renderable(state: ProjectState):
+    """构造 CLI 仪表盘渲染对象（居中、紧凑表格）。
 
-    expand=True 时表格铺满可用宽度（TUI 用，避免宽终端下表格居中留大片空白）；
-    expand=False 时保持居中、紧凑（CLI 用）。
+    TUI 的扁平 KPI 仪表盘在 core.ui.tui_render 里另有实现，两套审美各自演化。
     """
     metadata = load_credential_metadata()
     account_label = metadata.account_label if metadata else "未登录"
@@ -433,7 +419,6 @@ def build_dashboard_renderable(state: ProjectState, *, expand: bool = False):
         title_style=f"bold {GREEN_BRIGHT}",
         min_width=54,
         padding=(0, 1),
-        expand=expand,
     )
     table.add_column("项目", style="dim white", min_width=10, justify="right", no_wrap=True)
     table.add_column("值", overflow="fold", min_width=24, ratio=1)
@@ -461,57 +446,7 @@ def build_dashboard_renderable(state: ProjectState, *, expand: bool = False):
         "建议操作",
         Text(f"{g.arrow}  {recommended}", style=f"bold {WARNING}"),
     )
-    return table if expand else Align.center(table)
-
-
-def build_menu_status_renderable(state: ProjectState):
-    """构造主菜单内的紧凑状态卡片。
-
-    Textual 主菜单是模态屏，会遮住底层完整仪表盘，因此这里保留用户做菜单
-    决策最需要的账号、有效期、任务数量和建议操作，并控制在较小高度内。
-    """
-    metadata = load_credential_metadata()
-    account_label = metadata.account_label if metadata else "未登录"
-    recommended = recommend_next_step(
-        has_credential=state.has_credential and not state.credential_expired,
-        learning_count=state.learning_count,
-        exam_count=state.exam_count,
-        manual_exam_count=state.manual_exam_count,
-    )
-
-    grid = Table.grid(expand=True, padding=(0, 1))
-    grid.add_column(style="dim white", width=10, justify="right", no_wrap=True)
-    grid.add_column(ratio=1, overflow="fold")
-    grid.add_row("当前账号", Text(account_label, style="bold bright_white"))
-    grid.add_row("账号有效期", _credential_display(state, metadata))
-
-    g = _g()
-    counts = Text()
-    for index, (label, count) in enumerate(
-        (
-            ("课程", state.learning_count),
-            ("挂课失败", state.learning_failure_count),
-            ("考试", state.exam_count),
-            ("人工考试", state.manual_exam_count),
-        )
-    ):
-        if index:
-            counts.append(g.sep, style="dim")
-        counts.append(f"{label} ", style="dim")
-        counts.append(str(count), style="bold bright_white" if count else "dim")
-    grid.add_row("任务数量", counts)
-    grid.add_row(
-        "建议操作",
-        Text(f"{g.arrow}  {recommended}", style=f"bold {WARNING}"),
-    )
-
-    return Panel(
-        grid,
-        title=f"[bold {GREEN_BRIGHT}]账号与任务状态[/]",
-        border_style=GREEN,
-        padding=(0, 1),
-        box=_rich_box(ROUNDED),
-    )
+    return Align.center(table)
 
 
 def render_dashboard(state: ProjectState) -> None:
@@ -635,8 +570,8 @@ def pause(message: str = "按回车返回主菜单") -> None:
     console.print()
 
 
-def build_summary_renderable(title: str, rows: list[tuple[str, str]], *, expand: bool = False):
-    """构造汇总渲染对象（CLI 与 TUI 共用）。expand=True 时铺满宽度（TUI 用）。"""
+def build_summary_renderable(title: str, rows: list[tuple[str, str]]):
+    """构造 CLI 汇总渲染对象（居中表格）。TUI 的扁平汇总在 tui_render。"""
     table = Table(
         show_header=False,
         box=_rich_box(SIMPLE_HEAVY),
@@ -645,7 +580,6 @@ def build_summary_renderable(title: str, rows: list[tuple[str, str]], *, expand:
         title_style=f"bold {GREEN_BRIGHT}",
         min_width=54,
         padding=(0, 1),
-        expand=expand,
     )
     table.add_column("项目", style="dim white", min_width=16, justify="right", no_wrap=True)
     table.add_column("结果", overflow="fold", min_width=34, ratio=1)

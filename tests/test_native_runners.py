@@ -282,6 +282,348 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                 ["https://kc.zhixueyun.com/#/study/course/detail/a"],
             )
 
+    async def test_open_course_page_cancels_when_heartbeat_closed(self):
+        """心跳页（mylearning 主控页）被关 = 整窗被关：即使浏览器进程仍存活
+        （Edge 后台模式、new_page 会成功），开课前也必须立即取消本轮挂课。"""
+        from core.abort import UserCancelRequested
+        from core.learning.afk_runner import _open_course_page
+
+        class FakeContext:
+            def __init__(self):
+                self.new_page_calls = 0
+
+            async def new_page(self):
+                self.new_page_calls += 1
+                raise AssertionError("整窗已关时不应再开新课")
+
+        with (
+            patch(
+                "core.learning.afk_runner.ensure_controller_page",
+                new=AsyncMock(return_value=None),
+            ),
+            patch(
+                "core.learning.afk_runner.browser_still_usable",
+                new=AsyncMock(return_value=False),
+            ),
+        ):
+            with self.assertRaises(UserCancelRequested):
+                await _open_course_page(FakeContext())
+
+    async def test_process_url_propagates_cancel_without_recording_failure(self):
+        """_open_course_page 抛出的 UserCancelRequested 必须原样上抛——
+        落进通用 except 会被记成「可重试失败」并继续下一门（关不掉的根源）。"""
+        from core.abort import UserCancelRequested
+        from core.learning.afk_runner import _process_url
+
+        class FakeContext:
+            async def new_page(self):
+                raise AssertionError("不应到达")
+
+        async def never_called(_page):
+            raise AssertionError("handler 不应被执行")
+
+        with TemporaryDirectory() as tmp:
+            failures_file = Path(tmp) / "failures.json"
+            with (
+                patch("core.learning.afk_runner.LEARNING_FAILURES_FILE", failures_file),
+                patch("core.learning.afk_runner.ensure_controller_page", new=AsyncMock()),
+                patch(
+                    "core.learning.afk_runner.browser_still_usable",
+                    new=AsyncMock(return_value=False),
+                ),
+            ):
+                with self.assertRaises(UserCancelRequested):
+                    await _process_url(
+                        FakeContext(),
+                        "https://kc.zhixueyun.com/#/study/course/detail/a",
+                        never_called,
+                    )
+            self.assertFalse(
+                failures_file.exists(),
+                "取消信号不得被记成挂课失败",
+            )
+
+    async def test_browser_still_usable_detects_window_close_with_alive_process(self):
+        """组合判定：连接存活（Edge 后台模式）但所有页面都已关闭 = 整窗关闭。"""
+        from core.learning.afk_runner import browser_still_usable
+
+        class FakeBrowser:
+            def is_connected(self):
+                return True  # 模拟 Edge 后台模式：窗口关了进程还在
+
+        class FakePage:
+            def __init__(self, closed):
+                self._closed = closed
+
+            def is_closed(self):
+                return self._closed
+
+        class FakeContext:
+            def __init__(self, pages):
+                self.browser = FakeBrowser()
+                self.pages = pages
+
+        with patch(
+            "core.learning.afk_runner._WINDOW_CLOSE_SETTLE_SECONDS", 0
+        ):
+            # 全部页面已关（含心跳页）→ 整窗关闭
+            self.assertFalse(
+                await browser_still_usable(FakeContext([FakePage(True), FakePage(True)]))
+            )
+            # 心跳页仍在 → 只是关了课程标签/窗口，继续
+            self.assertTrue(
+                await browser_still_usable(FakeContext([FakePage(True), FakePage(False)]))
+            )
+
+        class DisconnectedContext:
+            def __init__(self):
+                class DeadBrowser:
+                    def is_connected(self):
+                        return False
+
+                self.browser = DeadBrowser()
+                self.pages = [FakePage(False)]
+
+        self.assertFalse(await browser_still_usable(DisconnectedContext()))
+
+        class BareContext:  # 无 browser 属性的测试替身：无法证伪按存活
+            pass
+
+        self.assertTrue(await browser_still_usable(BareContext()))
+
+    async def test_process_url_cancels_when_window_closed_with_alive_process(self):
+        """端到端：课程操作抛 target-closed，连接仍显示存活（Edge 后台），
+        但页面全关 → 必须取消而不是「保留链接继续下一门」。"""
+        from core.abort import UserCancelRequested
+        from core.learning.afk_runner import _process_url
+
+        class FakePage:
+            def is_closed(self):
+                return False
+
+            async def close(self):
+                return None
+
+            async def goto(self, _url, **_kwargs):
+                # 页面刚开就遇到整窗关闭：导航即失败
+                raise TargetClosedError(
+                    "Target page, context or browser has been closed"
+                )
+
+        class FakeContext:
+            async def new_page(self):
+                return FakePage()
+
+        async def dead_handler(_page):
+            raise AssertionError("handler 不应被执行（导航阶段即失败）")
+
+        with TemporaryDirectory() as tmp:
+            failures_file = Path(tmp) / "failures.json"
+            with (
+                patch("core.learning.afk_runner.LEARNING_FAILURES_FILE", failures_file),
+                patch("core.learning.afk_runner.ensure_controller_page", new=AsyncMock()),
+                # 开课时可用；课程操作抛 target-closed 后（整窗关闭事件落定）不可用
+                patch(
+                    "core.learning.afk_runner.browser_still_usable",
+                    new=AsyncMock(side_effect=[True, False]),
+                ),
+            ):
+                with self.assertRaises(UserCancelRequested):
+                    await _process_url(
+                        FakeContext(),
+                        "https://kc.zhixueyun.com/#/study/course/detail/a",
+                        dead_handler,
+                    )
+            self.assertFalse(
+                failures_file.exists(),
+                "整窗关闭不得被记成挂课失败",
+            )
+
+    async def test_process_url_cancels_on_zombie_playwright_internal_error(self):
+        """整窗关闭的僵尸连接可能抛 Playwright 内部 AttributeError，而非
+        TargetClosedError；确认浏览器不可用后应按取消处理且不记录失败。"""
+        from core.abort import UserCancelRequested
+        from core.learning.afk_runner import _process_url
+
+        class FakePage:
+            def __init__(self):
+                self.closed = False
+
+            def is_closed(self):
+                return self.closed
+
+            async def goto(self, _url, **_kwargs):
+                raise AttributeError("'dict' object has no attribute '_object'")
+
+            async def close(self):
+                self.closed = True
+
+        page = FakePage()
+
+        class FakeContext:
+            async def new_page(self):
+                return page
+
+        async def never_called(_page):
+            raise AssertionError("导航阶段失败后不应执行 handler")
+
+        with TemporaryDirectory() as tmp:
+            failures_file = Path(tmp) / "failures.json"
+            with (
+                patch("core.learning.afk_runner.LEARNING_FAILURES_FILE", failures_file),
+                patch(
+                    "core.learning.afk_runner.ensure_controller_page",
+                    new=AsyncMock(),
+                ),
+                # 开课前存活；导航抛内部错误后，组合判定发现整窗已关闭。
+                patch(
+                    "core.learning.afk_runner.browser_still_usable",
+                    new=AsyncMock(side_effect=[True, False]),
+                ),
+            ):
+                with self.assertRaises(UserCancelRequested):
+                    await _process_url(
+                        FakeContext(),
+                        "https://kc.zhixueyun.com/#/study/course/detail/a",
+                        never_called,
+                    )
+
+            self.assertTrue(page.closed)
+            self.assertFalse(
+                failures_file.exists(),
+                "整窗关闭的内部异常不得被记成可重试课程失败",
+            )
+
+    async def test_heartbeat_close_finishes_current_course_then_stops(self):
+        """心跳页设计语义（用户确认）：课程进行中关闭心跳页 → 当前课程完整
+        挂完（不被打断），下一门开课前停止并保存剩余链接。钉成回归，防止
+        以后被当成偶然行为改掉。"""
+        from core.abort import UserCancelRequested
+        from core.browser.session import (
+            _remember_controller_page,
+            release_controller_page,
+        )
+        from core.learning.afk_runner import AfkBatch, run_afk_once
+
+        class FakeBrowser:
+            def is_connected(self):
+                return True  # 模拟 Edge 后台模式：心跳关了进程仍存活
+
+        class FakeControllerPage:
+            def __init__(self):
+                self.handlers: dict[str, list] = {}
+                self.closed = False
+
+            def is_closed(self):
+                return self.closed
+
+            def on(self, event, handler):
+                self.handlers.setdefault(event, []).append(handler)
+
+            def close(self):
+                self.closed = True
+                for handler in self.handlers.get("close", []):
+                    handler()
+
+        class FakeCoursePage:
+            def __init__(self):
+                self.closed = False
+
+            def is_closed(self):
+                return self.closed
+
+            async def close(self):
+                self.closed = True
+
+            async def goto(self, _url, **_kwargs):
+                return None
+
+            async def evaluate(self, _script):
+                return None  # 无顶层弹窗
+
+            async def wait_for_timeout(self, _milliseconds):
+                return None
+
+        class FakeContext:
+            def __init__(self):
+                self.browser = FakeBrowser()
+                self.controller = FakeControllerPage()
+                # 与生产一致：心跳页由 context 创建并常驻 pages 列表
+                self.pages = [self.controller]
+                _remember_controller_page(self, self.controller)
+
+            async def new_page(self):
+                page = FakeCoursePage()
+                self.pages.append(page)
+                return page
+
+        class FakeBrowserContextManager:
+            async def __aenter__(self):
+                return None, context
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        statuses: list[str] = []
+        handler_state: dict = {}
+
+        async def learning_handler(_page):
+            handler_state["started"] = True
+            await asyncio.sleep(0.3)  # 模拟挂课进行中（视频等待等）
+            handler_state["completed"] = True
+
+        context = FakeContext()
+        url_a = "https://kc.zhixueyun.com/#/study/course/detail/a"
+        url_b = "https://kc.zhixueyun.com/#/study/course/detail/b"
+
+        with TemporaryDirectory() as tmp:
+            learning_file = Path(tmp) / "learning.json"
+            batch = AfkBatch(urls=[url_a, url_b])
+
+            async def scenario() -> None:
+                task = asyncio.create_task(run_afk_once(status_callback=statuses.append))
+                deadline = asyncio.get_running_loop().time() + 5.0
+                while not handler_state.get("started"):
+                    self.assertLess(
+                        asyncio.get_running_loop().time(),
+                        deadline,
+                        "课程 handler 未在预期时间内启动",
+                    )
+                    await asyncio.sleep(0.01)
+                # 用户此刻只关心跳页：当前课程仍在挂，必须等它挂完
+                context.controller.close()
+                return await task
+
+            with (
+                patch("core.learning.afk_runner.LEARNING_URLS_FILE", learning_file),
+                patch("core.learning.afk_runner.LEARNING_FAILURES_FILE", Path(tmp) / "f.json"),
+                patch("core.learning.afk_runner.prepare_afk_batch", return_value=batch),
+                patch(
+                    "core.learning.afk_runner.create_browser_context",
+                    return_value=FakeBrowserContextManager(),
+                ),
+                patch("core.learning.afk_runner.normalize_urls", side_effect=lambda urls: list(urls or [])),
+                patch("core.learning.afk_runner.is_compliant_url_regex", return_value=True),
+                patch("core.learning.afk_runner.course_learning", new=AsyncMock(wraps=learning_handler)),
+            ):
+                try:
+                    with self.assertRaises(UserCancelRequested) as ctx_manager:
+                        await scenario()
+                finally:
+                    release_controller_page(context)
+
+            self.assertIn("心跳页已关闭", str(ctx_manager.exception))
+            self.assertTrue(
+                handler_state.get("completed"),
+                "当前课程必须完整挂完，不能因心跳页关闭被打断",
+            )
+            self.assertTrue(
+                any("心跳页已关闭" in message for message in statuses),
+                "关闭瞬间必须有状态提示（告知停止已登记）",
+            )
+            # 课程 a 已完成并移出队列；课程 b 保留待下次
+            self.assertEqual(_read_learning_queue_urls(learning_file), [url_b])
+
     async def test_process_url_records_retryable_failure_to_learning_failures(self):
         from core.learning.afk_runner import _process_url
 

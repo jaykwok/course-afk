@@ -18,7 +18,10 @@ from core.abort import (
 from core.browser.session import (
     create_browser_context,
     ensure_controller_page,
+    get_context_browser,
+    get_controller_page,
     is_browser_connected,
+    is_controller_window_closed,
     is_target_closed_exception,
 )
 from core.config import (
@@ -49,6 +52,34 @@ StatusCallback = Callable[[str], None]
 CaptureCallback = Callable[[object, str], Awaitable[None]]
 _COURSE_INFO_API_MARKER = "/api/v1/course-study/course-front/info/"
 _COURSE_BOOTSTRAP_TIMEOUT_SECONDS = 30
+# 判定「整窗关闭 vs 仅关标签」前等待页面 close 事件落定的时长：
+# target-closed 异常与 Playwright 内部错误（僵尸连接下 goto 抛
+# AttributeError 等）都可能先于 close 事件派发到达，连接判断 / 心跳闩锁
+# / pages 状态此刻尚未更新，不等就会把整窗关闭误判成「仅关标签」。
+_WINDOW_CLOSE_SETTLE_SECONDS = 0.5
+
+
+async def browser_still_usable(context) -> bool:
+    """整窗关闭的组合判定：连接存活 且 context 中仍有打开的页面。
+
+    单一信号都不可靠（实测，2026-09-02）：
+    - is_connected：Edge 后台模式在窗口关闭后进程存活，恒 True；
+    - 心跳闩锁 / is_closed 标志：依赖 close 事件派发，异常常先于事件到达；
+    - 僵尸连接下 new_page 甚至能成功，随后 goto 才以内部错误崩掉。
+    因此这里在事件落定后综合判断：所有页面都已关闭 = 整窗关闭 → False。
+    无浏览器对象的测试替身无法证伪，按存活返回。
+    """
+    if get_context_browser(context) is None:
+        return True
+    if not is_browser_connected(context):
+        return False
+    pages = getattr(context, "pages", None)
+    if pages is None:
+        return True
+    await asyncio.sleep(_WINDOW_CLOSE_SETTLE_SECONDS)
+    if not is_browser_connected(context):  # 闩锁可能在落定期内置位
+        return False
+    return any(_is_page_open(page) for page in pages)
 
 
 @dataclass
@@ -217,14 +248,26 @@ async def _open_course_page(context):
     为单门课/主题新开标签页。
 
     必须一门一页、处理完 close：同页 goto 下一门会被平台拦到
-    /#/study/errors/...「您已打开新的课程详情页…」。控制器页始终保留。
+    /#/study/errors/...「您已打开新的课程详情页…」。心跳页（mylearning
+    主控页）始终保留：它被关 = 用户关掉了整窗。开课前用组合判定拦截——
+    Edge 后台模式下进程仍存活、new_page 会成功、goto 才崩，所以必须在
+    开课前判断，不能等异常。
     """
     await ensure_controller_page(context)
+    if not await browser_still_usable(context):
+        # 心跳页被关（可能是整窗关闭，也可能是单关心跳页）时给出对应文案
+        if is_controller_window_closed(context):
+            raise UserCancelRequested(
+                "心跳页已关闭，已保留剩余学习链接，返回主菜单"
+            )
+        raise UserCancelRequested(
+            "浏览器窗口已关闭，已保留剩余学习链接，返回主菜单"
+        )
     try:
         return await context.new_page()
     except Exception as exc:
         if is_target_closed_exception(exc):
-            if is_browser_connected(context):
+            if await browser_still_usable(context):
                 raise
             raise UserCancelRequested(
                 "浏览器窗口已关闭，已保留剩余学习链接，返回主菜单"
@@ -270,11 +313,16 @@ async def _process_url(
         await handler(page)
         await _capture("after_handler")
         return False
+    except (UserCancelRequested, UserAbortRequested):
+        # 浏览器整窗关闭等取消信号必须原样上抛；落进下面的通用分支会被
+        # 记成「可重试失败」，循环继续下一门——窗口关了却停不下来的根源。
+        raise
     except Exception as exc:
         await _capture("error")
         if is_target_closed_exception(exc):
-            # 浏览器仍在：仅关标签/页失败 → 保留链接；整窗关闭 → 回主菜单
-            if is_browser_connected(context):
+            # 仅关课程标签/窗口（心跳页仍在）→ 保留链接继续；整窗关闭 → 回主菜单。
+            # 注意先经 browser_still_usable 落定再判（见其 docstring）。
+            if await browser_still_usable(context):
                 logging.info(f"当前课程标签页已关闭，保留当前学习链接: {url}")
                 return True
             raise UserCancelRequested(
@@ -312,6 +360,14 @@ async def _process_url(
             if isinstance(exc, WafBlockError):
                 raise
             return bool(exc.keep_pending)
+        # Edge 整窗关闭后 Playwright 偶尔从内部连接层抛出 AttributeError
+        # （例如 "'dict' object has no attribute '_object'"），不属于标准的
+        # TargetClosedError。未知异常落盘前再做一次组合存活判定：整窗已关就
+        # 按用户取消处理，避免误记失败、输出大段堆栈并短暂进入下一条链接。
+        if not await browser_still_usable(context):
+            raise UserCancelRequested(
+                "浏览器窗口已关闭，已保留剩余学习链接，返回主菜单"
+            ) from None
         logging.error(f"发生错误: {exc}")
         logging.error(traceback.format_exc())
         record_learning_failure(
@@ -343,7 +399,9 @@ async def _recheck_url_type_links(context) -> None:
         except UserCancelRequested:
             raise
         except Exception as exc:
-            if is_target_closed_exception(exc) and not is_browser_connected(context):
+            if is_target_closed_exception(exc) and not await browser_still_usable(
+                context
+            ):
                 raise UserCancelRequested(
                     "浏览器窗口已关闭，已保留剩余学习链接，返回主菜单"
                 ) from None
@@ -368,8 +426,12 @@ async def _recheck_url_type_links(context) -> None:
                     detail=entry.detail,
                     file_path=LEARNING_FAILURES_FILE,
                 )
+        except (UserCancelRequested, UserAbortRequested):
+            raise
         except Exception as exc:
-            if is_target_closed_exception(exc) and not is_browser_connected(context):
+            if is_target_closed_exception(exc) and not await browser_still_usable(
+                context
+            ):
                 raise UserCancelRequested(
                     "浏览器窗口已关闭，已保留剩余学习链接，返回主菜单"
                 ) from None
@@ -400,8 +462,33 @@ async def run_afk_once(status_callback: StatusCallback | None = None) -> None:
 
     try:
         async with create_browser_context(slow_mo=AFK_SLOW_MO) as (_, context):
+            # 心跳页（mylearning 主控页）关闭通知：只提示、不打断——
+            # 「当前课程挂完后停止」是用户确认的设计语义（确定性：课程主路径
+            # 不查连接状态，停止点固定在下一门开课前的 browser_still_usable）。
+            heartbeat_announced = False
+            watched_controllers: set[int] = set()
+
+            def _announce_heartbeat_closed() -> None:
+                nonlocal heartbeat_announced
+                if heartbeat_announced:
+                    return
+                heartbeat_announced = True
+                logging.info("心跳页已关闭：当前课程完成后将停止本轮挂课")
+                if status_callback:
+                    status_callback("心跳页已关闭，当前课程完成后将停止本轮挂课")
+
+            def _watch_heartbeat() -> None:
+                controller = get_controller_page(context)
+                if controller is None or id(controller) in watched_controllers:
+                    return
+                watched_controllers.add(id(controller))
+                on = getattr(controller, "on", None)
+                if callable(on):
+                    on("close", _announce_heartbeat_closed)
+
             # 一门一页 + 处理完 close，避免同页 goto 触发 /study/errors 限流页
             for index, url in enumerate(normalized_urls, start=1):
+                _watch_heartbeat()  # 控制器页极少被重建，重建后补挂通知
                 if status_callback:
                     status_callback(
                         f"挂课 {index}/{len(normalized_urls)}: {url}"

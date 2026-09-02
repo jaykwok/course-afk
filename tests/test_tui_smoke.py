@@ -159,6 +159,57 @@ class TuiSmokeTests(unittest.TestCase):
 
         asyncio.run(asyncio.wait_for(scenario(), timeout=30.0))
 
+    def test_afk_start_clears_previous_activity_log(self):
+        """每轮挂课开始时清空旧的 TUI 活动日志，但保留本轮「开始挂课」。"""
+
+        async def scenario() -> None:
+            from rich.text import Text
+            from textual.widgets import RichLog
+
+            outcome: dict = {}
+
+            def caller() -> None:
+                try:
+                    cli_ui.show_info("开始挂课")
+                    outcome["sent"] = True
+                except BaseException as exc:  # noqa: BLE001
+                    outcome["error"] = repr(exc)
+
+            with patch("core.config.setup_logging"):
+                app = _PromptApp()
+                frontend = TuiFrontend(app)
+                frontend.install()
+                try:
+                    async with app.run_test(size=(90, 22)) as pilot:
+                        log = app.query_one("#log", RichLog)
+                        app.emit_log(Text("上一轮挂课日志"))
+                        self.assertTrue(
+                            any("上一轮挂课日志" in line.text for line in log.lines)
+                        )
+
+                        worker = threading.Thread(target=caller, daemon=True)
+                        worker.start()
+                        self.assertTrue(
+                            await _wait_for(
+                                lambda: outcome.get("sent") or outcome.get("error"),
+                                pilot,
+                            )
+                        )
+                        self.assertNotIn("error", outcome, outcome)
+                        self.assertTrue(
+                            await _wait_for(
+                                lambda: any("开始挂课" in line.text for line in log.lines),
+                                pilot,
+                            )
+                        )
+                        rendered = "\n".join(line.text for line in log.lines)
+                        self.assertNotIn("上一轮挂课日志", rendered)
+                        self.assertIn("开始挂课", rendered)
+                finally:
+                    frontend.restore()
+
+        asyncio.run(asyncio.wait_for(scenario(), timeout=20.0))
+
     def test_operation_dismisses_held_menu_modal(self):
         """从主菜单进入长任务时，held 的主菜单模态必须被退掉，露出 #main 外壳。
 
@@ -301,8 +352,10 @@ class TuiSmokeTests(unittest.TestCase):
         asyncio.run(asyncio.wait_for(scenario(), timeout=30.0))
 
     def test_status_message_refreshes_dashboard_counts(self):
-        """每条状态消息后重读队列文件刷新仪表盘：计数随任务完成实时变化。
-        show_info 必须从工作线程调用（与真实桥接一致），call_from_thread 才不会自死锁。"""
+        """队列文件变动后，下一条状态消息会重读并刷新仪表盘计数。
+        _queue_files_changed 恒 True 模拟「每条消息前队列文件都刚被写」
+        （真实场景：一门课完成 → 队列 JSON 落盘 → mtime 变化）。
+        show_info 必须从工作线程调用（与真实桥接一致），post_ui_update 才走跨线程路径。"""
 
         async def scenario() -> None:
             from core.state import ProjectState
@@ -335,6 +388,8 @@ class TuiSmokeTests(unittest.TestCase):
                 app = _PromptApp()
                 frontend = TuiFrontend(app)
                 frontend.install()
+                # 跳过 mtime 短路：本测试不落盘真实队列文件
+                frontend._queue_files_changed = lambda: True
                 try:
                     async with app.run_test(size=(100, 28)) as pilot:
                         worker.start()
@@ -357,6 +412,177 @@ class TuiSmokeTests(unittest.TestCase):
                     frontend.restore()
 
         asyncio.run(asyncio.wait_for(scenario(), timeout=20.0))
+
+    def test_refresh_dashboard_skips_read_when_queue_files_unchanged(self):
+        """mtime 短路：文件没动就不重读 JSON、不更新 _latest_state（每条消息
+        省下 ~1.2ms 的队列重读与仪表盘重建）。"""
+
+        async def scenario() -> None:
+            from core.state import ProjectState
+
+            outcome: dict = {}
+
+            def caller() -> None:
+                try:
+                    with patch(
+                        "core.state.collect_project_state",
+                        return_value=ProjectState(True, False, 24, 0, 0, 0),
+                    ) as collect:
+                        cli_ui.show_info("挂课 1/24")
+                        outcome["first_count"] = collect.call_count
+                        # 文件未变动 -> 第二条消息不应触发重读
+                        cli_ui.show_info("挂课 2/24")
+                        outcome["second_count"] = collect.call_count
+                        outcome["latest"] = frontend._latest_state.learning_count
+                except BaseException as exc:  # noqa: BLE001
+                    outcome["error"] = repr(exc)
+
+            worker = threading.Thread(target=caller, daemon=True)
+            with patch("core.config.setup_logging"):
+                app = _PromptApp()
+                frontend = TuiFrontend(app)
+                frontend.install()
+                try:
+                    async with app.run_test(size=(100, 28)) as pilot:
+                        worker.start()
+                        self.assertTrue(
+                            await _wait_for(
+                                lambda: "latest" in outcome or "error" in outcome,
+                                pilot,
+                            )
+                        )
+                finally:
+                    frontend.restore()
+
+            self.assertNotIn("error", outcome, outcome)
+            self.assertEqual(outcome.get("first_count"), 1)
+            self.assertEqual(outcome.get("second_count"), 1, "文件未变时不应重读队列")
+            self.assertEqual(outcome.get("latest"), 24)
+
+        asyncio.run(asyncio.wait_for(scenario(), timeout=20.0))
+
+    def test_ui_updates_coalesce_to_latest_value_in_order(self):
+        """合并写缓冲：值字段 latest-value 覆盖，事件字段保序；风暴下信号
+        消息至多一条在途。"""
+
+        async def scenario() -> None:
+            with patch("core.config.setup_logging"):
+                app = _PromptApp()
+                async with app.run_test(size=(100, 28)) as pilot:
+                    await pilot.pause()
+                    for index in range(50):
+                        app.post_ui_update(status=f"状态 {index}")
+                    app.post_ui_update(
+                        event=("begin_operation", ("课程学习", "正在打开浏览器"))
+                    )
+                    app.post_ui_update(status="最终状态")
+                    await pilot.pause()
+                    from textual.widgets import Static
+
+                    self.assertIn(
+                        "最终状态",
+                        str(app.query_one("#status-text", Static).render()),
+                        "50 条状态应合并为 latest-value",
+                    )
+                    self.assertIn(
+                        "active", app.query_one("#status-bar").classes
+                    )
+                    # 事件(begin) 先于最终 status 应用：bar 显示且文本是最终值
+
+        asyncio.run(asyncio.wait_for(scenario(), timeout=20.0))
+
+    def test_flush_preserves_single_in_flight_signal(self):
+        """flush（模态挂载屏障）只取数据不清 in_flight：旧信号无法从队列
+        取消，flush 若清标志会让后续更新投第二个信号、队列压两个。"""
+
+        async def scenario() -> None:
+            from core.ui.tui_app import UiUpdate
+
+            with patch("core.config.setup_logging"):
+                app = _PromptApp()
+                async with app.run_test(size=(100, 28)) as pilot:
+                    await pilot.pause()
+                    signals: list[UiUpdate] = []
+                    original_post = app.post_message
+
+                    def counting_post(message):
+                        if isinstance(message, UiUpdate):
+                            signals.append(message)
+                        return original_post(message)
+
+                    app.post_message = counting_post
+                    app.post_ui_update(status="第一批")
+                    self.assertTrue(app._ui_in_flight)
+                    self.assertEqual(len(signals), 1)
+
+                    # 模态挂载屏障：flush 取走数据，但必须保留在途标志
+                    app.flush_ui_updates()
+                    self.assertTrue(
+                        app._ui_in_flight,
+                        "flush 不应清除 in_flight（旧信号仍在队列里）",
+                    )
+
+                    # flush 之后的新更新不得再投第二个信号
+                    app.post_ui_update(status="第二批")
+                    self.assertEqual(len(signals), 1, "flush 后不应叠加第二个信号")
+
+                    # 旧信号被消费：清标志、取走第二批数据
+                    await pilot.pause()
+                    from textual.widgets import Static
+
+                    self.assertFalse(app._ui_in_flight)
+                    self.assertIn(
+                        "第二批",
+                        str(app.query_one("#status-text", Static).render()),
+                    )
+                    self.assertEqual(len(signals), 1)
+                    self.assertEqual(len(app._ui_values), 0)
+                    self.assertEqual(len(app._ui_events), 0)
+
+        asyncio.run(asyncio.wait_for(scenario(), timeout=20.0))
+
+    def test_log_storm_drains_as_single_write_per_batch(self):
+        """日志风暴：每个 drain tick 只允许一次 RichLog.write（整批 Group），
+        而不是逐条写 513 次。"""
+
+        async def scenario() -> None:
+            with patch("core.config.setup_logging"):
+                app = _PromptApp()
+                async with app.run_test(size=(100, 28)) as pilot:
+                    await pilot.pause()
+                    from textual.widgets import RichLog
+
+                    log = app.query_one("#log", RichLog)
+                    write_calls: list = []
+                    original_write = log.write
+
+                    def counting_write(renderable):
+                        write_calls.append(renderable)
+                        return original_write(renderable)
+
+                    log.write = counting_write
+                    from rich.text import Text
+
+                    for index in range(600):  # 超出缓冲 512，触发丢弃计数
+                        app.enqueue_log(Text(f"log {index}"))
+                    app._drain_log_buffer()
+
+                    self.assertEqual(
+                        len(write_calls), 1, "整批应合并为一次 write"
+                    )
+                    self.assertEqual(app._log_dropped, 0, "丢弃计数应已消费")
+                    self.assertEqual(len(app._log_buffer), 0)
+
+        asyncio.run(asyncio.wait_for(scenario(), timeout=20.0))
+
+    def test_empty_log_drain_skips_widget_query(self):
+        """20Hz 日志定时器空闲时直接返回，不做 selector 查询。"""
+        with patch("core.config.setup_logging"):
+            app = _PromptApp()
+            with patch.object(app, "query_one") as query_one:
+                app._drain_log_buffer()
+
+        query_one.assert_not_called()
 
     def test_link_confirmation_and_result_summary_screens(self):
         """浏览器前显示分类确认，浏览器后显示单按钮结果页。"""

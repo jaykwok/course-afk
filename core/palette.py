@@ -1,12 +1,13 @@
 """全应用统一色板。
 
-Textual 主题(core.ui.tui_app.COURSE_THEME)与 Rich 渲染(core.ui / core.ui.tui_bridge)
-共用这套颜色，保证 CLI 图标、TUI 日志、焦点高亮、按钮变体、边框、标题都用同一套
-「翡翠绿主色 + 语义色」，整体色调一致，不会冷暖 / 明暗打架。
+Textual 主题(core.ui.tui_app.COURSE_THEME)、CLI 的 Rich 渲染(core.ui)与
+TUI 的 Rich 渲染(core.ui.tui_render)共用这套颜色，保证 CLI 图标、TUI 日志、
+焦点高亮、按钮变体、边框、标题都用同一套「翡翠绿主色 + 语义色」，
+整体色调一致，不会冷暖 / 明暗打架。
 
 - 翡翠绿主色：品牌色。标题、边框、序号、提示语、进度、info 图标、焦点高亮。
 - 语义色：成功 / 警告 / 错误。CLI 图标、TUI 日志、Textual 按钮变体共用同一只绿 / 黄 / 红。
-- 中性色(白 / 灰 / 暗淡)沿用各框架默认文字色，不在此约束。
+- 中性表面/文字：暗色扁平布局的画布-卡片-悬浮三层底色与正文三级文字色。
 """
 
 # 翡翠绿主色阶（Tailwind emerald）

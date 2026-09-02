@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from contextlib import asynccontextmanager
 
 from playwright.async_api import async_playwright
@@ -18,6 +17,12 @@ from core.browser.overlays import prepare_page_after_navigation_async
 
 _CONTROLLER_PAGES: dict[int, object] = {}
 _CONTEXT_HEADLESS: dict[int, bool] = {}
+# 心跳页（常驻主控页）关闭闩锁。设计语义：该页被关 = 浏览器整窗被关。
+# 「关闭单个课程标签页」与「关闭整窗」在异常层面无法判别，靠这页常驻来区分：
+# 课程页关了它还在（继续挂课），它关了就是整窗关闭（停止并保存剩余链接）。
+# Edge 后台模式在窗口关闭后进程仍存活（is_connected 恒 True），必须用本
+# 闩锁短路连接判断，否则整窗关闭会被误判成「仅关标签」而继续下一门。
+_CONTEXT_WINDOW_CLOSED: dict[int, bool] = {}
 _START_MAXIMIZED_ARG = "--start-maximized"
 BROWSER_STEALTH_INIT_SCRIPT = """
 (() => {
@@ -157,6 +162,8 @@ def get_context_browser(context):
 
 
 def is_browser_connected(context) -> bool:
+    if _CONTEXT_WINDOW_CLOSED.get(id(context)):
+        return False
     browser = get_context_browser(context)
     if browser is None:
         return False
@@ -168,6 +175,16 @@ def is_browser_connected(context) -> bool:
         except Exception:
             return False
     return False
+
+
+def is_controller_window_closed(context) -> bool:
+    """心跳页是否已被关闭（= 浏览器整窗已被用户关闭）。"""
+    return _CONTEXT_WINDOW_CLOSED.get(id(context), False)
+
+
+def get_controller_page(context):
+    """当前心跳页（未注册或已释放时为 None）。"""
+    return _CONTROLLER_PAGES.get(id(context))
 
 
 def get_page_context(page):
@@ -206,38 +223,24 @@ async def _open_controller_page(context, *, headless: bool = False):
     return page
 
 
-def _schedule_controller_page_restore(context, closed_page) -> None:
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        return
-    loop.create_task(_restore_controller_page_if_needed(context, closed_page))
-
-
-async def _restore_controller_page_if_needed(context, closed_page) -> None:
-    current_page = _CONTROLLER_PAGES.get(id(context))
-    if current_page is not closed_page:
-        return
-    if not is_browser_connected(context):
-        return
-    try:
-        replacement_page = await _open_controller_page(
-            context,
-            headless=_CONTEXT_HEADLESS.get(id(context), False),
-        )
-    except Exception:
-        return
-    _remember_controller_page(context, replacement_page)
+def _mark_controller_window_closed(context) -> None:
+    """心跳页被关：标记整窗关闭（见 _CONTEXT_WINDOW_CLOSED 的设计说明）。"""
+    _CONTEXT_WINDOW_CLOSED[id(context)] = True
 
 
 def _remember_controller_page(context, page) -> None:
     _CONTROLLER_PAGES[id(context)] = page
     on = getattr(page, "on", None)
     if callable(on):
-        on("close", lambda: _schedule_controller_page_restore(context, page))
+        # 心跳语义：这页被关就认定整窗被关——不重开、不恢复，
+        # 由各流程的 UserCancelRequested 路径停止并保存剩余链接。
+        on("close", lambda: _mark_controller_window_closed(context))
 
 
 async def ensure_controller_page(context):
+    """确保常驻心跳页可用；心跳页已关闭（= 整窗关闭）时返回 None，不重开。"""
+    if _CONTEXT_WINDOW_CLOSED.get(id(context)):
+        return None
     controller_page = _CONTROLLER_PAGES.get(id(context))
     if controller_page is not None and not _is_page_closed(controller_page):
         return controller_page
@@ -262,6 +265,7 @@ def is_controller_page(context, page) -> bool:
 def release_controller_page(context) -> None:
     _CONTROLLER_PAGES.pop(id(context), None)
     _CONTEXT_HEADLESS.pop(id(context), None)
+    _CONTEXT_WINDOW_CLOSED.pop(id(context), None)
 
 
 @asynccontextmanager
@@ -283,7 +287,9 @@ async def create_browser_context(
         _CONTEXT_HEADLESS[id(context)] = headless
         await context.add_cookies(cookies)
 
-        # 保留一个常驻主控页，避免课程页关闭后浏览器直接退出。
+        # 保留一个常驻心跳页（mylearning 首页）：课程页逐门开关它始终在场，
+        # 浏览器不会因「最后一页被关」而退出；它自己被关则说明用户关掉了
+        # 整窗——关闭事件会置位 _CONTEXT_WINDOW_CLOSED，各流程据此停止。
         controller_page = await _open_controller_page(
             context,
             headless=headless,
@@ -293,11 +299,15 @@ async def create_browser_context(
         try:
             yield browser, context
         finally:
-            release_controller_page(context)
             try:
                 await context.close()
             except Exception:
                 pass
+            finally:
+                # context.close() 会同步触发心跳页的 close 回调并置位窗口关闭
+                # 闩锁；必须在回调之后统一清理，否则每轮正常退出都会重新
+                # 遗留一个以旧 context id 为键的闩锁。
+                release_controller_page(context)
             try:
                 await browser.close()
             except Exception:

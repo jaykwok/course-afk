@@ -33,42 +33,6 @@ class FakeProgress:
 
 
 class UiProgressTests(unittest.TestCase):
-    def test_menu_status_contains_account_expiry_counts_and_recommendation(self):
-        from rich.console import Console
-        from core.ui import build_menu_status_renderable
-
-        state = ProjectState(
-            has_credential=True,
-            credential_expired=False,
-            learning_count=3,
-            learning_failure_count=1,
-            exam_count=2,
-            manual_exam_count=0,
-        )
-        metadata = CredentialMetadata(
-            saved_at="2026-07-01T10:00:00",
-            expires_at="2026-07-29T10:00:00",
-            account_display_name="测试用户",
-            account_name="test_user",
-            account_label="测试用户（test_user）",
-        )
-        console = Console(record=True, width=100)
-
-        with (
-            patch("core.ui.load_credential_metadata", return_value=metadata),
-            patch("core.ui.datetime") as mock_datetime,
-        ):
-            mock_datetime.fromisoformat.side_effect = datetime.fromisoformat
-            mock_datetime.now.return_value = datetime(2026, 7, 13, 10, 0, 0)
-            console.print(build_menu_status_renderable(state))
-
-        output = console.export_text()
-        self.assertIn("测试用户（test_user）", output)
-        self.assertIn("有效至 2026-07-29", output)
-        self.assertIn("课程 3", output)
-        self.assertIn("考试 2", output)
-        self.assertIn("AI 自动考试", output)
-
     def test_credential_display_rounds_partial_day_up(self):
         from core.ui import _credential_display
 

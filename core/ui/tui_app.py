@@ -8,9 +8,13 @@
 - launcher.main() 整个阻塞循环跑在一条 daemon 工作线程上
   (_spawn_launcher_thread)，浏览器自动化在它内部各自的 run_async 里阻塞，
   不会卡住界面。
-- 桥接层通过 app.call_from_thread + Queue 与本模块通信：输出类调用直接
-  call_from_thread 写入；阻塞提示类挂载模态屏后在 Queue.get 上等待结果。
-  已完成的模态屏会保持到下一个模态屏挂载时再原位替换，避免切换间隙闪屏。
+- 桥接层与界面的通信分两类：输出类（状态/日志/仪表盘/进度）走合并写缓冲
+  + 至多一条在途 UiUpdate 信号消息（fire-and-forget，带背压，见
+  post_ui_update / enqueue_log）；阻塞提示类经同步 call_from_thread 挂载
+  模态屏后在 Queue.get 上等待结果。已完成的模态屏会保持到下一个模态屏
+  挂载时再原位替换，避免切换间隙闪屏。
+- 两条通道不共用队列：模态挂载前必须 flush_ui_updates() 冲刷缓冲，
+  保证「先显示结果、再弹提示」的顺序（见 push_prompt）。
 
 视觉语言（扁平分层，替代旧版「框中框中框」）：
 - 屏幕画布最深(BG_CANVAS)，卡片比画布亮一档(BG_PANEL)，悬浮/状态条再上一档；
@@ -23,6 +27,7 @@ from __future__ import annotations
 
 import sys
 import threading
+from collections import deque
 from queue import Queue
 from typing import Any
 
@@ -30,6 +35,7 @@ from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
+from textual.message import Message
 from textual.screen import ModalScreen
 from textual.theme import Theme
 from textual.widgets import (
@@ -41,6 +47,7 @@ from textual.widgets import (
     TextArea,
 )
 from textual.widgets.option_list import Option
+from rich.console import Group
 from rich.text import Text
 
 from core.menu_keys import (
@@ -65,7 +72,6 @@ from core.palette import (
     TEXT_DIM,
     TEXT_MUTED,
     TEXT_PRIMARY,
-    TRACK,
     WARNING,
 )
 from core.ui.terminal_compat import ui_glyphs
@@ -75,6 +81,20 @@ from core.ui.tui_render import build_hint_line, build_progress_text
 # Esc / Ctrl+C 强制取消当前模态提示时使用；桥接层识别后抛
 # UserCancelRequested，让控制流正常返回主菜单（而非直接退出）。
 _PROMPT_CANCELLED: Any = object()
+
+
+class UiUpdate(Message, namespace="course_tui"):
+    """「合并写缓冲里有待应用更新」的信号消息（本身不携带数据）。
+
+    后台线程的高频更新先写进 CourseTuiApp 上的合并缓冲（值字段 latest-value
+    覆盖、事件字段按全局序号保序），仅在无在途信号时投递一条本消息，UI
+    处理时一次性取走缓冲——消息队列里最多一条在途信号，日志/状态风暴
+    不会撑大 Textual 消息队列。数据在缓冲里而不在消息里，正是为了
+    latest-value 合并与背压。"""
+
+
+# 待合并的值字段名（latest-value 语义：后写覆盖先写）
+_PENDING_VALUE_KINDS = ("title", "dashboard", "status", "progress", "clear_progress")
 
 
 def _read_windows_clipboard() -> str:
@@ -825,6 +845,20 @@ class CourseTuiApp(App):
         # show_info/show_success 这类状态更新才会退掉 held 的子提示——避免「退出」
         # 这种独立 show_success 误伤 held 主菜单。
         self._operation_active: bool = False
+        # ---------- 后台线程 → UI 的合并写缓冲（背压核心） ----------
+        # 值字段（title/dashboard/status/progress/clear_progress）后写覆盖；
+        # 事件字段（begin_operation/end_operation）按全局序号保序；两类按
+        # 序号归并后整体应用，等价于逐条顺序执行。信号消息在途时不再投递，
+        # 队列里至多一条在途 UiUpdate。
+        self._ui_lock = threading.Lock()
+        self._ui_seq = 0
+        self._ui_values: dict[str, tuple[int, Any]] = {}
+        self._ui_events: list[tuple[int, str, Any]] = []
+        self._ui_in_flight = False
+        # 活动日志的有界缓冲：高频日志先入队，UI 定时批量写入 RichLog；
+        # 满了丢最旧并计数，UI 侧补一条「已丢弃 N 条」提示。
+        self._log_buffer: deque = deque(maxlen=512)
+        self._log_dropped = 0
 
     def compose(self) -> ComposeResult:
         g = ui_glyphs()
@@ -853,14 +887,122 @@ class CourseTuiApp(App):
             ),
             Static(id="progress"),
             Static(f"{g.bullet} 活动日志", id="log-caption"),
-            RichLog(id="log", markup=True, auto_scroll=True),
+            RichLog(id="log", markup=True, auto_scroll=True, max_lines=1500),
             id="main",
         )
 
     def on_mount(self) -> None:
         self.register_theme(COURSE_THEME)
         self.theme = COURSE_THEME.name
+        # 20Hz 批量落盘日志缓冲：日志风暴时 RichLog 的写入次数与日志条数解耦
+        self.set_interval(0.05, self._drain_log_buffer)
         self._spawn_launcher_thread()
+
+    # ------------------------------------------------------------------
+    # 后台线程 → UI：合并写缓冲 + 有界日志缓冲（线程安全，背压核心）
+    # ------------------------------------------------------------------
+    def post_ui_update(
+        self,
+        *,
+        event: tuple[str, Any] | None = None,
+        **values: Any,
+    ) -> None:
+        """线程安全的 UI 更新入口：写缓冲 + 至多一条在途信号消息。
+
+        值字段（title/dashboard/status/progress/clear_progress）latest-value
+        合并；event 传 ("begin_operation"/"end_operation", 载荷) 保序。"""
+        with self._ui_lock:
+            self._ui_seq += 1
+            seq = self._ui_seq
+            if event is not None:
+                self._ui_events.append((seq, f"event:{event[0]}", event[1]))
+            for key, value in values.items():
+                if key not in _PENDING_VALUE_KINDS:
+                    raise ValueError(f"未知的 UI 更新字段: {key}")
+                self._ui_values[key] = (seq, value)
+            if self._ui_in_flight:
+                return
+            self._ui_in_flight = True
+        try:
+            self.post_message(UiUpdate())
+        except Exception:  # noqa: BLE001 - app 未运行 / 已退出
+            with self._ui_lock:
+                self._ui_in_flight = False
+
+    def enqueue_log(self, renderable: Any) -> None:
+        """日志入有界缓冲（满了丢最旧并计数），UI 定时批量写 RichLog。"""
+        with self._ui_lock:
+            if len(self._log_buffer) == self._log_buffer.maxlen:
+                self._log_dropped += 1
+            self._log_buffer.append(renderable)
+
+    def on_course_tui_ui_update(self, event: UiUpdate) -> None:
+        """信号到达：取走缓冲中的全部待应用更新，按序号归并执行。
+
+        in_flight 只能在这里清除：flush_ui_updates 只取数据不动标志——
+        已进 Textual 队列的旧信号无法取消，flush 若清标志，新更新会再投
+        一个信号，队列里就可能同时压两个。旧信号迟到时取到空批，无害。"""
+        with self._ui_lock:
+            self._ui_in_flight = False
+        self._apply_pending_ui_updates()
+
+    def _take_pending(self) -> list[tuple[int, str, Any]]:
+        with self._ui_lock:
+            pending = [
+                (seq, f"value:{kind}", value)
+                for kind, (seq, value) in self._ui_values.items()
+            ] + list(self._ui_events)
+            self._ui_values.clear()
+            self._ui_events.clear()
+        pending.sort(key=lambda item: item[0])
+        return pending
+
+    def _apply_pending_ui_updates(self) -> None:
+        for _seq, kind, value in self._take_pending():
+            if kind == "value:title":
+                self.set_title(value[0], value[1])
+            elif kind == "value:dashboard":
+                self.update_dashboard(*value)
+            elif kind == "value:status":
+                self.set_busy_status(value)
+            elif kind == "value:progress":
+                self.set_progress(*value)
+            elif kind == "value:clear_progress":
+                self.clear_progress()
+            elif kind == "event:begin_operation":
+                self.set_operation_status(*value)
+            elif kind == "event:end_operation":
+                self.end_operation()
+
+    def _drain_log_buffer(self) -> None:
+        with self._ui_lock:
+            entries = list(self._log_buffer)
+            self._log_buffer.clear()
+            dropped = self._log_dropped
+            self._log_dropped = 0
+        if not entries and not dropped:
+            # 20Hz 定时器空闲时直接返回，避免每秒做 20 次 selector 查询。
+            return
+        try:
+            log = self.query_one("#log", RichLog)
+        except Exception:  # noqa: BLE001 - 尚未挂载
+            return
+        if dropped:
+            entries.append(
+                Text(f"⋯ 高频日志过多，已丢弃 {dropped} 条", style=f"dim {TEXT_DIM}")
+            )
+        # 整批合成一次 write：RichLog.write 每次都要测量/渲染/更新虚拟高度
+        # 与滚动状态，风暴下逐条写会把一个 UI tick 撑爆
+        log.write(entries[0] if len(entries) == 1 else Group(*entries))
+
+    def flush_ui_updates(self) -> None:
+        """同步屏障：立刻应用全部待处理更新与日志（app 线程上执行）。
+
+        模态挂载前 / 退出前调用，保证「先显示结果、再弹提示/退出」的顺序
+        不被 fire-and-forget 打乱。注意不清 in_flight：见
+        on_course_tui_ui_update 的说明。"""
+        self._apply_pending_ui_updates()
+        self._drain_log_buffer()
 
     # ------------------------------------------------------------------
     # 工作线程：跑 launcher.main()。daemon=True 保证 Ctrl+C / 退出时
@@ -883,6 +1025,12 @@ class CourseTuiApp(App):
 
     def _safe_exit(self) -> None:
         try:
+            # 退出前同步屏障：最后的「已退出」等日志/状态先落屏再退出，
+            # 不被 fire-and-forget 的异步时序吞掉
+            self.call_from_thread(self.flush_ui_updates)
+        except Exception:
+            pass
+        try:
             self.call_from_thread(self.exit)
         except Exception:
             pass
@@ -903,10 +1051,18 @@ class CourseTuiApp(App):
             pass
 
     # ------------------------------------------------------------------
-    # 桥接层回调（始终经由 call_from_thread 调用，在 app 线程上执行）
+    # 桥接层回调（在 app 线程上执行：多经 UiUpdate 信号 / 日志定时器触发，
+    # 少数错误路径仍走 call_from_thread）
     # ------------------------------------------------------------------
     def emit_log(self, renderable: Any) -> None:
         self.query_one("#log", RichLog).write(renderable)
+
+    def clear_activity_log(self) -> None:
+        """清空活动日志显示与尚未落屏的缓冲，不影响磁盘日志文件。"""
+        with self._ui_lock:
+            self._log_buffer.clear()
+            self._log_dropped = 0
+        self.query_one("#log", RichLog).clear()
 
     def update_dashboard(
         self,
@@ -1036,6 +1192,10 @@ class CourseTuiApp(App):
     async def push_prompt(
         self, screen: ModalScreen, *, cancellable: bool = False
     ) -> Queue:
+        # 同步屏障：模态经 call_from_thread 挂载，会越过还在消息队列里排队的
+        # UiUpdate 信号；不先冲刷缓冲，迟到的 status 快照会在模态挂载后点亮
+        # 状态条（旧时序下 show_info 先于 pause 完成故无此问题）。
+        self.flush_ui_updates()
         # 挂载任何模态（菜单 / 确认 / 结果）前收起操作状态条：模态会遮住 #main，
         # 状态条无须再显示；下一次 begin_operation 会重新点亮。
         self.clear_operation_status()

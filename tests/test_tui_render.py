@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from rich.cells import cell_len
 
@@ -73,6 +74,54 @@ class AccountChipTests(unittest.TestCase):
         self.assertLessEqual(cell_len(truncated), 20)
         self.assertGreaterEqual(cell_len(truncated), 19)  # 省略号占 1 列
         self.assertTrue(truncated.endswith("…"))
+
+
+class DashboardSignatureTests(unittest.TestCase):
+    """桥接层仪表盘去重签名：决定「续期后界面还显示旧到期日」这类回归。"""
+
+    def _frontend_with_recorder(self):
+        from core.ui.tui_app import CourseTuiApp
+        from core.ui.tui_bridge import TuiFrontend
+
+        app = CourseTuiApp()
+        frontend = TuiFrontend(app)
+        posted: list[dict] = []
+        app.post_ui_update = lambda **fields: posted.append(fields)
+        return frontend, posted
+
+    def test_signature_includes_expires_at(self):
+        """同一账号、都有效，仅到期日不同：签名必须变化并重新投递仪表盘。"""
+        from core.state import ProjectState
+
+        frontend, posted = self._frontend_with_recorder()
+        state = ProjectState(True, False, 1, 0, 0, 0)
+        with patch(
+            "core.auth.credential.load_credential_metadata",
+            return_value=_metadata(),
+        ):
+            frontend._push_dashboard(state)
+        renewed = _metadata()
+        renewed.expires_at = "2098-06-30T10:00:00"
+        with patch(
+            "core.auth.credential.load_credential_metadata",
+            return_value=renewed,
+        ):
+            frontend._push_dashboard(state)
+        self.assertEqual(len(posted), 2, "续期后应重新投递仪表盘")
+
+    def test_signature_skips_when_only_unrelated_time_passes(self):
+        """状态完全相同：只投递一次（挂课期间每条消息都会尝试刷新）。"""
+        from core.state import ProjectState
+
+        frontend, posted = self._frontend_with_recorder()
+        state = ProjectState(True, False, 1, 0, 0, 0)
+        with patch(
+            "core.auth.credential.load_credential_metadata",
+            return_value=_metadata(),
+        ):
+            frontend._push_dashboard(state)
+            frontend._push_dashboard(state)
+        self.assertEqual(len(posted), 1)
 
 
 if __name__ == "__main__":
