@@ -446,6 +446,134 @@ class TuiSmokeTests(unittest.TestCase):
 
         asyncio.run(asyncio.wait_for(scenario(), timeout=30.0))
 
+    def test_menu_dialog_fits_small_terminal(self):
+        """60×20 窄终端：主菜单对话框必须完整落在屏幕内，列表收缩为可滚动
+        （1fr），而不是把底部菜单项顶出屏幕。"""
+
+        async def scenario() -> None:
+            outcome: dict = {}
+            options = [f"功能选项 {index}" for index in range(1, 10)] + ["退出"]
+
+            def caller() -> None:
+                try:
+                    outcome["choice"] = cli_ui.show_menu(options)
+                except BaseException as exc:  # noqa: BLE001
+                    outcome["error"] = repr(exc)
+
+            worker = threading.Thread(target=caller, daemon=True)
+            with patch("core.config.setup_logging"):
+                app = _PromptApp()
+                frontend = TuiFrontend(app)
+                frontend.install()
+                try:
+                    async with app.run_test(size=(60, 20)) as pilot:
+                        worker.start()
+                        self.assertTrue(
+                            await _wait_for(
+                                lambda: isinstance(app.screen, OptionScreen), pilot
+                            )
+                        )
+                        dialog = app.screen.query_one("#opt-dialog")
+                        screen_height = app.screen.size.height
+                        self.assertGreaterEqual(dialog.region.y, 0)
+                        self.assertLessEqual(
+                            dialog.region.y + dialog.region.height,
+                            screen_height,
+                            "主菜单对话框溢出 60x20 屏幕",
+                        )
+                        # 列表收缩但选项一个不少，靠自身滚动条浏览
+                        option_list = app.screen.query_one("#opt-list", OptionList)
+                        self.assertEqual(option_list.option_count, 10)
+                        self.assertGreaterEqual(option_list.region.height, 3)
+                        hint = app.screen.query_one("#opt-hint", Static)
+                        self.assertLess(hint.region.y, screen_height)
+                        await pilot.press("0")
+                        self.assertTrue(
+                            await _wait_for(
+                                lambda: outcome.get("choice"), pilot, timeout=8.0
+                            )
+                        )
+                finally:
+                    frontend.restore()
+
+            self.assertEqual(outcome.get("choice"), 10)
+            self.assertNotIn("error", outcome)
+
+        asyncio.run(asyncio.wait_for(scenario(), timeout=20.0))
+
+    def test_multiline_dialog_fits_small_terminal(self):
+        """60×20 窄终端：多行输入对话框的操作按钮必须在屏幕内可见可点。"""
+
+        async def scenario() -> None:
+            outcome: dict = {}
+            messages = [
+                "请粘贴入口链接、课程链接、考试链接或课程集合页（学习专区 / 案例库）。",
+                "如果包含课程集合页，程序会先询问你是全部学习，还是手动选择学习模块。",
+                "程序会依次打开入口页面，请你手动点击要处理的课程或考试。",
+                "如页面提示需要报名，请先报名，再点击开始学习。",
+                "新打开的页面会自动分类写入 课程链接.json 或 考试链接.json。",
+            ]
+
+            def caller() -> None:
+                try:
+                    cli_ui.prompt_multiline_input(messages)
+                    outcome["result"] = "submitted"
+                except UserCancelRequested:
+                    outcome["result"] = "cancelled"
+                except BaseException as exc:  # noqa: BLE001
+                    outcome["error"] = repr(exc)
+
+            worker = threading.Thread(target=caller, daemon=True)
+            with patch("core.config.setup_logging"):
+                app = _PromptApp()
+                frontend = TuiFrontend(app)
+                frontend.install()
+                try:
+                    async with app.run_test(size=(60, 20)) as pilot:
+                        worker.start()
+                        self.assertTrue(
+                            await _wait_for(
+                                lambda: isinstance(app.screen, MultilineScreen),
+                                pilot,
+                            ),
+                            f"multiline 模态屏未出现: {outcome}",
+                        )
+                        screen_height = app.screen.size.height
+                        dialog = app.screen.query_one("#ml-dialog")
+                        self.assertGreaterEqual(dialog.region.y, 0)
+                        self.assertLessEqual(
+                            dialog.region.y + dialog.region.height,
+                            screen_height,
+                            "多行输入对话框溢出 60x20 屏幕",
+                        )
+                        submit_button = app.screen.query_one("#submit", Button)
+                        self.assertLessEqual(
+                            submit_button.region.y + submit_button.region.height,
+                            screen_height,
+                            "提交按钮被顶出屏幕",
+                        )
+                        text_area = app.screen.query_one("#ml-text", TextArea)
+                        # 断言到内容区：边框占 2 行，region 高 2 时 content 为 0，
+                        # 用户实际看不到也编辑不了输入内容
+                        self.assertGreaterEqual(text_area.region.height, 3)
+                        self.assertGreaterEqual(
+                            text_area.content_region.height, 1,
+                            "60x20 下输入框没有可编辑显示行",
+                        )
+                        await pilot.press("escape")
+                        self.assertTrue(
+                            await _wait_for(
+                                lambda: not worker.is_alive(), pilot, timeout=8.0
+                            )
+                        )
+                finally:
+                    frontend.restore()
+
+            self.assertEqual(outcome.get("result"), "cancelled")
+            self.assertNotIn("error", outcome)
+
+        asyncio.run(asyncio.wait_for(scenario(), timeout=20.0))
+
     def test_escape_interrupts_workflow_or_exits_at_top_level(self):
         """无弹窗时，Esc 优先中断任务；空闲主菜单则退出。"""
         app = _PromptApp()

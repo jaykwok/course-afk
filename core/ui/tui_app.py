@@ -1,4 +1,4 @@
-"""Textual TUI 前端：仪表盘 + 活动日志 + 模态提示。
+"""Textual TUI 前端：品牌栏 + KPI 仪表盘卡片 + 活动日志 + 模态提示。
 
 本模块只负责 Textual 界面本身，不依赖 core.* 业务逻辑。桥接层
 (core.ui.tui_bridge.TuiFrontend) 负责把 core.ui 的同步接口接到这里。
@@ -11,6 +11,12 @@
 - 桥接层通过 app.call_from_thread + Queue 与本模块通信：输出类调用直接
   call_from_thread 写入；阻塞提示类挂载模态屏后在 Queue.get 上等待结果。
   已完成的模态屏会保持到下一个模态屏挂载时再原位替换，避免切换间隙闪屏。
+
+视觉语言（扁平分层，替代旧版「框中框中框」）：
+- 屏幕画布最深(BG_CANVAS)，卡片比画布亮一档(BG_PANEL)，悬浮/状态条再上一档；
+  区域靠底色与留白分区，全文只在模态卡片和分节线处出现发丝描边。
+- 数值文字穿中性文字色；身份靠标签、语义（过期/失败）靠图标+状态色。
+- 选中/聚焦的绿是唯一强调色：菜单光标、主按钮、进度完成段共用。
 """
 
 from __future__ import annotations
@@ -28,7 +34,6 @@ from textual.screen import ModalScreen
 from textual.theme import Theme
 from textual.widgets import (
     Button,
-    Header,
     LoadingIndicator,
     OptionList,
     RichLog,
@@ -44,8 +49,27 @@ from core.menu_keys import (
     menu_keys_hint,
     parse_menu_key,
 )
-from core.palette import GREEN, GREEN_BRIGHT, GREEN_DEEP, ERROR, SUCCESS, WARNING
-from core.ui.terminal_compat import progress_charset, ui_glyphs
+from core.palette import (
+    ACCENT_ROW,
+    BG_CANVAS,
+    BG_PANEL,
+    BG_PANEL_RAISED,
+    ERROR,
+    GREEN,
+    GREEN_BRIGHT,
+    GREEN_DEEP,
+    HAIRLINE,
+    ON_ACCENT,
+    ON_DANGER,
+    SUCCESS,
+    TEXT_DIM,
+    TEXT_MUTED,
+    TEXT_PRIMARY,
+    TRACK,
+    WARNING,
+)
+from core.ui.terminal_compat import ui_glyphs
+from core.ui.tui_render import build_hint_line, build_progress_text
 
 
 # Esc / Ctrl+C 强制取消当前模态提示时使用；桥接层识别后抛
@@ -98,76 +122,6 @@ def _read_windows_clipboard() -> str:
         return ""
 
 
-def _format_duration(seconds: int) -> str:
-    """把秒数格式化为 m:ss 或 h:mm:ss，用于进度条「剩余时间」。"""
-    seconds = max(0, int(seconds))
-    hours, remainder = divmod(seconds, 3600)
-    minutes, secs = divmod(remainder, 60)
-    if hours:
-        return f"{hours}:{minutes:02d}:{secs:02d}"
-    return f"{minutes}:{secs:02d}"
-
-
-def _build_progress_text(
-    description: str,
-    completed: int,
-    total: int,
-    *,
-    spin_frame: int | None = None,
-) -> Text:
-    """挂课进度双行：按终端选 Unicode 细轨或 ASCII [#---]。
-
-    Windows Terminal / VS Code 等：braille 转圈 + ━─ 轨；
-    纯 cmd（run.bat 默认）：ASCII，避免 CJK 字体全角错位。
-
-    spin_frame 与秒数解耦：桥接层以约 10Hz 递增，转圈才流畅；
-    未传时回退 completed（兼容旧调用）。
-    """
-    cs = progress_charset()
-    total = max(1, int(total))
-    completed = max(0, min(int(completed), total))
-    ratio = completed / total
-    remaining = total - completed
-    bar_width = 30
-    filled = int(round(ratio * bar_width))
-    filled = max(0, min(bar_width, filled))
-    frame = int(completed if spin_frame is None else spin_frame)
-    spin = cs.spinner[frame % len(cs.spinner)]
-
-    bar = Text()
-    # 第一行：状态摘要
-    bar.append(f" {spin} ", style=f"bold {GREEN_BRIGHT}")
-    bar.append(str(description or "处理中"), style=f"bold {GREEN}")
-    bar.append(cs.sep, style="dim")
-    bar.append(f"{ratio * 100:5.1f}%", style=f"bold {GREEN_BRIGHT}")
-    bar.append(cs.sep, style="dim")
-    bar.append(f"{completed}/{total}s", style="dim")
-    bar.append(cs.sep, style="dim")
-    if remaining > 0:
-        bar.append(f"剩余 {_format_duration(remaining)}", style=f"bold {SUCCESS}")
-    else:
-        bar.append("完成", style=f"bold {SUCCESS}")
-    bar.append("\n")
-    # 第二行：进度轨
-    bar.append("   ", style="")
-    if cs.bracket_l:
-        bar.append(cs.bracket_l, style=f"dim {GREEN}")
-    if filled > 0:
-        bar.append(cs.track_done * filled, style=f"bold {GREEN_BRIGHT}")
-    if filled < bar_width:
-        bar.append(
-            cs.track_todo * (bar_width - filled),
-            style=f"dim {GREEN_DEEP}",
-        )
-    if cs.bracket_r:
-        bar.append(cs.bracket_r, style=f"dim {GREEN}")
-    if remaining > 0:
-        bar.append(cs.tail_run, style=f"dim {GREEN}")
-    else:
-        bar.append(cs.tail_done, style=f"bold {SUCCESS}")
-    return bar
-
-
 class OptionScreen(ModalScreen[int]):
     """菜单 / 多选一。提交值为 1-based 序号。
 
@@ -199,30 +153,38 @@ class OptionScreen(ModalScreen[int]):
 
     def compose(self) -> ComposeResult:
         g = ui_glyphs()
-        escape_hint = "ESC 退出" if self._status_renderable is not None else "ESC 返回"
+        escape_hint = ("ESC", "退出" if self._status_renderable is not None else "返回")
         total = len(self._options)
-        keys_hint = menu_keys_hint(total)
-        nav = (
-            f"{g.nav_up_down} 移动"
-            if g.name == "unicode"
-            else "方向键移动"
-        )
-        hint = g.join_keys(
-            f"数字键 {keys_hint} 直选",
-            nav,
-            "回车或点击确认",
-            escape_hint,
-        )
+        hint_parts: list[tuple[str, str] | str] = [
+            (menu_keys_hint(total), "数字键直选"),
+        ]
+        if g.name == "unicode":
+            hint_parts.append(("↑↓", "移动"))
+        else:
+            hint_parts.append("方向键移动")
+        hint_parts.extend([("Enter", "确认"), escape_hint])
+        hint = build_hint_line(hint_parts)
+
         content = [Static(self._title, id="opt-title")]
         if self._status_renderable is not None:
             content.append(Static(self._status_renderable, id="opt-status"))
+        prompt_text = Text(self._prompt, style=TEXT_MUTED)
+        prompt_text.append(ui_glyphs().sep_tight, style=TEXT_DIM)
+        prompt_text += hint
         content.extend(
             (
-                Static(f"{self._prompt}（{hint}）", id="opt-hint"),
+                Static(prompt_text, id="opt-hint"),
                 OptionList(
                     *(
                         Option(
-                            f"{menu_key_for_index(idx, total)}. {opt}",
+                            # 序号/标签不写死前景色，只给字重：显式 span 色会盖过
+                            # 组件 CSS 的 color，聚焦行翻成「亮绿底深字」时序号
+                            # 就成了绿底绿字。留空即继承组件色，随高亮态自动适配。
+                            Text.assemble(
+                                (menu_key_for_index(idx, total), "bold"),
+                                (".", "dim"),
+                                (f"  {opt}", ""),
+                            ),
                             id=f"opt-{idx}",
                         )
                         for idx, opt in enumerate(self._options, start=1)
@@ -318,17 +280,17 @@ class YesNoScreen(ModalScreen[bool]):
             self.add_class("with-details")
 
     def compose(self) -> ComposeResult:
-        g = ui_glyphs()
+        hint = Text.assemble(
+            (f"默认 {self._default}", TEXT_MUTED),
+            (_g_sep(), TEXT_DIM),
+        )
+        hint += build_hint_line([("Y", "是"), ("N", "否"), ("ESC", "返回")])
         content = [Static(self._message, id="yn-msg")]
         if self._details_renderable is not None:
             content.append(Static(self._details_renderable, id="yn-details"))
         content.extend(
             (
-                Static(
-                    f"默认 {self._default}（"
-                    f"{g.join_keys('[Y] 是', '[N] 否', 'ESC 返回')}）",
-                    id="yn-hint",
-                ),
+                Static(hint, id="yn-hint"),
                 Horizontal(
                     Button("是 [Y]", id="yes", variant="success"),
                     Button("否 [N]", id="no", variant="error"),
@@ -352,6 +314,11 @@ class YesNoScreen(ModalScreen[bool]):
             self.action_yes()
         elif event.button.id == "no":
             self.action_no()
+
+
+def _g_sep() -> str:
+    """当前终端的提示分隔符（短别名）。"""
+    return ui_glyphs().sep
 
 
 class MultilineScreen(ModalScreen[tuple[str, Any]]):
@@ -384,19 +351,22 @@ class MultilineScreen(ModalScreen[tuple[str, Any]]):
 
     def compose(self) -> ComposeResult:
         g = ui_glyphs()
-        instruction_lines = "\n".join(
-            f"{idx}. {msg}" for idx, msg in enumerate(self._messages, start=1)
-        )
+        instruction = Text()
+        for index, message in enumerate(self._messages, start=1):
+            instruction.append(f" {index}. ", style=f"bold {GREEN}")
+            instruction.append(f"{message}\n", style=TEXT_PRIMARY)
         yield Vertical(
             Static(self._title, id="ml-title"),
-            Static(instruction_lines, id="ml-instr"),
+            Static(instruction, id="ml-instr"),
             TextArea(id="ml-text"),
             Static(
-                g.join_keys(
-                    "Enter 换行",
-                    "Ctrl+V 粘贴",
-                    "Ctrl+Enter 提交",
-                    "ESC 返回",
+                build_hint_line(
+                    [
+                        ("Enter", "换行"),
+                        ("Ctrl+V", "粘贴"),
+                        ("Ctrl+Enter", "提交"),
+                        ("ESC", "返回"),
+                    ]
                 ),
                 id="ml-hint",
             ),
@@ -454,16 +424,17 @@ class PauseScreen(ModalScreen[None]):
             self.add_class("with-details")
 
     def compose(self) -> ComposeResult:
-        g = ui_glyphs()
+        hint_action = "确定" if self._button_label.startswith("OK") else "继续"
         content = []
         if self._details_renderable is not None:
             content.append(Static(self._details_renderable, id="pause-details"))
-        hint_action = "确定" if self._button_label.startswith("OK") else "继续"
         content.extend(
             (
                 Static(self._message, id="pause-msg"),
                 Static(
-                    g.join_keys(f"Enter {hint_action}", "ESC 返回"),
+                    build_hint_line(
+                        [("Enter", hint_action), ("ESC", "返回")]
+                    ),
                     id="pause-hint",
                 ),
                 Horizontal(
@@ -486,32 +457,36 @@ class PauseScreen(ModalScreen[None]):
 
 
 # ---------------------------------------------------------------------------
-# 主题：统一为翡翠绿色调，让「选中焦点 / 焦点边框 / 主按钮」与标题、状态图标的
-# 亮绿色一致。Textual 默认 textual-dark 的 primary 是蓝色、accent 是橙色，
-# 与本应用的绿色基调冲突，焦点高亮因此显得突兀。
-#
-# 焦点链路全部由设计令牌派生：菜单光标 = block-cursor-background、
-# 列表/文本框聚焦边框 = border、-primary 按钮 = primary，故改一个主题即可全改。
-# 亮绿底配深色字，保证选中项的可读对比度。
+# 主题：统一为翡翠绿色调。焦点链路由主题派生：菜单光标 = block-cursor-background、
+# 列表/文本框聚焦边框 = border、主按钮 = primary。表面层次画布最深、卡片亮一档。
 # ---------------------------------------------------------------------------
 COURSE_THEME = Theme(
     name="course-green",
-    primary=GREEN,        # 主色：选中高亮 / 焦点边框 / 主按钮
-    secondary=GREEN_DEEP, # 深绿：次级层次
-    accent=GREEN_BRIGHT,  # 亮绿：仪表盘/日志边框（CSS 里再降到 50~60%）
+    primary=GREEN,          # 主色：选中高亮 / 焦点边框 / 主按钮
+    secondary=GREEN_DEEP,   # 深绿：次级层次
+    accent=GREEN_BRIGHT,    # 亮绿：品牌标记 / 进度 / 键帽
     warning=WARNING,
     error=ERROR,
     success=SUCCESS,
-    foreground="#E2E8F0",
+    foreground=TEXT_PRIMARY,
+    background=BG_CANVAS,   # 画布：全局最深
+    surface=BG_CANVAS,      # 控件默认底 = 画布，卡片再自己提亮
+    panel=BG_PANEL,         # 模态 / 内嵌面板
     dark=True,
     variables={
-        # 亮绿底配深色字，保证选中项 / 主按钮文字的对比度
-        # （默认 block-cursor-foreground / button-color-foreground 是浅色字，对比不足）
-        "block-cursor-foreground": "#052e26",
-        "button-color-foreground": "#052e26",
+        # 亮绿底配深色字，保证选中项 / 主按钮 / 输入光标文字的对比度
+        "block-cursor-foreground": ON_ACCENT,
+        "button-color-foreground": ON_ACCENT,
+        "input-cursor-foreground": ON_ACCENT,
         # 聚焦用加粗，不用 reverse：变体按钮(是/否/提交)是亮底深字，
         # reverse 会把它们反转为黑底，看起来像坏掉的光标。
         "button-focus-text-style": "bold",
+        # 中性文字与描边与 palette 常量同源
+        "text-muted": TEXT_MUTED,
+        "border": "#2f4a3e",
+        "border-blurred": HAIRLINE,
+        # 输入区选区：低饱和绿
+        "input-selection-background": "#1d4c3c",
     },
 )
 
@@ -519,8 +494,8 @@ COURSE_THEME = Theme(
 # 边框样式按终端在 import 时选定（round 在纯 cmd 易错位 → ascii/solid）
 _UI = ui_glyphs()
 _BORDER = _UI.textual_border
-_BORDER_SOFT = _UI.textual_border_soft
 _KEYS_JOIN = _UI.keys_join
+_BRAND_MARK = "◆" if _UI.name == "unicode" else "*"
 
 
 class CourseTuiApp(App):
@@ -528,23 +503,63 @@ class CourseTuiApp(App):
 
     CSS = f"""
     Screen {{
-        background: $surface;
+        background: {BG_CANVAS};
+    }}
+
+    /* ---------- 品牌栏：替代默认 Header 的常驻顶栏 ----------
+       注意 height:1 的条上不能加 border：边框会吃掉唯一的内容行。 */
+    #brand-bar {{
+        height: 1;
+        width: 100%;
+        background: {BG_PANEL};
+    }}
+
+    #brand-mark {{
+        width: auto;
+        height: 1;
+        padding: 0 0 0 1;
+        color: {GREEN_BRIGHT};
+        text-style: bold;
+    }}
+
+    #brand-title {{
+        width: auto;
+        height: 1;
+        padding: 0 1 0 0;
+        color: {TEXT_PRIMARY};
+        text-style: bold;
+    }}
+
+    #brand-sub {{
+        width: 1fr;
+        height: 1;
+        padding: 0 1 0 0;
+        color: {TEXT_MUTED};
+        overflow: hidden;
+    }}
+
+    #brand-account {{
+        width: auto;
+        /* 兜底上限：账号名在渲染层已按显示宽度截断，这里防止极端情况撑爆品牌栏 */
+        max-width: 38;
+        height: 1;
+        padding: 0 1;
     }}
 
     #main {{
         /* 常驻外壳：始终可见。菜单 / 确认 / 结果页是叠在上面的不透明模态，会遮住它；
-           长任务（挂课/考试）期间不弹模态，于是仪表盘 / 进度条 / 活动日志 + 顶部状态条
+           长任务（挂课/考试）期间不弹模态，于是仪表盘 / 进度条 / 活动日志 + 状态条
            一起作为布局里的若干行平铺显示，互不遮挡。 */
         layout: vertical;
     }}
 
-    /* 操作状态条：长任务期间「当前在做什么」常驻顶部一行。它是布局里的一块（不是浮动
-       模态），所以和仪表盘 / 进度条 / 日志各占一行，永远不会互相遮挡或文字叠字。
+    /* 操作状态条：长任务期间「当前在做什么」常驻顶部一行（品牌栏下方）。
        空闲时 display:none 不占位；set_operation_status 时加 .active 显示。 */
     #status-bar {{
         height: 1;
-        margin: 0 0 1 0;
+        margin: 0;
         padding: 0 1;
+        background: {BG_PANEL_RAISED};
         display: none;
     }}
 
@@ -556,45 +571,76 @@ class CourseTuiApp(App):
         height: 1;
         width: 2;
         margin: 0 1 0 0;
-        color: $accent;
+        color: {GREEN_BRIGHT};
     }}
 
     #status-text {{
         height: 1;
         width: 1fr;
-        color: $text;
+        color: {TEXT_PRIMARY};
     }}
 
-    /* 快捷键常驻状态条右侧（顶部、醒目），不再埋在左下角 Footer。 */
+    /* 快捷键常驻状态条右侧（顶部、醒目），不再埋在左下角 Footer。
+       width 必须 auto：Static 默认铺满整行，会把 1fr 的状态文本挤到 1 列宽。 */
     #status-keys {{
+        width: auto;
         height: 1;
-        color: $accent;
-        text-style: bold;
+        color: {TEXT_MUTED};
     }}
 
+    /* ---------- 仪表盘卡片：KPI 磁贴 + 账号 meta + 建议操作 ---------- */
     #dashboard {{
-        /* 不再外加 Textual 边框：内层 Rich Table 自带绿色边框即卡片，避免双框。 */
         height: auto;
-        max-height: 16;
-        padding: 0 1;
-        margin: 1 0 0 0;
-        color: $text;
+        margin: 1 1 0 1;
+        padding: 1 1;
+        background: {BG_PANEL};
+        display: none;
     }}
 
-    /* 挂课进度：双行（摘要 + 进度轨），空内容时高度塌缩不占位 */
+    #dashboard.ready {{
+        display: block;
+    }}
+
+    #dash-stats {{
+        height: auto;
+    }}
+
+    #dash-meta {{
+        height: auto;
+        margin-top: 1;
+    }}
+
+    #dash-action {{
+        height: auto;
+    }}
+
+    /* 挂课进度：双行（摘要 + 进度轨），未点亮时不占位 */
     #progress {{
         height: auto;
-        min-height: 0;
-        margin: 0 0 1 0;
+        margin: 0 1;
         padding: 0 1;
-        color: $text;
+        display: none;
+    }}
+
+    #progress.live {{
+        display: block;
+        margin: 1 1 0 1;
+    }}
+
+    /* ---------- 活动日志：无框，弱化小标题分节 ---------- */
+    #log-caption {{
+        height: 1;
+        margin: 1 1 0 1;
+        padding: 0 1;
+        color: {TEXT_DIM};
     }}
 
     #log {{
-        border: {_BORDER} $primary 50%;
-        margin: 1 0;
+        margin: 0 1 1 1;
+        padding: 0 1;
         height: 1fr;
-        background: $surface;
+        background: transparent;
+        border: none;
     }}
 
     /* ---------- 模态屏 ---------- */
@@ -603,34 +649,40 @@ class CourseTuiApp(App):
     }}
 
     #opt-dialog, #yn-dialog, #ml-dialog, #pause-dialog {{
-        width: 80;
+        width: 84;
         height: auto;
         max-width: 94%;
         max-height: 96%;
-        border: {_BORDER} $primary;
-        background: $panel;
+        border: {_BORDER} {HAIRLINE};
+        background: {BG_PANEL};
         padding: 1 2;
     }}
 
     #opt-title, #ml-title, #yn-msg {{
         text-style: bold;
-        color: $text;
+        color: {TEXT_PRIMARY};
+        border-bottom: solid {HAIRLINE};
         margin-bottom: 1;
     }}
 
-    #yn-msg {{
-        border-bottom: solid $primary 40%;
-        padding-bottom: 1;
+    #opt-hint, #yn-hint, #ml-hint, #pause-msg, #pause-hint {{
+        color: {TEXT_MUTED};
+        margin-bottom: 1;
     }}
 
-    #opt-hint, #yn-hint, #ml-instr, #ml-hint, #pause-msg, #pause-hint {{
-        color: $text-muted;
+    #ml-instr {{
+        height: auto;
+        /* 上限 5：60x20 矮终端下给输入框让出一行（说明本身可滚动） */
+        max-height: 5;
+        overflow-y: auto;
         margin-bottom: 1;
     }}
 
     #opt-status {{
         height: auto;
         margin-bottom: 1;
+        padding: 0 1;
+        background: {BG_PANEL_RAISED};
     }}
 
     #yn-details, #pause-details {{
@@ -638,6 +690,8 @@ class CourseTuiApp(App):
         min-height: 3;
         overflow-y: auto;
         margin-bottom: 1;
+        padding: 0 1;
+        background: {BG_CANVAS};
     }}
 
     YesNoScreen.with-details #yn-dialog,
@@ -647,48 +701,105 @@ class CourseTuiApp(App):
     }}
 
     #opt-list {{
-        height: auto;
+        /* 1fr 让列表在窄/矮终端收缩（自带滚动条），而不是把对话框顶出屏幕；
+           宽裕时 1fr 在 auto 对话框里按内容高度展开，不受影响。 */
+        height: 1fr;
+        min-height: 3;
         max-height: 15;
         margin-bottom: 1;
-        border: {_BORDER_SOFT} $primary 30%;
+        padding: 0;
+        background: transparent;
+        border: none;
+    }}
+
+    #opt-list > .option-list--option {{
+        padding: 0 1;
+    }}
+
+    #opt-list > .option-list--option-hover {{
+        background: {ACCENT_ROW};
+    }}
+
+    #opt-list > .option-list--option-highlighted {{
+        background: {ACCENT_ROW};
+        color: {TEXT_PRIMARY};
+        text-style: bold;
+    }}
+
+    #opt-list:focus > .option-list--option-highlighted {{
+        background: {GREEN};
+        color: {ON_ACCENT};
+    }}
+
+    #opt-list:focus {{
+        background-tint: transparent;
     }}
 
     #ml-dialog {{
-        height: 90%;
-        min-height: 16;
+        /* 不设 min-height：矮终端下按比例收缩，输入区 1fr 跟着缩，按钮不溢出；
+           94% 保证 90x22 这类常规尺寸下输入区至少 3 行（90% 会少一行）。 */
+        height: 94%;
         max-height: 36;
     }}
 
-    #ml-instr {{
-        height: auto;
-        max-height: 8;
-        overflow-y: auto;
-    }}
-
     #ml-text {{
+        /* 圆角 1 行描边而不是 tall（tall 上下各吃 2 行）；min-height 3 是硬底线：
+        边框占 2 行，再少一行可编辑内容都没有。margin-bottom 0 + 说明区上限 5
+        已为 60x20 腾出空间，常规尺寸下 1fr 自然分到更多。 */
         height: 1fr;
         min-height: 3;
-        margin-bottom: 1;
-        border: {_BORDER_SOFT} $primary 30%;
+        margin-bottom: 0;
+        border: {_BORDER} {HAIRLINE};
+        background: {BG_CANVAS};
+    }}
+
+    #ml-text:focus {{
+        border: {_BORDER} {GREEN};
+    }}
+
+    /* 标题块（文字+下划线）与内容之间不留空行：标题自身就是分节线 */
+    #ml-title {{
+        margin-bottom: 0;
     }}
 
     #yn-actions, #ml-actions, #pause-actions {{
         align-horizontal: center;
-        height: 3;
+        height: auto;
         margin-top: 0;
     }}
 
+    /* ---------- 扁平按钮：高 1 行、无描边、聚焦翻色 ---------- */
     Button {{
+        height: 1;
+        min-width: 8;
         margin: 0 1;
+        padding: 0 2;
+        border: none;
+        background: {BG_PANEL_RAISED};
+        color: {TEXT_PRIMARY};
     }}
 
-    /* 按钮聚焦：整体提亮，替代默认的「反转」。
-       反转会把变体按钮(是=success / 否=error / 提交=primary)的亮底深字
-       反过来变成黑底，看起来像坏掉的光标；这里改成提亮底色 + 加粗
-       (加粗见主题 button-focus-text-style)，聚焦更醒目且不反色。
-       覆盖 Textual 默认的 5% 微弱提亮。 */
-    Button.-style-default:focus {{
-        background-tint: $foreground 30%;
+    Button:hover, Button:focus {{
+        background: {GREEN};
+        color: {ON_ACCENT};
+        text-style: bold;
+    }}
+
+    /* 肯定类按钮（是 / 提交 / 继续）默认即主绿实底 */
+    Button.-primary, Button.-success {{
+        background: {GREEN};
+        color: {ON_ACCENT};
+    }}
+
+    /* 否定类按钮（否）：中性底 + 状态红字，聚焦才红底（深红字，勿用绿系深字） */
+    Button.-error {{
+        background: {BG_PANEL_RAISED};
+        color: {ERROR};
+    }}
+
+    Button.-error:hover, Button.-error:focus {{
+        background: {ERROR};
+        color: {ON_DANGER};
     }}
     """
 
@@ -717,19 +828,31 @@ class CourseTuiApp(App):
 
     def compose(self) -> ComposeResult:
         g = ui_glyphs()
-        yield Header()
+        yield Horizontal(
+            Static(f"{_BRAND_MARK} ", id="brand-mark"),
+            Static(self.title, id="brand-title"),
+            Static(self.sub_title, id="brand-sub"),
+            Static(id="brand-account"),
+            id="brand-bar",
+        )
         yield Vertical(
             Horizontal(
                 LoadingIndicator(id="status-spinner"),
                 Static(id="status-text"),
                 Static(
-                    g.join_keys("ESC 取消", "Ctrl+C 退出"),
+                    build_hint_line([("ESC", "取消"), ("Ctrl+C", "退出")]),
                     id="status-keys",
                 ),
                 id="status-bar",
             ),
-            Static(id="dashboard"),
+            Vertical(
+                Static(id="dash-stats"),
+                Static(id="dash-meta"),
+                Static(id="dash-action"),
+                id="dashboard",
+            ),
             Static(id="progress"),
+            Static(f"{g.bullet} 活动日志", id="log-caption"),
             RichLog(id="log", markup=True, auto_scroll=True),
             id="main",
         )
@@ -785,8 +908,19 @@ class CourseTuiApp(App):
     def emit_log(self, renderable: Any) -> None:
         self.query_one("#log", RichLog).write(renderable)
 
-    def set_dashboard(self, renderable: Any) -> None:
-        self.query_one("#dashboard", Static).update(renderable)
+    def update_dashboard(
+        self,
+        account_chip: Any,
+        stat_tiles: Any,
+        meta_line: Any,
+        action_line: Any,
+    ) -> None:
+        """写入仪表盘卡片三段 + 品牌栏账号胶囊（tui_render 产出的 Rich 对象）。"""
+        self.query_one("#brand-account", Static).update(account_chip)
+        self.query_one("#dash-stats", Static).update(stat_tiles)
+        self.query_one("#dash-meta", Static).update(meta_line)
+        self.query_one("#dash-action", Static).update(action_line)
+        self.query_one("#dashboard").add_class("ready")
 
     def set_main_content_visible(self, visible: bool) -> None:
         main_content = self.query_one("#main", Vertical)
@@ -836,6 +970,8 @@ class CourseTuiApp(App):
         if title:
             self.title = title
         self.sub_title = subtitle or ""
+        self.query_one("#brand-title", Static).update(self.title)
+        self.query_one("#brand-sub", Static).update(self.sub_title)
 
     def set_progress(
         self,
@@ -846,15 +982,26 @@ class CourseTuiApp(App):
     ) -> None:
         if total <= 0:
             return
+        try:
+            available = self.query_one("#progress", Static).container_size.width
+        except Exception:  # noqa: BLE001 - 布局未就绪时用默认宽
+            available = 0
+        # 第二行固定开销：3 空格缩进 + 括号 + 尾标，约 8 列；轨道在窄终端缩短不折行
+        bar_width = 30 if available <= 0 else max(10, min(30, available - 8))
         self.query_one("#progress", Static).update(
-            _build_progress_text(
-                description, completed, total, spin_frame=spin_frame
+            build_progress_text(
+                description,
+                completed,
+                total,
+                spin_frame=spin_frame,
+                bar_width=bar_width,
             )
         )
-
+        self.query_one("#progress").add_class("live")
 
     def clear_progress(self) -> None:
         self.query_one("#progress", Static).update("")
+        self.query_one("#progress").remove_class("live")
 
     def _cancel_current_operation_or_exit(self) -> None:
         from core.config import interrupt_running_async

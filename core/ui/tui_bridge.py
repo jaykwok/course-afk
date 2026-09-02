@@ -27,6 +27,7 @@ import core.ui as cli_ui
 from core.abort import UserCancelRequested
 from core.config import LOG_FORMAT, _get_console_log_level, setup_logging
 from core.palette import GREEN, ERROR, SUCCESS, WARNING
+from core.ui import tui_render
 from core.ui.tui_app import (
     CourseTuiApp,
     MultilineScreen,
@@ -195,13 +196,36 @@ class TuiFrontend:
 
     def _bridge_show_summary(self, title: str, rows: list[tuple[str, str]]) -> None:
         self.app.call_from_thread(
-            self.app.emit_log, cli_ui.build_summary_renderable(title, rows, expand=True)
+            self.app.emit_log, tui_render.build_summary(title, rows)
         )
 
     def _bridge_render_dashboard(self, state: Any) -> None:
         self._latest_state = state
+        self._push_dashboard(state)
+
+    def _dashboard_inputs(self, state: Any) -> tuple[Any, str]:
+        """仪表盘数据（工作线程上读取）：credential 元数据 + 建议操作。"""
+        from core.auth.credential import load_credential_metadata
+        from core.state import recommend_next_step
+
+        metadata = load_credential_metadata()
+        recommended = recommend_next_step(
+            has_credential=state.has_credential and not state.credential_expired,
+            learning_count=state.learning_count,
+            exam_count=state.exam_count,
+            manual_exam_count=state.manual_exam_count,
+        )
+        return metadata, recommended
+
+    def _push_dashboard(self, state: Any) -> None:
+        """按 tui_render 的扁平 KPI 布局刷新仪表盘卡片与品牌栏账号胶囊。"""
+        metadata, recommended = self._dashboard_inputs(state)
         self.app.call_from_thread(
-            self.app.set_dashboard, cli_ui.build_dashboard_renderable(state, expand=True)
+            self.app.update_dashboard,
+            tui_render.build_account_chip(state, metadata),
+            tui_render.build_stat_tiles(state),
+            tui_render.build_dashboard_meta(state, metadata),
+            tui_render.build_action_line(recommended),
         )
 
     def _refresh_dashboard(self) -> None:
@@ -211,10 +235,7 @@ class TuiFrontend:
         from core.state import collect_project_state
 
         self._latest_state = collect_project_state()
-        self.app.call_from_thread(
-            self.app.set_dashboard,
-            cli_ui.build_dashboard_renderable(self._latest_state, expand=True),
-        )
+        self._push_dashboard(self._latest_state)
 
     # ---------------- 阻塞提示类（工作线程在 Queue.get 上等待结果）----------------
     def _prompt(self, screen: Any, *, cancellable: bool = False) -> Any:
@@ -231,11 +252,12 @@ class TuiFrontend:
 
     def _bridge_show_menu(self, options: list[str]) -> int:
         # 主菜单不可取消：在主菜单按 Ctrl+C 直接退出应用
-        status_renderable = (
-            cli_ui.build_menu_status_renderable(self._latest_state)
-            if self._latest_state is not None
-            else None
-        )
+        status_renderable = None
+        if self._latest_state is not None:
+            metadata, recommended = self._dashboard_inputs(self._latest_state)
+            status_renderable = tui_render.build_menu_status(
+                self._latest_state, metadata, recommended
+            )
         return self._prompt(
             OptionScreen(
                 "主菜单",
@@ -260,7 +282,7 @@ class TuiFrontend:
         message: str = "确认继续处理？",
         default: str = "Y",
     ) -> bool:
-        details = cli_ui.build_summary_renderable(title, rows, expand=True)
+        details = tui_render.build_summary(title, rows)
         return self._prompt(
             YesNoScreen(message, default, details_renderable=details),
             cancellable=True,
@@ -275,7 +297,7 @@ class TuiFrontend:
         rows: list[tuple[str, str]],
         message: str = "查看完成后返回主菜单",
     ):
-        details = cli_ui.build_summary_renderable(title, rows, expand=True)
+        details = tui_render.build_summary(title, rows)
         return self.app.call_from_thread(
             self.app.push_prompt,
             PauseScreen(
