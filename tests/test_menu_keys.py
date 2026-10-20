@@ -33,6 +33,12 @@ class MenuKeysTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             menu_key_for_index(1, MAX_MENU_OPTIONS + 1)
 
+    def test_navigation_uses_zero_for_any_menu_size(self):
+        for size in (1, 3, 5, 7, 10):
+            self.assertEqual(menu_key_for_index(size, size, zero_for_last=True), "0")
+            self.assertEqual(parse_menu_key("0", size, zero_for_last=True), size)
+        self.assertEqual(menu_keys_hint(7, zero_for_last=True), "1-6/0")
+
 
 if __name__ == "__main__":
     unittest.main()

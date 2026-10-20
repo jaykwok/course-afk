@@ -1,4 +1,4 @@
-"""菜单数字键约定：每页最多 10 项；第 10 项键位为 0（而非 10）。"""
+"""菜单数字键约定：每页最多 10 项，导航末项可固定使用 0。"""
 
 from __future__ import annotations
 
@@ -14,19 +14,23 @@ def ensure_menu_option_count(count: int) -> None:
         )
 
 
-def menu_key_for_index(index_1based: int, total: int) -> str:
+def menu_key_for_index(index_1based: int, total: int, *, zero_for_last: bool = False) -> str:
     """1-based 序号 → 显示/按键标签。第 10 项固定为「0」。"""
     ensure_menu_option_count(total)
     if not (1 <= index_1based <= total):
         raise ValueError(f"无效菜单序号: {index_1based} (共 {total} 项)")
-    if total == MAX_MENU_OPTIONS and index_1based == MAX_MENU_OPTIONS:
+    if index_1based == total and (zero_for_last or total == MAX_MENU_OPTIONS):
         return "0"
     return str(index_1based)
 
 
-def menu_keys_hint(total: int) -> str:
+def menu_keys_hint(total: int, *, zero_for_last: bool = False) -> str:
     """提示文案，如「1-9/0」或「1-3」。"""
     ensure_menu_option_count(total)
+    if zero_for_last:
+        if total == 1:
+            return "0"
+        return ("1" if total == 2 else f"1-{total - 1}") + "/0"
     if total == MAX_MENU_OPTIONS:
         return "1-9/0"
     if total == 1:
@@ -34,7 +38,7 @@ def menu_keys_hint(total: int) -> str:
     return f"1-{total}"
 
 
-def parse_menu_key(raw: str, total: int) -> int | None:
+def parse_menu_key(raw: str, total: int, *, zero_for_last: bool = False) -> int | None:
     """
     将用户输入映射为 1-based 选项序号。
 
@@ -47,9 +51,13 @@ def parse_menu_key(raw: str, total: int) -> int | None:
     if not text:
         return None
     if text == "0":
-        return MAX_MENU_OPTIONS if total == MAX_MENU_OPTIONS else None
+        return total if zero_for_last or total == MAX_MENU_OPTIONS else None
     if text.isdigit():
         value = int(text)
         if 1 <= value <= total:
             return value
     return None
+
+
+def has_navigation_option(options: list[str]) -> bool:
+    return bool(options and options[-1] in {"退出", "返回主菜单", "返回"})

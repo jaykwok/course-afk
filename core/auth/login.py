@@ -198,11 +198,12 @@ async def login_and_save_credential(*, confirm_same_account=None) -> AccountProf
 
 
 def _validate_pending_account(profile, confirm_same_account) -> None:
+    from core.auth.credential import load_pending_owner_metadata
     from core.state import collect_project_state
     state = collect_project_state()
     if not any((state.learning_count, state.learning_failure_count, state.exam_count, state.manual_exam_count)):
         return
-    old = load_credential_metadata()
+    old = load_credential_metadata() or load_pending_owner_metadata()
     if old and old.account_name and profile.account_name:
         if old.account_name == profile.account_name:
             return

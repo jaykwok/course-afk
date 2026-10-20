@@ -50,13 +50,16 @@ from textual.widgets import (
 from textual.widgets.option_list import Option
 from rich.console import Group
 from rich.text import Text
+from rich.cells import cell_len
 
 from core.menu_keys import (
     ensure_menu_option_count,
     menu_key_for_index,
     menu_keys_hint,
     parse_menu_key,
+    has_navigation_option,
 )
+from core.app.menus import MAIN_MENU_DESCRIPTIONS
 from core.palette import (
     ACCENT_ROW,
     BG_CANVAS,
@@ -147,7 +150,7 @@ class OptionScreen(ModalScreen[int]):
     """菜单 / 多选一。提交值为 1-based 序号。
 
     交互：数字键 1-9/0 直接选中、方向键移动高亮、回车或鼠标点击确认。
-    每页最多 10 项；第 10 项键位为 0。提示分隔符按终端 Unicode/ASCII 自适应。
+    每页最多 10 项；返回/退出使用 0。提示分隔符按终端 Unicode/ASCII 自适应。
     """
 
     AUTO_FOCUS = "#opt-list"
@@ -164,6 +167,8 @@ class OptionScreen(ModalScreen[int]):
         options: list[str],
         prompt: str = "请选择",
         status_renderable: Any | None = None,
+        main_menu: bool = False,
+        compact_status_renderable: Any | None = None,
     ) -> None:
         super().__init__()
         self._title = title
@@ -171,13 +176,17 @@ class OptionScreen(ModalScreen[int]):
         ensure_menu_option_count(len(self._options))
         self._prompt = prompt
         self._status_renderable = status_renderable
+        self._main_menu = main_menu or status_renderable is not None
+        self._zero_for_last = has_navigation_option(self._options)
+        self._compact_status_renderable = compact_status_renderable
+        self._hint_text = Text()
 
     def compose(self) -> ComposeResult:
         g = ui_glyphs()
-        escape_hint = ("ESC", "退出" if self._status_renderable is not None else "返回")
+        escape_hint = ("ESC", "退出" if self._main_menu else "返回")
         total = len(self._options)
         hint_parts: list[tuple[str, str] | str] = [
-            (menu_keys_hint(total), "数字键直选"),
+            (menu_keys_hint(total, zero_for_last=self._zero_for_last), "数字键直选"),
         ]
         if g.name == "unicode":
             hint_parts.append(("↑↓", "移动"))
@@ -186,32 +195,32 @@ class OptionScreen(ModalScreen[int]):
         hint_parts.extend([("Enter", "确认"), escape_hint])
         hint = build_hint_line(hint_parts)
 
-        content = [Static(self._title, id="opt-title")]
+        content = []
+        if not self._main_menu and self._zero_for_last:
+            content.append(Static("主菜单 / " + self._title, id="opt-path"))
+        content.append(Static(self._title, id="opt-title"))
         if self._status_renderable is not None:
             content.append(Static(self._status_renderable, id="opt-status"))
         prompt_text = Text(self._prompt, style=TEXT_MUTED)
         prompt_text.append(ui_glyphs().sep_tight, style=TEXT_DIM)
         prompt_text += hint
+        self._hint_text = prompt_text
         content.extend(
             (
-                Static(prompt_text, id="opt-hint"),
                 OptionList(
                     *(
                         Option(
                             # 序号/标签不写死前景色，只给字重：显式 span 色会盖过
                             # 组件 CSS 的 color，聚焦行翻成「亮绿底深字」时序号
                             # 就成了绿底绿字。留空即继承组件色，随高亮态自动适配。
-                            Text.assemble(
-                                (menu_key_for_index(idx, total), "bold"),
-                                (".", "dim"),
-                                (f"  {opt}", ""),
-                            ),
+                            self._option_label(idx, opt),
                             id=f"opt-{idx}",
                         )
                         for idx, opt in enumerate(self._options, start=1)
                     ),
                     id="opt-list",
                 ),
+                Static(prompt_text, id="opt-hint"),
             )
         )
         yield Vertical(
@@ -219,12 +228,49 @@ class OptionScreen(ModalScreen[int]):
             id="opt-dialog",
         )
 
+    def _option_label(self, index: int, label: str) -> Text:
+        key = menu_key_for_index(index, len(self._options), zero_for_last=self._zero_for_last)
+        text = Text.assemble((key, "bold"), (".", "dim"), (f"  {label}", ""))
+        spacious = self.app.size.width >= 80 and self.app.size.height >= 28
+        description = MAIN_MENU_DESCRIPTIONS.get(label) if self._main_menu and spacious else None
+        if description:
+            text.append("\n    " + description, style="dim")
+        elif index == len(self._options) and self._zero_for_last:
+            text.stylize("dim")
+        return text
+
+    def on_resize(self, event: events.Resize) -> None:
+        for options in self.query(OptionList):
+            for index, label in enumerate(self._options):
+                options.replace_option_prompt_at_index(index, self._option_label(index + 1, label))
+        self._layout_menu()
+
+    def _layout_menu(self) -> None:
+        compact = self.app.size.width < 70 or self.app.size.height < 24
+        self.set_class(compact, "compact-menu")
+        status = self._compact_status_renderable if compact and self._compact_status_renderable is not None else self._status_renderable
+        for widget in self.query('#opt-status'):
+            widget.update(status)
+        content_width = max(20, min(84, int(self.app.size.width * .94)) - (4 if compact else 6))
+        def rows(text):
+            value = text.plain if isinstance(text, Text) else str(text)
+            return sum(max(1, (cell_len(line) + content_width - 1) // content_width) for line in value.splitlines())
+        option_rows = sum(rows(self._option_label(i, label)) for i, label in enumerate(self._options, 1))
+        height = 2 + max(3, option_rows) + rows(self._hint_text) + (2 if compact else 8)
+        if not self._main_menu and self._zero_for_last:
+            height += 1
+        if status is not None:
+            height += rows(status) + (0 if compact else 1)
+        for dialog in self.query('#opt-dialog'):
+            dialog.styles.height = min(max(5, self.app.size.height - 2), height)
+
     def on_mount(self) -> None:
         # 等模态层挂载完成后再显示底层内容，避免切换时漏出日志或账号卡片。
         self.app.set_main_content_visible(True)
+        self._layout_menu()
 
     def _pick_digit(self, digit: str) -> None:
-        choice = parse_menu_key(digit, len(self._options))
+        choice = parse_menu_key(digit, len(self._options), zero_for_last=self._zero_for_last)
         if choice is not None:
             self.app.resolve_prompt(self, choice)
 
@@ -262,7 +308,7 @@ class OptionScreen(ModalScreen[int]):
         # 兜底：部分终端把数字键送到 on_key 而非 Binding。
         char = event.character or ""
         if char in "0123456789":
-            choice = parse_menu_key(char, len(self._options))
+            choice = parse_menu_key(char, len(self._options), zero_for_last=self._zero_for_last)
             if choice is not None:
                 event.stop()
                 event.prevent_default()
@@ -326,6 +372,20 @@ class YesNoScreen(ModalScreen[bool]):
 
     def on_mount(self) -> None:
         self.app.set_main_content_visible(True)
+        self._layout_confirmation()
+
+    def on_resize(self, event: events.Resize) -> None:
+        self._layout_confirmation()
+
+    def _layout_confirmation(self) -> None:
+        if not isinstance(self._details_renderable, Text):
+            return
+        width = max(20, min(84, int(self.app.size.width * .94)) - 8)
+        def rows(value):
+            return sum(max(1, (cell_len(line) + width - 1) // width) for line in value.splitlines())
+        height = 12 + rows(self._message) + rows(self._details_renderable.plain)
+        for dialog in self.query('#yn-dialog'):
+            dialog.styles.height = min(max(10, self.app.size.height - 2), height, 34)
 
     def action_yes(self) -> None:
         self.app.resolve_prompt(self, True)
@@ -687,6 +747,21 @@ class CourseTuiApp(App):
         color: {TEXT_PRIMARY};
         border-bottom: solid {HAIRLINE};
         margin-bottom: 1;
+    }}
+
+    #opt-path {{
+        height: 1;
+        color: {TEXT_DIM};
+    }}
+
+    OptionScreen.compact-menu #opt-dialog {{
+        padding: 0 1;
+    }}
+    OptionScreen.compact-menu #opt-title,
+    OptionScreen.compact-menu #opt-status,
+    OptionScreen.compact-menu #opt-list,
+    OptionScreen.compact-menu #opt-hint {{
+        margin-bottom: 0;
     }}
 
     #opt-hint, #yn-hint, #ml-hint, #pause-msg, #pause-hint {{

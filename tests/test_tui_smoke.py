@@ -1183,13 +1183,13 @@ class TuiSmokeTests(unittest.TestCase):
                         self.assertEqual(main_content.styles.visibility, "visible")
                         hint = str(menu_screen.query_one("#opt-hint", Static).render())
                         self.assertIn("ESC 退出", hint)
-                        self.assertIn("1-9/0", hint)
-                        # 标签：最后一项为 0. 退出（而非 10.）
+                        self.assertIn("1-6/0", hint)
+                        # 标签：精简后的主菜单最后一项仍为 0. 退出。
                         option_list = menu_screen.query_one("#opt-list", OptionList)
-                        last_prompt = option_list.get_option_at_index(9).prompt
+                        last_prompt = option_list.get_option_at_index(6).prompt
                         self.assertTrue(
                             str(last_prompt).startswith("0."),
-                            f"第 10 项键位应为 0，实际: {last_prompt!r}",
+                            f"退出键位应为 0，实际: {last_prompt!r}",
                         )
                         dialog = menu_screen.query_one("#opt-dialog")
                         screen_width = menu_screen.size.width
@@ -1205,7 +1205,7 @@ class TuiSmokeTests(unittest.TestCase):
                             "主菜单没有垂直居中",
                         )
                         self.assertIs(app.focused, option_list)
-                        # 数字键 0 = 第 10 项「退出」，无需方向键+回车
+                        # 数字键 0 直接退出，无需方向键+回车。
                         await pilot.press("0")
                         self.assertIs(
                             app._held_prompt_screen,

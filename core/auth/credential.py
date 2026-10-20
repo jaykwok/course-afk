@@ -15,7 +15,7 @@ from core.config import (
     MYLEARNING_CENTER_HOME_PATTERN,
 )
 from core.browser.overlays import prepare_page_after_navigation_async
-from core.storage import write_json_atomic
+from core.storage import serialized, write_json_atomic
 
 
 CENTER_ACCOUNT_PROFILE_SCRIPT = """
@@ -112,7 +112,8 @@ def save_credential_bundle(saved_at: datetime, profile: AccountProfile, cookies:
 
 
 
-def load_credential_metadata(metadata_path=CREDENTIAL_META_FILE) -> CredentialMetadata | None:
+def load_credential_metadata(metadata_path=None) -> CredentialMetadata | None:
+    metadata_path = metadata_path or CREDENTIAL_META_FILE
     try:
         data = None
         if Path(metadata_path) == Path(CREDENTIAL_META_FILE) and Path(COOKIES_FILE).exists():
@@ -155,3 +156,46 @@ def parse_expires_at(metadata: CredentialMetadata | None) -> datetime | None:
         return datetime.fromisoformat(metadata.expires_at)
     except ValueError:
         return None
+
+
+def load_pending_owner_metadata(cookies_path=None) -> CredentialMetadata | None:
+    """清空 Cookie 后保留的不含令牌的待办归属，不作为登录凭据使用。"""
+    try:
+        bundle = json.loads(Path(cookies_path or COOKIES_FILE).read_text(encoding="utf-8"))
+        data = bundle.get("pending_owner") if isinstance(bundle, dict) and bundle.get("version") == 1 else None
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or not (data.get("account_name") or data.get("account_display_name")):
+        return None
+    return CredentialMetadata(
+        saved_at="", expires_at="",
+        account_display_name=str(data.get("account_display_name") or ""),
+        account_name=str(data.get("account_name") or ""),
+        account_label=str(data.get("account_label") or ""),
+    )
+
+
+@serialized
+def clear_local_credentials(*, preserve_pending_owner: bool = False, cookies_path=None, metadata_path=None) -> bool:
+    """清空本地 Cookie 和登录元数据；有待办时只留下账号归属。"""
+    cookies_path = Path(cookies_path or COOKIES_FILE)
+    metadata_path = Path(metadata_path or CREDENTIAL_META_FILE)
+    if not cookies_path.exists() and not metadata_path.exists():
+        return False
+    owner = None
+    if preserve_pending_owner:
+        for path in (cookies_path, metadata_path):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (FileNotFoundError, ValueError):
+                continue
+            if path == cookies_path:
+                data = (data.get("metadata") or data.get("pending_owner")) if isinstance(data, dict) else None
+            if isinstance(data, dict) and (data.get("account_name") or data.get("account_display_name")):
+                owner = {key: str(data.get(key) or "") for key in ("account_display_name", "account_name", "account_label")}
+                break
+    # 权威文件先写入空凭据，防止遗留元数据被误当成仍已登录。
+    # 不备份 Cookie；重新登录即可获得新的凭据。
+    write_json_atomic(cookies_path, {"version": 1, "cookies": [], "metadata": None, "pending_owner": owner})
+    metadata_path.unlink(missing_ok=True)
+    return True

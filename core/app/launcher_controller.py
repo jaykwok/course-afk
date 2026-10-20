@@ -162,13 +162,14 @@ def handle_recommended_flow(ui) -> None:
     ui.pause()
 
 
-def handle_refresh_credential(state, ui) -> None:
+def handle_refresh_credential(state, ui, *, switch_account: bool = False) -> None:
     from core.auth.login import LoginNotCompletedError
     from core.app.workflows import refresh_credential
 
     if state.has_credential and not state.credential_expired:
         ui.show_warning("当前登录凭证仍有效，继续将覆盖现有登录状态")
-    _begin_operation(ui, "更新登录凭证", "正在打开浏览器，请完成登录")
+    title = "更换登录账号" if switch_account else "更新登录凭证"
+    _begin_operation(ui, title, "正在打开新的登录窗口，请完成登录")
     try:
         profile = run_async(refresh_credential(status_callback=ui.show_info, confirm_same_account=lambda old, new: ui.prompt_yes_no(f"已有 {old} 的待办；请确认当前登录的 {new} 是同一账号，或明确接管这些待办。", default="N")))
     except LoginNotCompletedError as exc:
@@ -176,6 +177,61 @@ def handle_refresh_credential(state, ui) -> None:
         ui.pause()
         return
     ui.show_success(f"登录凭证已更新，当前账号：{profile.label}")
+    ui.pause()
+
+
+def handle_account_management(state, ui) -> None:
+    from core.app.menus import ACCOUNT_MENU_OPTIONS
+
+    choice = ui.prompt_choice("账号与登录", ACCOUNT_MENU_OPTIONS)
+    if choice == 1:
+        handle_refresh_credential(state, ui, switch_account=True)
+    elif choice == 2:
+        handle_refresh_credential(state, ui)
+    elif choice == 3:
+        handle_show_login_state(state, ui)
+    elif choice == 4:
+        handle_clear_credentials(state, ui)
+
+
+def handle_show_login_state(state, ui) -> None:
+    from core.auth.credential import load_credential_metadata, load_pending_owner_metadata
+
+    metadata = load_credential_metadata()
+    owner = load_pending_owner_metadata()
+    status = "未登录" if not state.has_credential else "已过期，请重新登录" if state.credential_expired else "有效"
+    rows = [("登录状态", status), ("当前账号", metadata.account_label if metadata and state.has_credential else "未登录")]
+    if metadata and state.has_credential:
+        rows.extend([("保存时间", metadata.saved_at), ("到期时间", metadata.expires_at)])
+    if owner:
+        rows.append(("待办归属账号", owner.account_label or owner.account_name or owner.account_display_name))
+    ui.show_summary("本地登录状态", rows)
+    ui.pause()
+
+
+def handle_clear_credentials(state, ui) -> None:
+    from core.config import COOKIES_FILE, CREDENTIAL_META_FILE
+    from core.auth.credential import clear_local_credentials, load_credential_metadata
+
+    if not COOKIES_FILE.exists() and not CREDENTIAL_META_FILE.exists():
+        ui.show_info("当前没有本地登录凭据")
+        ui.pause()
+        return
+    metadata = load_credential_metadata()
+    pending = any((state.learning_count, state.learning_failure_count, state.exam_count, state.manual_exam_count))
+    rows = [("当前账号", metadata.account_label if metadata else "未登录或凭据异常"), ("清空内容", "本地 Cookie、登录信息与遗留登录元数据"), ("保留内容", "课程、失败记录、考试待办、考试历史及资料")]
+    if pending:
+        rows.append(("待办归属", "保留所属账号，重新登录仍会核对归属"))
+    if not ui.prompt_summary_confirmation("清空本地登录凭据", rows, "确认清空？下次操作需要重新登录。", default="N"):
+        ui.show_info("已取消清空登录凭据")
+        return
+    try:
+        clear_local_credentials(preserve_pending_owner=pending)
+    except OSError as exc:
+        ui.show_error(f"清理登录凭据未完整完成，请重试：{exc}")
+        ui.pause()
+        return
+    ui.show_success("本地登录凭据已清空，请重新登录")
     ui.pause()
 
 
@@ -191,6 +247,50 @@ def handle_show_learning_links(learning_urls_file, ui) -> None:
             [("课程链接总数", str(len(links))), ("首条课程链接", links[0])],
         )
     ui.pause()
+
+
+def handle_clear_links(ui, *, include_exams: bool = False) -> None:
+    from core.queues.manage import clear_link_queues, link_queue_paths, queue_record_count, snapshot_link_queues
+
+    try:
+        snapshot = snapshot_link_queues(include_exams)
+    except OSError as exc:
+        ui.show_error(f"无法读取待办，尚未清空：{exc}")
+        ui.pause()
+        return
+    counts = {label: queue_record_count(snapshot[path]) for label, path in link_queue_paths(include_exams).items()}
+    if all(count == 0 for count in counts.values()):
+        ui.show_info("所选范围内没有待办或失败记录，无需清空")
+        ui.pause()
+        return
+    title = "清空全部待办" if include_exams else "清空课程及失败记录"
+    rows = [(label, str(count) if count is not None else "文件格式异常，仍可备份并清空") for label, count in counts.items()]
+    rows.append(("保留内容", "登录凭证、考试提交历史、已保存的课程资料"))
+    if not ui.prompt_summary_confirmation(title, rows, "确认清空以上记录？清空前会自动保存备份。", default="N"):
+        ui.show_info("已取消清空，待办保持不变")
+        return
+    try:
+        result = clear_link_queues(include_exams, expected_snapshot=snapshot)
+    except (OSError, RuntimeError) as exc:
+        ui.show_error(str(exc))
+        ui.pause()
+        return
+    ui.show_summary("清空完成", [(label, "已清空") for label in result.counts] + [("备份位置", str(result.backup_dir))])
+    ui.pause()
+
+
+def handle_task_management(exam_urls_file, learning_urls_file, manual_exam_file, ui) -> None:
+    from core.app.menus import TASK_MENU_OPTIONS
+
+    choice = ui.prompt_choice("任务管理", TASK_MENU_OPTIONS)
+    if choice == 1:
+        handle_show_output_state(exam_urls_file, learning_urls_file, manual_exam_file, ui)
+    elif choice == 2:
+        handle_show_learning_links(learning_urls_file, ui)
+    elif choice == 3:
+        handle_clear_links(ui)
+    elif choice == 4:
+        handle_clear_links(ui, include_exams=True)
 
 
 def handle_manual_selection(prompts, ui) -> None:

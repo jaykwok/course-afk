@@ -327,10 +327,14 @@ class TuiFrontend:
     def _bridge_show_menu(self, options: list[str]) -> int:
         # 主菜单不可取消：在主菜单按 Ctrl+C 直接退出应用
         status_renderable = None
+        compact_status_renderable = None
         if self._latest_state is not None:
             metadata, recommended = self._dashboard_inputs(self._latest_state)
             status_renderable = tui_render.build_menu_status(
                 self._latest_state, metadata, recommended
+            )
+            compact_status_renderable = tui_render.build_menu_status(
+                self._latest_state, metadata, recommended, compact=True
             )
         return self._prompt(
             OptionScreen(
@@ -338,6 +342,8 @@ class TuiFrontend:
                 options,
                 "请选择功能",
                 status_renderable=status_renderable,
+                main_menu=True,
+                compact_status_renderable=compact_status_renderable,
             )
         )
 

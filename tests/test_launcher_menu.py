@@ -9,26 +9,23 @@ class LauncherMenuTests(unittest.TestCase):
         self.assertEqual(
             MENU_OPTIONS,
             [
-                "推荐流程 / 继续上次进度（挂课+考试）",
-                "仅挂课",
-                "切换账号 / 更新登录凭证",
-                "手动选择课程 / 录入课程或考试链接",
-                "AI 自动考试",
-                "人工考试",
-                "保存课程课件 / AI导学资料",
-                "查看输出文件统计",
-                "查看课程链接详情",
+                "继续学习 / 推荐流程",
+                "学习任务",
+                "考试任务",
+                "课程资料",
+                "任务管理",
+                "账号与登录",
                 "退出",
             ],
         )
 
     def test_main_menu_fits_single_page_with_zero_for_exit(self):
-        """主菜单每页不超过 10 项；退出为第 10 项，键位 0，返回序号仍为 10。"""
+        """主菜单保持六组操作，退出始终为 0。"""
         self.assertLessEqual(len(MENU_OPTIONS), MAX_MENU_OPTIONS)
-        self.assertEqual(len(MENU_OPTIONS), 10)
+        self.assertEqual(len(MENU_OPTIONS), 7)
         self.assertEqual(MENU_OPTIONS[-1], "退出")
-        self.assertEqual(menu_key_for_index(10, 10), "0")
-        self.assertEqual(parse_menu_key("0", 10), 10)
+        self.assertEqual(menu_key_for_index(7, 7, zero_for_last=True), "0")
+        self.assertEqual(parse_menu_key("0", 7, zero_for_last=True), 7)
 
     def test_manual_selection_prompts_cover_signup_then_learning(self):
         joined = "\n".join(MANUAL_SELECTION_PROMPTS)

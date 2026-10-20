@@ -40,18 +40,9 @@ def _disable_windows_console_input_modes_early() -> None:
 _disable_windows_console_input_modes_early()
 
 
-MENU_OPTIONS = [
-    "推荐流程 / 继续上次进度（挂课+考试）",
-    "仅挂课",
-    "切换账号 / 更新登录凭证",
-    "手动选择课程 / 录入课程或考试链接",
-    "AI 自动考试",
-    "人工考试",
-    "保存课程课件 / AI导学资料",
-    "查看输出文件统计",
-    "查看课程链接详情",
-    "退出",
-]
+from core.app.menus import MAIN_MENU_OPTIONS, LEARNING_MENU_OPTIONS, EXAM_MENU_OPTIONS
+
+MENU_OPTIONS = MAIN_MENU_OPTIONS
 
 MANUAL_SELECTION_PROMPTS = [
     "请粘贴入口链接、课程链接、考试链接或课程集合页（学习专区 / 案例库）。",
@@ -83,9 +74,8 @@ def main() -> int:
         handle_manual_selection,
         handle_reference_collection,
         handle_recommended_flow,
-        handle_refresh_credential,
-        handle_show_learning_links,
-        handle_show_output_state,
+        handle_account_management,
+        handle_task_management,
     )
     from core.state import collect_project_state
 
@@ -104,27 +94,26 @@ def main() -> int:
                 if choice == 1:
                     handle_recommended_flow(ui)
                 elif choice == 2:
-                    handle_afk(ui)
+                    action = ui.prompt_choice("学习任务", LEARNING_MENU_OPTIONS)
+                    if action == 1:
+                        handle_afk(ui)
+                    elif action == 2:
+                        handle_manual_selection(MANUAL_SELECTION_PROMPTS, ui)
                 elif choice == 3:
-                    handle_refresh_credential(state, ui)
+                    action = ui.prompt_choice("考试任务", EXAM_MENU_OPTIONS)
+                    if action == 1:
+                        handle_ai_exam(ui)
+                    elif action == 2:
+                        handle_manual_exam(ui)
+                    elif action == 3:
+                        handle_manual_selection(MANUAL_SELECTION_PROMPTS, ui)
                 elif choice == 4:
-                    handle_manual_selection(MANUAL_SELECTION_PROMPTS, ui)
-                elif choice == 5:
-                    handle_ai_exam(ui)
-                elif choice == 6:
-                    handle_manual_exam(ui)
-                elif choice == 7:
                     handle_reference_collection(ui)
-                elif choice == 8:
-                    handle_show_output_state(
-                        EXAM_URLS_FILE,
-                        LEARNING_URLS_FILE,
-                        MANUAL_EXAM_FILE,
-                        ui,
-                    )
-                elif choice == 9:
-                    handle_show_learning_links(LEARNING_URLS_FILE, ui)
-                elif choice == 10:
+                elif choice == 5:
+                    handle_task_management(EXAM_URLS_FILE, LEARNING_URLS_FILE, MANUAL_EXAM_FILE, ui)
+                elif choice == 6:
+                    handle_account_management(state, ui)
+                elif choice == 7:
                     ui.show_success("已退出统一入口")
                     return 0
                 else:

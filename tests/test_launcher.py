@@ -22,7 +22,7 @@ class LauncherEntryTests(unittest.TestCase):
             manual_exam_count=0,
         )
 
-        afk_choice = launcher.MENU_OPTIONS.index("仅挂课") + 1
+        afk_choice = launcher.MENU_OPTIONS.index("学习任务") + 1
 
         with (
             patch("core.config.setup_logging"),
@@ -30,6 +30,7 @@ class LauncherEntryTests(unittest.TestCase):
             patch("core.ui.show_title"),
             patch("core.ui.render_dashboard"),
             patch("core.ui.show_menu", return_value=afk_choice),
+            patch("core.ui.prompt_choice", return_value=1),
             patch("core.ui.show_warning") as mock_warning,
             patch(
                 "core.app.launcher_controller.handle_afk",
