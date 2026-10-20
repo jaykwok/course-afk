@@ -3,12 +3,12 @@ from __future__ import annotations
 from core.storage import serialized, write_text_atomic
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from core.config import LEARNING_FAILURES_FILE, LEARNING_URLS_FILE
-from core.file_ops import del_file, is_compliant_url_regex, normalize_text
-from core.links import unique_urls
+from core.file_ops import del_file, is_compliant_url_regex, normalize_text, normalize_url
+from core.links import unique_urls, normalize_urls
 
 
 @dataclass(frozen=True)
@@ -44,7 +44,7 @@ def _normalize_queue_entries(raw_entries) -> list[LearningQueueEntry]:
     entries_by_url: dict[str, LearningQueueEntry] = {}
     for raw_entry in raw_entries:
         if isinstance(raw_entry, dict):
-            url = normalize_text(raw_entry.get("url"))
+            url = normalize_url(normalize_text(raw_entry.get("url")))
         else:
             url = ""
         if url:
@@ -60,7 +60,7 @@ def _normalize_failure_entry(raw_entry) -> LearningFailureEntry | None:
     if not isinstance(raw_entry, dict):
         return None
 
-    url = normalize_text(raw_entry.get("url"))
+    url = normalize_url(normalize_text(raw_entry.get("url")))
     reason = normalize_text(raw_entry.get("reason"))
     reason_text = normalize_text(raw_entry.get("reason_text"))
     if not url or not reason:
@@ -143,7 +143,7 @@ def append_learning_urls(
     entries = read_learning_queue(file_path=file_path)
     existing = {entry.url for entry in entries}
     added: list[str] = []
-    for url in unique_urls(urls):
+    for url in normalize_urls(urls):
         if url in existing:
             continue
         entries.append(LearningQueueEntry(url=url))
@@ -219,7 +219,7 @@ def record_learning_failure(
     detail: dict[str, object] | None = None,
     file_path: Path = LEARNING_FAILURES_FILE,
 ) -> None:
-    normalized_url = normalize_text(url)
+    normalized_url = normalize_url(normalize_text(url))
     normalized_reason = normalize_text(reason)
     if not normalized_url or not normalized_reason:
         return
@@ -249,7 +249,7 @@ def remove_learning_failure(
     file_path: Path = LEARNING_FAILURES_FILE,
     keep_file: bool = True,
 ) -> None:
-    normalized_url = normalize_text(url)
+    normalized_url = normalize_url(normalize_text(url))
     if not normalized_url:
         return
 
@@ -263,6 +263,28 @@ def remove_learning_failure(
 
 def count_learning_failures(file_path: Path = LEARNING_FAILURES_FILE) -> int:
     return len(read_learning_failures(file_path=file_path))
+
+
+@serialized
+def replace_learning_urls(
+    replacements: dict[str, str],
+    *,
+    learning_file: Path = LEARNING_URLS_FILE,
+    failures_file: Path = LEARNING_FAILURES_FILE,
+) -> tuple[int, int]:
+    """仅按已验证的来源映射迁移 URL；不从课程 ID 猜测所属专题。"""
+    mapping = {normalize_url(old): normalize_url(new) for old, new in replacements.items()}
+    if not all(is_compliant_url_regex(url) for url in mapping.values()):
+        raise ValueError("迁移目标包含不合规学习链接")
+    learning = read_learning_queue(learning_file)
+    failures = read_learning_failures(failures_file)
+    learning_changed = sum(entry.url in mapping and mapping[entry.url] != entry.url for entry in learning)
+    failures_changed = sum(entry.url in mapping and mapping[entry.url] != entry.url for entry in failures)
+    if learning_changed:
+        write_learning_queue([replace(entry, url=mapping.get(entry.url, entry.url)) for entry in learning], file_path=learning_file)
+    if failures_changed:
+        write_learning_failures([replace(entry, url=mapping.get(entry.url, entry.url)) for entry in failures], file_path=failures_file)
+    return learning_changed, failures_changed
 
 
 @serialized
@@ -282,7 +304,7 @@ def prune_invalid_learning_failures(
     kept: list[LearningFailureEntry] = []
     removed: list[str] = []
     for entry in entries:
-        if is_compliant_url_regex(entry.url) or entry.reason == "discovery_incomplete":
+        if is_compliant_url_regex(entry.url) or entry.reason in {"discovery_incomplete", "non_compliant_url"}:
             kept.append(entry)
         else:
             removed.append(entry.url)

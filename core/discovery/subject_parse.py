@@ -7,7 +7,6 @@ from dataclasses import dataclass, field
 
 from core.browser.session import create_browser_context, is_target_closed_exception
 from core.config import (
-    ZHIXUEYUN_COURSE_PREFIX,
     ZHIXUEYUN_EXAM_PREFIX,
 )
 from core.queues.exam import append_exam_urls
@@ -16,6 +15,7 @@ from core.file_ops import (
     is_exam_url,
     is_subject_detail_url,
     normalize_url,
+    build_subject_course_url,
 )
 from core.queues.learning import append_learning_urls, remember_discovery_entries, remove_learning_failure
 from core.links import unique_urls
@@ -30,7 +30,7 @@ from core.runtime import close_safely
 # - GET .../subject/chapter-progress?courseId={subjectId}
 # - 章节 courseChapterSections[].sectionType 分流——注意：
 #   此处数字与「课程内」DOM data-sectiontype 不是同一套（课程内 3=文档，主题 3=外链）
-#   * 10 → 课程 course/detail/{attachmentId/resourceId} → 学习队列
+#   * 10 → 课程 course/detail/{resourceId}/6/{required}/{subjectId} → 学习队列
 #   * 9  → 考试 exam/answer-paper/{resourceId} → 考试队列
 #   * 3  → URL（外链，字段 url）→ 不入队，保留 subject 残留由 DOM 处理
 #   * 其它未知类型 → 保留 subject 残留
@@ -182,6 +182,7 @@ def expand_chapter_progress(
     unknown_types: list[int] = []
     url_section_count = 0
     section_total = 0
+    subject_id = extract_subject_id(subject_url or "")
 
     for section in _iter_chapter_sections(payload):
         section_total += 1
@@ -190,7 +191,13 @@ def expand_chapter_progress(
         if section_type in COURSE_SECTION_TYPES:
             course_id = _section_course_id(section)
             if course_id:
-                candidate = f"{ZHIXUEYUN_COURSE_PREFIX}{course_id}"
+                source_id = subject_id or _section_uuid(section, ("courseId",))
+                try:
+                    candidate = build_subject_course_url(course_id, source_id or "", section.get("required"))
+                except ValueError:
+                    # 来源/必修标记未知时保留专题，由平台原入口处理。
+                    unknown_types.append(section_type)
+                    continue
                 if is_compliant_url_regex(candidate):
                     course_urls.append(candidate)
                     continue

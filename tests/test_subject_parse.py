@@ -54,13 +54,17 @@ class SubjectParseUnitTests(unittest.TestCase):
                         "id": "d5832449-44e7-41da-a593-c661f27842ed",
                         "attachmentId": "f8f48345-5a1a-48f7-a5e8-7b8bd09b7d04",
                         "name": "课A",
+                        "courseId": "1d40d4e0-a622-4535-8f02-ad108a930656",
                         "sectionType": 10,
+                        "required": 1,
                     },
                     {
                         "id": "077a0c34-2c24-435e-8959-bc92a4e8f47a",
                         "resourceId": "bd2635dc-bc8c-4daa-ae67-1d4122cbfd8a",
                         "name": "课B",
+                        "courseId": "1d40d4e0-a622-4535-8f02-ad108a930656",
                         "sectionType": 10,
+                        "required": 1,
                     },
                 ]
             }
@@ -70,9 +74,9 @@ class SubjectParseUnitTests(unittest.TestCase):
             links,
             [
                 "https://kc.zhixueyun.com/#/study/course/detail/"
-                "f8f48345-5a1a-48f7-a5e8-7b8bd09b7d04",
+                "f8f48345-5a1a-48f7-a5e8-7b8bd09b7d04/6/1/1d40d4e0-a622-4535-8f02-ad108a930656",
                 "https://kc.zhixueyun.com/#/study/course/detail/"
-                "bd2635dc-bc8c-4daa-ae67-1d4122cbfd8a",
+                "bd2635dc-bc8c-4daa-ae67-1d4122cbfd8a/6/1/1d40d4e0-a622-4535-8f02-ad108a930656",
             ],
         )
         result = expand_chapter_progress(
@@ -99,6 +103,7 @@ class SubjectParseUnitTests(unittest.TestCase):
                         "id": "d5832449-44e7-41da-a593-c661f27842ed",
                         "attachmentId": "f8f48345-5a1a-48f7-a5e8-7b8bd09b7d04",
                         "sectionType": 10,
+                        "required": 1,
                     },
                     {
                         "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
@@ -113,7 +118,7 @@ class SubjectParseUnitTests(unittest.TestCase):
             result.course_urls,
             [
                 "https://kc.zhixueyun.com/#/study/course/detail/"
-                "f8f48345-5a1a-48f7-a5e8-7b8bd09b7d04"
+                "f8f48345-5a1a-48f7-a5e8-7b8bd09b7d04/6/1/1d40d4e0-a622-4535-8f02-ad108a930656"
             ],
         )
         self.assertEqual(result.exam_urls, [])
@@ -133,6 +138,7 @@ class SubjectParseUnitTests(unittest.TestCase):
                         "id": "24a514df-0e89-4630-82d2-1ba5db348afc",
                         "resourceId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
                         "sectionType": 10,
+                        "required": 1,
                     },
                     {
                         "id": "1ce8472f-2fcf-403a-a92b-048b2496ec24",
@@ -201,6 +207,7 @@ class SubjectParseUnitTests(unittest.TestCase):
                         "id": "d5832449-44e7-41da-a593-c661f27842ed",
                         "attachmentId": "f8f48345-5a1a-48f7-a5e8-7b8bd09b7d04",
                         "sectionType": 10,
+                        "required": 1,
                     },
                     {
                         "id": "2710af8e-1e65-47df-8bc4-0a7a2c9d1212",
@@ -269,7 +276,7 @@ class SubjectParseUnitTests(unittest.TestCase):
         self.assertEqual(
             result.course_urls[0],
             "https://kc.zhixueyun.com/#/study/course/detail/"
-            "f8f48345-5a1a-48f7-a5e8-7b8bd09b7d04",
+            "f8f48345-5a1a-48f7-a5e8-7b8bd09b7d04/6/1/1d40d4e0-a622-4535-8f02-ad108a930656",
         )
         self.assertNotIn(
             "https://kc.zhixueyun.com/#/study/course/detail/"

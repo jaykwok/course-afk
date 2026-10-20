@@ -2,7 +2,7 @@ import json
 import logging
 import os
 import re
-from urllib.parse import unquote
+from urllib.parse import parse_qs, unquote
 
 from core.config import (
     ZHIXUEYUN_COURSE_PREFIX,
@@ -67,11 +67,12 @@ _COURSE_PREFIX_ESCAPED = re.escape(ZHIXUEYUN_COURSE_PREFIX)
 _SUBJECT_PREFIX_ESCAPED = re.escape(ZHIXUEYUN_SUBJECT_PREFIX)
 _TRAIN_CLASS_PREFIX_ESCAPED = re.escape(ZHIXUEYUN_TRAIN_CLASS_PREFIX)
 _EXAM_PREFIX_ESCAPED = re.escape(ZHIXUEYUN_EXAM_PREFIX)
+_COURSE_CONTEXT = rf"/[1-9][0-9]*/[01]/{_UUID}"
 _COMPLIANT_URL_PATTERN = re.compile(
-    rf"^({_COURSE_PREFIX_ESCAPED}|{_SUBJECT_PREFIX_ESCAPED}){_UUID}$"
+    rf"^(?:{_COURSE_PREFIX_ESCAPED}{_UUID}(?:{_COURSE_CONTEXT})?|{_SUBJECT_PREFIX_ESCAPED}{_UUID})$"
 )
 _COURSE_DETAIL_URL_PATTERN = re.compile(
-    rf"^{_COURSE_PREFIX_ESCAPED}{_UUID}$"
+    rf"^{_COURSE_PREFIX_ESCAPED}{_UUID}(?:{_COURSE_CONTEXT})?$"
 )
 _SUBJECT_DETAIL_URL_PATTERN = re.compile(
     rf"^{_SUBJECT_PREFIX_ESCAPED}{_UUID}$"
@@ -80,6 +81,17 @@ _TRAIN_CLASS_URL_PATTERN = re.compile(
     rf"^{_TRAIN_CLASS_PREFIX_ESCAPED}{_UUID}$"
 )
 _EXAM_URL_PATTERN = re.compile(rf"^{_EXAM_PREFIX_ESCAPED}{_UUID}$")
+
+
+def build_subject_course_url(course_id: str, subject_id: str, required: object) -> str:
+    """保留专题来源及必修标记；缺失/非法参数不能降级为裸课程链接。"""
+    if not re.fullmatch(_UUID, course_id or "") or not re.fullmatch(_UUID, subject_id or ""):
+        raise ValueError("课程或专题 ID 非法")
+    if isinstance(required, bool):
+        required = int(required)
+    if str(required) not in {"0", "1"}:
+        raise ValueError("专题课程缺少合法的 required 标记")
+    return f"{ZHIXUEYUN_COURSE_PREFIX}{course_id}/6/{required}/{subject_id}"
 
 
 def normalize_url(url):
@@ -95,17 +107,49 @@ def normalize_url(url):
        .../detail/11&UUID...   →  .../detail/UUID
        .../detail/99@@UUID... →  .../detail/UUID
 
-    已是标准格式的链接原样返回。
+    4. 课程完整上下文路径 /UUID/type/required/sourceId 原样保留。
+       完整的专题查询参数会转成该路径；缺失上下文拒绝降级。
     """
     url = (url or "").strip()
     decoded_url = unquote(url)
-    candidates = list(dict.fromkeys([url, decoded_url]))
+    candidates = list(dict.fromkeys([decoded_url, url]))
+
+    # 课程来源是路由的一部分。先处理课程，不能由下面的通用 UUID 逻辑裁掉。
+    for candidate in candidates:
+        course_match = re.search(
+            rf"{_COURSE_PREFIX_ESCAPED}(?:\d+(?:&|@@))?({_UUID})([^?&#]*)",
+            candidate,
+        )
+        if not course_match:
+            continue
+        base = f"{ZHIXUEYUN_COURSE_PREFIX}{course_match.group(1)}"
+        suffix = course_match.group(2).rstrip("/")
+        query_text = candidate[course_match.end():]
+        params = parse_qs(query_text[1:], keep_blank_values=True) if query_text.startswith("?") else {}
+        context_keys = {"type", "sourceId", "required", "require", "isRequired"}
+        if suffix:
+            if re.fullmatch(_COURSE_CONTEXT, suffix) and not context_keys.intersection(params):
+                return base + suffix
+            return candidate  # 不完整/冲突的上下文不能静默变成可执行裸链接。
+        if context_keys.intersection(params):
+            required_values = [params[key] for key in ("required", "require", "isRequired") if key in params]
+            if (
+                params.get("type") == ["6"]
+                and len(params.get("sourceId", [])) == 1
+                and len(required_values) == 1 and len(required_values[0]) == 1
+            ):
+                try:
+                    return build_subject_course_url(course_match.group(1), params["sourceId"][0], required_values[0][0])
+                except ValueError:
+                    pass
+            return candidate
+        return base
 
     # 已知详情链接只保留末尾 UUID。兼容平台在 UUID 前插入的数字标记，
     # 例如 /detail/99@@UUID、/detail/11&UUID。
     for candidate in candidates:
         standard_match = re.search(
-            rf"({_COURSE_PREFIX_ESCAPED}|{_SUBJECT_PREFIX_ESCAPED}|"
+            rf"({_SUBJECT_PREFIX_ESCAPED}|"
             rf"{_TRAIN_CLASS_PREFIX_ESCAPED}|{_EXAM_PREFIX_ESCAPED})"
             rf"(?:\d+(?:&|@@))?({_UUID})(?=$|[?&#])",
             candidate,
@@ -141,7 +185,7 @@ def is_compliant_url_regex(url):
     """
     使用正则表达式判断URL是否符合指定的合规格式。
 
-    合规格式: https://kc.zhixueyun.com/#/study/(course|subject)/detail/UUID
+    课程支持裸 UUID 及完整 /type/required/sourceId；专题仍为裸 UUID。
     """
 
     return bool(_COMPLIANT_URL_PATTERN.match(normalize_url(url) if url else ""))

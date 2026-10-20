@@ -9,6 +9,7 @@ from core.learning.afk_runner import run_afk_once
 from core.abort import WafBlockError
 from core.queues.learning import read_learning_failures, remember_discovery_entries
 from core.browser.session import create_browser_context, is_controller_page
+from core.browser.course_links import resolve_course_page_url
 from core.config import (
     EXAM_URLS_FILE,
     LEARNING_URLS_FILE,
@@ -89,7 +90,7 @@ async def _wait_for_manual_popup_record_url(new_page) -> str | None:
     fallback_url: str | None = None
 
     while True:
-        current_url = normalize_url((new_page.url or "").strip())
+        current_url = await resolve_course_page_url(new_page) or normalize_url((new_page.url or "").strip())
         if is_compliant_url_regex(current_url) or is_exam_url(current_url):
             return current_url
         if _is_recordable_manual_popup_url(current_url):

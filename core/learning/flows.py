@@ -15,6 +15,7 @@ from core.abort import (
     SectionActivationError,
 )
 from core.browser.session import is_page_browser_connected, is_target_closed_exception
+from core.browser.course_links import resolve_course_page_url
 from core.config import (
     PAPER_EXAM_ATTEMPT_THRESHOLD,
     SECTION_GAP_MAX,
@@ -376,7 +377,7 @@ async def subject_learning(page):
                 else:
                     logging.error(f"发生错误: {str(exc)}")
                     logging.error(traceback.format_exc())
-                course_url = await get_course_url(learn_item)
+                course_url = await resolve_course_page_url(page_detail) or page.url
                 _record_structured_failure(
                     course_url, exc, detail={"source": "subject_course"}
                 )
@@ -624,7 +625,7 @@ async def course_learning(page_detail, learn_item=None):
                 deferred = True
                 logging.info("未知课程学习类型, 记录为需要人工处理")
                 failure_url = (
-                    await get_course_url(learn_item) if learn_item else page_detail.url
+                    await resolve_course_page_url(page_detail) or page_detail.url
                 )
                 record_learning_failure(
                     failure_url,
@@ -650,7 +651,7 @@ async def course_learning(page_detail, learn_item=None):
                 # 同步超时等：记入失败后继续其它节，避免一节拖死整课
                 logging.error(f"课程第{index + 1}节({track_label})学习失败: {exc}")
                 failure_url = (
-                    await get_course_url(learn_item) if learn_item else page_detail.url
+                    await resolve_course_page_url(page_detail) or page_detail.url
                 )
                 failure_detail = {
                     "source": "course_chapter",
