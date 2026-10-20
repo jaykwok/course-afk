@@ -431,13 +431,6 @@ def is_ai_configured() -> bool:
     return ai_is_configured()
 
 
-def validate_ai_base_url(url: str | None) -> str | None:
-    """校验地址语法；允许用户显式配置本地模型服务。"""
-    if not url:
-        return url
-    from core.exam.settings import validate_base_url
-    return validate_base_url(url)
-
 # ============================================================
 # 浏览器配置
 # ============================================================

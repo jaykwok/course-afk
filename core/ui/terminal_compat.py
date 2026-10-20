@@ -319,11 +319,9 @@ class UiGlyphs:
         "sep_tight",
         "arrow",
         "bullet",
-        "nav_up_down",
         "keys_join",
         "progress",
         "textual_border",
-        "textual_border_soft",
     )
 
     def __init__(
@@ -339,11 +337,9 @@ class UiGlyphs:
         sep_tight: str,
         arrow: str,
         bullet: str,
-        nav_up_down: str,
         keys_join: str,
         progress: ProgressCharset,
         textual_border: str,
-        textual_border_soft: str,
     ):
         self.name = name
         self.icon_info = icon_info
@@ -355,17 +351,12 @@ class UiGlyphs:
         self.sep_tight = sep_tight
         self.arrow = arrow
         self.bullet = bullet
-        self.nav_up_down = nav_up_down
         self.keys_join = keys_join
         self.progress = progress
         self.textual_border = textual_border
-        self.textual_border_soft = textual_border_soft
 
     def pad_icon(self, icon: str) -> str:
         return f"{icon:<{self.icon_width}}"
-
-    def join_keys(self, *parts: str) -> str:
-        return self.keys_join.join(p for p in parts if p)
 
 
 _UNICODE_PROGRESS = ProgressCharset(
@@ -403,11 +394,9 @@ _UNICODE_GLYPHS = UiGlyphs(
     sep_tight=" · ",
     arrow="→",
     bullet="•",
-    nav_up_down="↑↓",
     keys_join="  ·  ",
     progress=_UNICODE_PROGRESS,
     textual_border="round",
-    textual_border_soft="round",
 )
 
 _ASCII_GLYPHS = UiGlyphs(
@@ -421,11 +410,9 @@ _ASCII_GLYPHS = UiGlyphs(
     sep_tight=" | ",
     arrow="->",
     bullet="*",
-    nav_up_down="方向键",
     keys_join="  |  ",
     progress=_ASCII_PROGRESS,
     textual_border="ascii",
-    textual_border_soft="solid",
 )
 
 

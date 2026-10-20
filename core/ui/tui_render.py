@@ -20,9 +20,11 @@ from rich.cells import cell_len
 from rich.text import Text
 
 from core.palette import (
+    CYAN,
     ERROR,
     GREEN,
     GREEN_BRIGHT,
+    GREEN_LIGHT,
     HAIRLINE,
     SUCCESS,
     TEXT_DIM,
@@ -77,7 +79,7 @@ def validity_parts(state: ProjectState, metadata: Any) -> tuple[Text, str]:
                 1, math.ceil((expires_dt - now).total_seconds() / 86400)
             )
             text = Text(f"{g.icon_success} 有效至 {expires_dt:%Y-%m-%d}", style=f"bold {SUCCESS}")
-            text.append(f"（还有 {days_left} 天）", style=TEXT_DIM)
+            text.append(f"（还有 {days_left} 天）", style=TEXT_MUTED)
             return text, "ok"
         except ValueError:
             pass
@@ -179,26 +181,16 @@ def build_stat_tiles(state: ProjectState) -> Text:
     return label_row
 
 
-def build_stat_tiles_compact(state: ProjectState) -> Text:
-    """单行紧凑磁贴（主菜单状态区用）：标签 弱化 + 数值 亮，中点分隔。"""
-    g = _g()
-    line = Text()
-    for index, (label, value) in enumerate(_tile_specs(state)):
-        if index:
-            line.append(g.sep_tight, style=TEXT_DIM)
-        line.append(f"{label} ", style=TEXT_MUTED)
-        line += value
-    return line
-
-
 def build_dashboard_meta(state: ProjectState, metadata: Any) -> Text:
     """仪表盘 meta 行：账号 + 有效期（状态色恒带图标）。"""
     label = getattr(metadata, "account_label", None) or "未登录"
     validity, _severity = validity_parts(state, metadata)
+    g = _g()
     line = Text()
-    line.append("账号 ", style=TEXT_MUTED)
+    user_icon = "👤 " if g.name == "unicode" else ""
+    line.append(f"{user_icon}账号 ", style=TEXT_MUTED)
     line.append(_truncate_cells(label, 24), style=f"bold {TEXT_PRIMARY}")
-    line.append(_g().sep, style=TEXT_DIM)
+    line.append(g.sep, style=TEXT_DIM)
     line += validity
     return line
 
@@ -213,9 +205,12 @@ def build_action_line(recommended: str) -> Text:
         "手动选择课程 / 录入课程或考试链接": "2 学习任务 / 选择课程",
         "仅挂课": "1 继续学习，或 2 仅挂课",
     }.get(recommended, recommended)
+    arrow = "💡 " if g.name == "unicode" else f"{g.arrow} "
+    pointer = "▸ " if g.name == "unicode" else "> "
     return Text.assemble(
-        (f"{g.arrow} ", f"bold {GREEN_BRIGHT}"),
-        ("建议操作  ", TEXT_MUTED),
+        (arrow, f"bold {CYAN}"),
+        ("建议操作 ", TEXT_MUTED),
+        (pointer, TEXT_DIM),
         (recommended, f"bold {WARNING}"),
     )
 
@@ -236,13 +231,22 @@ def build_menu_status(state: ProjectState, metadata: Any, recommended: str, *, c
 def build_stat_tiles_grid(state: ProjectState) -> Text:
     """两列计数，在窄终端中也保持学习与考试分组对齐。"""
     specs = _tile_specs(state)
+    g = _g()
+    icon_map = {
+        "课程": "📚 " if g.name == "unicode" else "",
+        "挂课失败": "⚠️ " if g.name == "unicode" else "",
+        "考试": "🎯 " if g.name == "unicode" else "",
+        "人工考试": "👤 " if g.name == "unicode" else "",
+    }
     rows = []
     for index in (0, 2):
         left_label, left_value = specs[index]
         right_label, right_value = specs[index + 1]
-        left = Text.assemble((left_label + " ", TEXT_MUTED), left_value)
-        right = Text.assemble((right_label + " ", TEXT_MUTED), right_value)
-        rows.append(_pad_to(left, max(20, cell_len(left.plain) + 2)) + right)
+        left_icon = icon_map.get(left_label, "")
+        right_icon = icon_map.get(right_label, "")
+        left = Text.assemble((f"{left_icon}{left_label} ", TEXT_MUTED), left_value)
+        right = Text.assemble((f"{right_icon}{right_label} ", TEXT_MUTED), right_value)
+        rows.append(_pad_to(left, max(22, cell_len(left.plain) + 2)) + right)
     return Text.join(Text("\n"), rows)
 
 
@@ -252,15 +256,18 @@ def build_summary(title: str, rows: list[tuple[str, str]]) -> Text:
     取代 CLI 的 SIMPLE_HEAVY 表格边框——模态卡片本身就是容器，内层再画框
     就回到旧版「框中框」。
     """
+    g = _g()
     key_width = max((cell_len(key) for key, _ in rows), default=0)
     content_width = max(
         [key_width + 2 + cell_len(value) for _, value in rows]
-        + [cell_len(title)],
+        + [cell_len(title) + 4],
         default=0,
     )
-    rule_width = max(16, min(60, content_width))
-    rule = "─" if _g().name == "unicode" else "-"
-    text = Text(title, style=f"bold {TEXT_PRIMARY}")
+    rule_width = max(20, min(64, content_width))
+    rule = "─" if g.name == "unicode" else "-"
+    title_icon = "📊 " if g.name == "unicode" else ""
+    text = Text()
+    text.append(f"{title_icon}{title}", style=f"bold {GREEN_BRIGHT}")
     text.append(f"\n{rule * rule_width}\n", style=HAIRLINE)
     for index, (key, value) in enumerate(rows):
         text.append(" ")
@@ -321,7 +328,7 @@ def build_progress_text(
     spin_frame: int | None = None,
     bar_width: int = 30,
 ) -> Text:
-    """挂课进度双行：摘要行 + 进度轨。
+    """挂课进度双行：状态摘要 + 进度轨。
 
     spin_frame 与秒数解耦：桥接层以约 10Hz 递增，转圈才流畅；
     未传时回退 completed（兼容旧调用）。bar_width 由调用方按可用
@@ -339,12 +346,12 @@ def build_progress_text(
 
     bar = Text()
     # 第一行：状态摘要
-    bar.append(f" {spin} ", style=f"bold {GREEN_BRIGHT}")
+    bar.append(f" {spin} ", style=f"bold {GREEN_LIGHT}")
     bar.append(str(description or "处理中"), style=f"bold {TEXT_PRIMARY}")
     bar.append(cs.sep, style=TEXT_DIM)
-    bar.append(f"{ratio * 100:5.1f}%", style=f"bold {GREEN_BRIGHT}")
+    bar.append(f"{ratio * 100:5.1f}%", style=f"bold {CYAN}")
     bar.append(cs.sep, style=TEXT_DIM)
-    bar.append(f"{completed}/{total}s", style=TEXT_DIM)
+    bar.append(f"{completed}/{total}s", style=TEXT_MUTED)
     bar.append(cs.sep, style=TEXT_DIM)
     if remaining > 0:
         bar.append(f"剩余 {_format_duration(remaining)}", style=f"bold {SUCCESS}")

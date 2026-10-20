@@ -69,6 +69,7 @@ from core.palette import (
     GREEN,
     GREEN_BRIGHT,
     GREEN_DEEP,
+    GREEN_LIGHT,
     HAIRLINE,
     ON_ACCENT,
     ON_DANGER,
@@ -146,6 +147,36 @@ def _read_windows_clipboard() -> str:
         return ""
 
 
+_MENU_ICONS: dict[str, str] = {
+    # 主菜单
+    "继续学习 / 推荐流程": "⚡",
+    "学习任务": "📚",
+    "考试任务": "🎯",
+    "课程资料": "📦",
+    "任务管理": "📊",
+    "账号与登录": "🔐",
+    "退出": "⏻",
+    # 学习菜单
+    "仅挂课": "⏱",
+    "选择课程 / 录入课程或考试链接": "🔗",
+    # 考试菜单
+    "AI 自动考试": "🤖",
+    "人工考试": "✍",
+    # 账号菜单
+    "更换登录账号": "🔄",
+    "重新登录 / 刷新凭据": "🔑",
+    "查看登录状态": "ℹ",
+    "清空本地登录凭据": "🗑",
+    # 任务菜单
+    "查看任务统计 / 重试失败课程": "📈",
+    "查看课程链接详情": "🔍",
+    "清空课程及失败 / 复查记录": "🧹",
+    "清空全部待办（含考试）": "⚠️",
+    # 通用返回
+    "返回主菜单": "↩",
+}
+
+
 class OptionScreen(ModalScreen[int]):
     """菜单 / 多选一。提交值为 1-based 序号。
 
@@ -198,7 +229,8 @@ class OptionScreen(ModalScreen[int]):
         content = []
         if not self._main_menu and self._zero_for_last:
             content.append(Static("主菜单 / " + self._title, id="opt-path"))
-        content.append(Static(self._title, id="opt-title"))
+        title_glyph = "❖ " if g.name == "unicode" else ""
+        content.append(Static(f"{title_glyph}{self._title}", id="opt-title"))
         if self._status_renderable is not None:
             content.append(Static(self._status_renderable, id="opt-status"))
         prompt_text = Text(self._prompt, style=TEXT_MUTED)
@@ -230,11 +262,14 @@ class OptionScreen(ModalScreen[int]):
 
     def _option_label(self, index: int, label: str) -> Text:
         key = menu_key_for_index(index, len(self._options), zero_for_last=self._zero_for_last)
-        text = Text.assemble((key, "bold"), (".", "dim"), (f"  {label}", ""))
+        g = ui_glyphs()
+        icon = _MENU_ICONS.get(label, "") if g.name == "unicode" else ""
+        icon_prefix = f"  {icon} " if icon else "  "
+        text = Text.assemble((key, "bold"), (".", "dim"), (f"{icon_prefix}{label}", ""))
         spacious = self.app.size.width >= 80 and self.app.size.height >= 28
         description = MAIN_MENU_DESCRIPTIONS.get(label) if self._main_menu and spacious else None
         if description:
-            text.append("\n    " + description, style="dim")
+            text.append("\n      " + description, style="dim")
         elif index == len(self._options) and self._zero_for_last:
             text.stylize("dim")
         return text
@@ -567,10 +602,10 @@ COURSE_THEME = Theme(
         "button-focus-text-style": "bold",
         # 中性文字与描边与 palette 常量同源
         "text-muted": TEXT_MUTED,
-        "border": "#2f4a3e",
+        "border": "#2b4337",
         "border-blurred": HAIRLINE,
         # 输入区选区：低饱和绿
-        "input-selection-background": "#1d4c3c",
+        "input-selection-background": "#16382b",
     },
 )
 
@@ -588,6 +623,16 @@ class CourseTuiApp(App):
     CSS = f"""
     Screen {{
         background: {BG_CANVAS};
+    }}
+
+    /* ScrollBar 从其父控件读取 scrollbar-*，而非自身的 color/background。 */
+    * {{
+        scrollbar-background: {BG_PANEL};
+        scrollbar-background-hover: {BG_PANEL};
+        scrollbar-background-active: {BG_PANEL};
+        scrollbar-color: {HAIRLINE};
+        scrollbar-color-hover: {GREEN};
+        scrollbar-color-active: {GREEN};
     }}
 
     /* ---------- 品牌栏：替代默认 Header 的常驻顶栏 ----------
@@ -662,6 +707,7 @@ class CourseTuiApp(App):
         height: 1;
         width: 1fr;
         color: {TEXT_PRIMARY};
+        text-style: bold;
     }}
 
     /* 快捷键常驻状态条右侧（顶部、醒目），不再埋在左下角 Footer。
@@ -676,8 +722,9 @@ class CourseTuiApp(App):
     #dashboard {{
         height: auto;
         margin: 1 1 0 1;
-        padding: 1 1;
+        padding: 1 2;
         background: {BG_PANEL};
+        border: {_BORDER} {HAIRLINE};
         display: none;
     }}
 
@@ -703,12 +750,17 @@ class CourseTuiApp(App):
         height: auto;
         margin: 0 1;
         padding: 0 1;
+        text-wrap: nowrap;
+        text-overflow: ellipsis;
         display: none;
     }}
 
     #progress.live {{
         display: block;
         margin: 1 1 0 1;
+        padding: 0 1;
+        background: {BG_PANEL};
+        border: {_BORDER} {HAIRLINE};
     }}
 
     /* ---------- 活动日志：无框，弱化小标题分节 ---------- */
@@ -725,6 +777,35 @@ class CourseTuiApp(App):
         height: 1fr;
         background: transparent;
         border: none;
+    }}
+
+    /* 小窗口优先保留日志空间；不让卡片装饰或次要信息折行撑高页面。 */
+    #main.compact-running #dashboard {{
+        margin: 0 1;
+        padding: 0 1;
+        border: none;
+    }}
+
+    #main.compact-running #dash-stats {{
+        max-height: 2;
+        text-wrap: nowrap;
+    }}
+
+    #main.compact-running #dash-meta,
+    #main.compact-running #dash-action {{
+        height: 1;
+        margin: 0;
+        text-wrap: nowrap;
+        text-overflow: ellipsis;
+    }}
+
+    #main.compact-running #progress.live {{
+        margin: 0 1;
+        border: none;
+    }}
+
+    #main.compact-running #log-caption {{
+        margin-top: 0;
     }}
 
     /* ---------- 模态屏 ---------- */
@@ -804,7 +885,7 @@ class CourseTuiApp(App):
            宽裕时 1fr 在 auto 对话框里按内容高度展开，不受影响。 */
         height: 1fr;
         min-height: 3;
-        max-height: 15;
+        max-height: 16;
         margin-bottom: 1;
         padding: 0;
         background: transparent;
@@ -867,43 +948,64 @@ class CourseTuiApp(App):
         margin-top: 0;
     }}
 
-    /* ---------- 扁平按钮：高 1 行、无描边、聚焦翻色 ---------- */
+    /* ---------- 现代按钮组件 ---------- */
     Button {{
         height: 1;
-        min-width: 8;
+        min-width: 10;
         margin: 0 1;
         padding: 0 2;
         border: none;
         background: {BG_PANEL_RAISED};
         color: {TEXT_PRIMARY};
+        text-style: bold;
     }}
 
-    Button:hover, Button:focus {{
+    Button:hover {{
+        background: {HAIRLINE};
+        color: #ffffff;
+    }}
+
+    Button:focus {{
         background: {GREEN};
         color: {ON_ACCENT};
         text-style: bold;
     }}
 
-    /* 肯定类按钮（是 / 提交 / 继续）默认即主绿实底 */
     Button.-primary, Button.-success {{
         background: {GREEN};
         color: {ON_ACCENT};
+        text-style: bold;
     }}
 
-    /* 否定类按钮（否）：中性底 + 状态红字，聚焦才红底（深红字，勿用绿系深字） */
+    Button.-primary:hover, Button.-success:hover {{
+        background: {GREEN_BRIGHT};
+        color: {ON_ACCENT};
+    }}
+
+    Button.-primary:focus, Button.-success:focus {{
+        background: {GREEN_LIGHT};
+        color: {ON_ACCENT};
+    }}
+
     Button.-error {{
-        background: {BG_PANEL_RAISED};
+        background: #251414;
         color: {ERROR};
+        text-style: bold;
     }}
 
-    Button.-error:hover, Button.-error:focus {{
+    Button.-error:hover {{
+        background: #381a1a;
+        color: #fca5a5;
+    }}
+
+    Button.-error:focus {{
         background: {ERROR};
         color: {ON_DANGER};
     }}
     """
 
     TITLE = "中国电信网上大学自动化工具"
-    SUB_TITLE = f"登录{_KEYS_JOIN}学习{_KEYS_JOIN}考试  统一入口"
+    SUB_TITLE = f"自动挂课{_KEYS_JOIN}AI考试{_KEYS_JOIN}课件归档  统一控制台"
 
     # Esc 在任何界面都表示返回；主菜单没有上一级，因此返回即退出。
     # Ctrl+C 保留同样的优雅取消能力。
@@ -968,7 +1070,7 @@ class CourseTuiApp(App):
                 id="dashboard",
             ),
             Static(id="progress"),
-            Static(f"{g.bullet} 活动日志", id="log-caption"),
+            Static("📋 活动日志 / Execution Log" if g.name == "unicode" else f"{g.bullet} 活动日志", id="log-caption"),
             RichLog(id="log", markup=True, auto_scroll=True, max_lines=1500),
             id="main",
         )
@@ -976,9 +1078,19 @@ class CourseTuiApp(App):
     def on_mount(self) -> None:
         self.register_theme(COURSE_THEME)
         self.theme = COURSE_THEME.name
+        self._layout_main(self.size.width, self.size.height)
         # 20Hz 批量落盘日志缓冲：日志风暴时 RichLog 的写入次数与日志条数解耦
         self.set_interval(0.05, self._drain_log_buffer)
         self._spawn_launcher_thread()
+
+    def on_resize(self, event: events.Resize) -> None:
+        self._layout_main(event.size.width, event.size.height)
+
+    def _layout_main(self, width: int, height: int) -> None:
+        if self.is_mounted:
+            self.query_one("#main").set_class(
+                width < 70 or height < 28, "compact-running"
+            )
 
     # ------------------------------------------------------------------
     # 后台线程 → UI：合并写缓冲 + 有界日志缓冲（线程安全，背压核心）
