@@ -1,6 +1,6 @@
 """Operation cancellation, bounded cleanup, and ownership of native children.
 
-No configuration or UI imports: this module is also usable by isolated workers.
+No configuration or UI imports: browser lifecycle helpers stay independent.
 """
 from __future__ import annotations
 
@@ -10,8 +10,6 @@ from dataclasses import dataclass
 import logging
 import os
 from pathlib import Path
-import signal
-import sys
 import threading
 
 
@@ -209,86 +207,13 @@ def protect_application_children() -> None:
 
 
 def own_playwright_driver(playwright) -> WindowsJob | None:
-    """Isolate the pinned Playwright transport detail in one adapter."""
+    """Isolate the Playwright transport detail in one adapter."""
     implementation = getattr(playwright, "_impl_obj", playwright)
     connection = getattr(implementation, "_connection", None)
     transport = getattr(connection, "_transport", None)
     process = getattr(transport, "_proc", None)
     pid = getattr(process, "pid", None)
     return WindowsJob(pid) if os.name == "nt" and isinstance(pid, int) else None
-
-
-async def run_child(command: list[str], *, cwd: str, env: dict[str, str], on_line, timeout: float, idle_timeout: float = 300) -> int:
-    """Read bounded chunks; always reap the owned process and its process group/job."""
-    import subprocess
-
-    options = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {"start_new_session": True}
-    # The small launcher cannot spawn the real command until its parent owns the
-    # process tree. This closes the spawn/AssignProcessToJobObject race.
-    # Windows' venv python.exe is itself a launcher: it can start the real
-    # interpreter before assignment to the job. Bootstrap with the base binary;
-    # the requested command still uses its original venv and dependencies.
-    bootstrap_python = getattr(sys, "_base_executable", None) or sys.executable
-    guarded_command = [bootstrap_python, "-u", str(Path(__file__).resolve()), *command]
-    process = await asyncio.create_subprocess_exec(*guarded_command, cwd=cwd, env=env, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, **options)
-    job = None
-    try:
-        job = WindowsJob(process.pid) if os.name == "nt" else None
-        assert process.stdin is not None
-        process.stdin.write(b"1")
-        await process.stdin.drain()
-        process.stdin.close()
-        assert process.stdout is not None
-        pending = b""
-        async with asyncio.timeout(timeout):
-            while True:
-                chunk = await asyncio.wait_for(process.stdout.read(16384), idle_timeout)
-                if not chunk:
-                    if pending:
-                        on_line(pending.decode("utf-8", errors="replace"))
-                    break
-                pending += chunk
-                while b"\n" in pending:
-                    line, pending = pending.split(b"\n", 1)
-                    if len(line) > 262144:
-                        raise RuntimeError("子进程单行输出超过 256 KiB")
-                    on_line(line.rstrip(b"\r").decode("utf-8", errors="replace"))
-                if len(pending) > 262144:
-                    raise RuntimeError("子进程单行输出超过 256 KiB")
-            return await process.wait()
-    finally:
-        if process.stdin is not None:
-            process.stdin.close()
-        async def reap():
-            if job is not None:
-                await job.terminate()  # Also wait for grandchildren after the worker exits.
-            elif os.name != "nt":
-                try:
-                    os.killpg(process.pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
-            elif process.returncode is None:
-                process.terminate()
-            try:
-                await asyncio.wait_for(process.wait(), 3)
-            except asyncio.TimeoutError:
-                if os.name != "nt":
-                    try:
-                        os.killpg(process.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                elif process.returncode is None:
-                    process.kill()
-                await asyncio.wait_for(process.wait(), 3)
-            finally:
-                # The parent may already have exited while a grandchild ignores
-                # SIGTERM. Reaping only the parent cannot prove its group is gone.
-                if os.name != "nt":
-                    try:
-                        os.killpg(process.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-        await close_safely(reap(), timeout=7, label="worker process tree")
 
 
 @contextmanager
@@ -319,12 +244,3 @@ def application_lock(path: Path):
                 msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
             else:
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-
-
-if __name__ == "__main__":
-    # Internal child launch protocol, with no application/config imports. EOF
-    # means ownership failed or the parent died: never start the target command.
-    import subprocess
-    if len(sys.argv) < 2 or sys.stdin.buffer.read(1) != b"1":
-        raise SystemExit(1)
-    raise SystemExit(subprocess.call(sys.argv[1:], stdin=subprocess.DEVNULL))

@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from textual.widgets import Button, OptionList, Static, TextArea
 
@@ -78,6 +78,73 @@ class _PromptApp(CourseTuiApp):
 
 
 class TuiSmokeTests(unittest.TestCase):
+    def test_reference_download_goes_directly_to_result(self):
+        from core.app.launcher_controller import handle_reference_collection
+        from textual.widgets import RichLog
+
+        async def scenario() -> None:
+            outcome = {}
+            url = "https://kc.zhixueyun.com/#/study/subject/detail/12345678-1234-1234-1234-123456789abc"
+            result = {
+                "output_dir": "D:/course-afk/data/references/test",
+                "course_count": 1,
+                "section_count": 2,
+                "document_count": 1,
+                "pdf_count": 1,
+                "document_failed_count": 0,
+                "video_count": 1,
+                "video_with_items": 1,
+            }
+
+            def caller() -> None:
+                try:
+                    handle_reference_collection(cli_ui)
+                    outcome["done"] = True
+                except BaseException as exc:
+                    outcome["error"] = repr(exc)
+
+            with (
+                patch("core.config.setup_logging"),
+                patch(
+                    "core.app.workflows.run_reference_collection_workflow",
+                    new=AsyncMock(return_value=result),
+                ) as collect,
+            ):
+                app = _PromptApp()
+                frontend = TuiFrontend(app)
+                frontend.install()
+                worker = threading.Thread(target=caller, daemon=True)
+                try:
+                    async with app.run_test(size=(100, 30)) as pilot:
+                        worker.start()
+                        self.assertTrue(await _wait_for(
+                            lambda: isinstance(app.screen, MultilineScreen), pilot,
+                        ))
+                        app.screen.query_one("#ml-text", TextArea).text = url
+                        await pilot.press("ctrl+j")
+                        self.assertTrue(await _wait_for(
+                            lambda: isinstance(app.screen, PauseScreen), pilot,
+                        ), outcome)
+                        log = app.query_one("#log", RichLog)
+                        self.assertTrue(await _wait_for(
+                            lambda: any("课程资料保存结果" in line.text for line in log.lines),
+                            pilot,
+                        ))
+                        summary = "\n".join(line.text for line in log.lines)
+                        self.assertIn("文档保存成功", summary)
+                        self.assertIn("其中 PDF", summary)
+                        self.assertIn("有AI导学内容的视频", summary)
+                        await pilot.click("#continue")
+                        self.assertTrue(await _wait_for(
+                            lambda: not worker.is_alive(), pilot,
+                        ))
+                finally:
+                    frontend.restore()
+                collect.assert_awaited_once_with([url], status_callback=frontend._bridge_show_info)
+                self.assertTrue(outcome.get("done"), outcome)
+
+        asyncio.run(asyncio.wait_for(scenario(), timeout=30))
+
     def test_operation_status_bar_shows_and_updates_until_result_prompt(self):
         """长任务期间顶部状态条显示并随 show_info 刷新；结果提示挂载时收起。
         关键：操作期间不再有居中模态遮挡——#main（仪表盘/进度条/日志）平铺可见。"""

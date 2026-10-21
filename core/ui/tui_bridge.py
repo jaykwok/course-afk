@@ -441,6 +441,7 @@ def launch_tui() -> int:
     from core.config import DATA_DIR
     from core.runtime import application_lock, protect_application_children
 
+    launcher._check_python_version()
     # 直接从 tui_bridge 启动时，也要在 Textual 接管控制台前关闭 Quick Edit。
     launcher._disable_windows_console_input_modes_early()
 

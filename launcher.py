@@ -5,6 +5,11 @@ import ctypes
 import sys
 
 
+def _check_python_version() -> None:
+    if sys.version_info < (3, 14):
+        raise RuntimeError("需要 Python 3.14 或更高版本")
+
+
 # Keep this launcher-local so it runs before importing config/logging code.
 def _disable_windows_console_input_modes_early() -> None:
     if not sys.platform.startswith("win"):
@@ -54,8 +59,7 @@ MANUAL_SELECTION_PROMPTS = [
 
 
 def main() -> int:
-    if sys.version_info < (3, 11):
-        raise RuntimeError("需要 Python 3.11 或更高版本")
+    _check_python_version()
     from core.abort import UserAbortRequested, UserCancelRequested
     from core.config import setup_logging
     from core.config import (
@@ -119,6 +123,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    _check_python_version()
     # 默认入口走 Textual TUI；main() 仍可作为后台控制流被复用/被测试。
     from core.ui.tui_bridge import launch_tui
 

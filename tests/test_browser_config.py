@@ -113,6 +113,10 @@ class BrowserFeatureSwitchTests(unittest.TestCase):
         features = set(disable_switches[0].split("=", 1)[1].split(","))
         self.assertTrue(set(_PROJECT_DISABLED_FEATURES) <= features)
         self.assertTrue(set(_PLAYWRIGHT_DISABLED_FEATURES) <= features)
+        self.assertIn("NetworkTimeServiceQuerying", features)
+        self.assertIn("AimEnabled", features)
+        self.assertIn("AvoidCorsURLLoaderRestartOnRedirect", features)
+        self.assertNotIn("BoundaryEventDispatchTracksNodeRemoval", features)
 
 
 class SlowMoSamplingTests(unittest.TestCase):

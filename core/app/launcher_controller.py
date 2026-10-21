@@ -13,7 +13,6 @@ _REFERENCE_COLLECTION_PROMPTS = [
     "请粘贴知学云主题详情链接，一行一个。",
     "程序会读取课程列表，保存 PDF/文档课件，并跳过 MP4 视频本体。",
     "视频类资源会保存平台提供的 AI 导学/总结文本。",
-    "下载完成后，如检测到 PDF，可选择使用 PP-OCRv6 转换为 Markdown。",
 ]
 
 
@@ -387,11 +386,7 @@ def handle_ai_exam(ui) -> None:
 
 def handle_reference_collection(ui) -> None:
     from core.links import extract_urls_from_text
-    from core.app.workflows import (
-        run_pdf_markdown_workflow,
-        run_reference_collection_workflow,
-    )
-    from core.discovery.pdf_ocr import PdfOcrRuntimeError, PdfOcrUnavailable
+    from core.app.workflows import run_reference_collection_workflow
 
     try:
         input_text = ui.prompt_multiline_input(
@@ -422,37 +417,7 @@ def handle_reference_collection(ui) -> None:
         ui.show_warning(str(exc))
         ui.pause()
         return
-    ocr_result = None
-    ocr_status = "未检测到 PDF"
     pdf_count = int(result.get("pdf_count", 0))
-    if pdf_count > 0:
-        ocr_status = "已跳过"
-        try:
-            should_convert = ui.prompt_yes_no(
-                f"已下载 {pdf_count} 个 PDF，是否使用 PP-OCRv6 转换为 Markdown？",
-                default="N",
-            )
-        except UserCancelRequested:
-            should_convert = False
-        if should_convert:
-            try:
-                _begin_operation(
-                    ui,
-                    "PDF 转 Markdown",
-                    "正在加载 PP-StructureV3 / PP-OCRv6 并解析 PDF",
-                )
-                ocr_result = run_async(
-                    run_pdf_markdown_workflow(
-                        result["output_dir"],
-                        status_callback=ui.show_info,
-                    )
-                )
-                ocr_status = (
-                    "部分失败" if ocr_result["ocr_failed_count"] else "已完成"
-                )
-            except (PdfOcrUnavailable, PdfOcrRuntimeError, OSError) as exc:
-                ocr_status = "失败"
-                ui.show_warning(str(exc))
 
     summary_rows = [
         ("输出目录", result["output_dir"]),
@@ -464,18 +429,7 @@ def handle_reference_collection(ui) -> None:
         ("文档保存失败", str(result["document_failed_count"])),
         ("视频章节", str(result["video_count"])),
         ("有AI导学内容的视频", str(result["video_with_items"])),
-        ("PDF 转 Markdown", ocr_status),
     ]
-    if ocr_result is not None:
-        summary_rows.extend(
-            [
-                ("PDF 新转换", str(ocr_result["ocr_converted_count"])),
-                ("PDF 已复用", str(ocr_result["ocr_reused_count"])),
-                ("PDF 转换失败", str(ocr_result["ocr_failed_count"])),
-                ("已删除 PDF 源文件", str(ocr_result["pdf_deleted_count"])),
-                ("OCR 输出目录", ocr_result["ocr_output_dir"]),
-            ]
-        )
     ui.show_summary(
         "课程资料保存结果",
         summary_rows,

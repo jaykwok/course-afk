@@ -447,10 +447,10 @@ BROWSER_CHANNEL = _default_browser_channel(BROWSER_TYPE) if _BROWSER_CHANNEL_RAW
 # msForceBrowserSignIn / Translate / HttpsUpgrades / PaintHolding 等），用户 args
 # 追加在其后，直接再写一个就会把它整份顶掉——Edge 强制登录、翻译弹窗都会回来。
 # 所以这里把 Playwright 的默认项一起列出再追加自己的三项。
-# 来源: playwright-core 1.62 chromiumSwitches.ts 的 disabledFeatures。
+# 来源: playwright-core 1.64.1 chromiumSwitches.ts 的 disabledFeatures；升级时需核对。
+# https://github.com/microsoft/playwright/blob/v1.64.1/packages/playwright-core/src/server/chromium/chromiumSwitches.ts
 _PLAYWRIGHT_DISABLED_FEATURES = (
     "AvoidUnnecessaryBeforeUnloadCheckSync",
-    "BoundaryEventDispatchTracksNodeRemoval",
     "DestroyProfileOnBrowserClose",
     "DialMediaRouteProvider",
     "GlobalMediaControls",
@@ -460,9 +460,12 @@ _PLAYWRIGHT_DISABLED_FEATURES = (
     "PaintHolding",
     "ThirdPartyStoragePartitioning",
     "BlockOriginHeaderModificationOnRedirect",
+    "AvoidCorsURLLoaderRestartOnRedirect",
     "Translate",
     "AutoDeElevate",
     "OptimizationHints",
+    "NetworkTimeServiceQuerying",
+    "AimEnabled",
     "msForceBrowserSignIn",
     "msEdgeUpdateLaunchServicesPreferredVersion",
 )

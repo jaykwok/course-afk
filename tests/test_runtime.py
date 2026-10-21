@@ -9,9 +9,8 @@ from tempfile import TemporaryDirectory
 import threading
 import time
 import unittest
-from unittest.mock import patch
 
-from core.runtime import close_safely, interrupt_running_async, run_child, run_operation
+from core.runtime import close_safely, interrupt_running_async, run_operation
 
 
 def process_alive(pid):
@@ -39,25 +38,6 @@ def process_alive(pid):
 
 
 class RuntimeTests(unittest.IsolatedAsyncioTestCase):
-    async def test_normal_exit_reaps_surviving_grandchild(self):
-        pids = []
-        with TemporaryDirectory() as tmp:
-            code = "import subprocess,sys,os; p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(4)'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL); print(p.pid,flush=True)"
-            result = await run_child([sys.executable, "-u", "-c", code], cwd=tmp, env=os.environ.copy(), on_line=lambda text: pids.append(int(text)), timeout=5)
-            self.assertEqual(result, 0)
-            self.assertEqual(len(pids), 1)
-            self.assertFalse(process_alive(pids[0]))
-
-    @unittest.skipUnless(os.name == "nt", "Windows Job Object guard")
-    async def test_failed_job_assignment_never_starts_target_command(self):
-        with TemporaryDirectory() as tmp:
-            marker = Path(tmp) / "started"
-            code = f"from pathlib import Path; Path({str(marker)!r}).write_text('started')"
-            with patch("core.runtime.WindowsJob", side_effect=OSError("cannot own tree")):
-                with self.assertRaises(OSError):
-                    await run_child([sys.executable, "-c", code], cwd=tmp, env=os.environ.copy(), on_line=lambda _: None, timeout=5)
-            self.assertFalse(marker.exists())
-
     async def test_close_finishes_before_propagating_cancellation(self):
         entered, finished = asyncio.Event(), asyncio.Event()
         async def close():
@@ -70,38 +50,6 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(asyncio.CancelledError):
             await task
         self.assertTrue(finished.is_set())
-
-    async def test_cancel_reaps_child(self):
-        started = asyncio.Event()
-        pids = []
-        def line(text):
-            pids.append(int(text))
-            started.set()
-        with TemporaryDirectory() as tmp:
-            code = "import os,time; print(os.getpid(),flush=True); time.sleep(4)"
-            task = asyncio.create_task(run_child([sys.executable, "-u", "-c", code], cwd=tmp, env=os.environ.copy(), on_line=line, timeout=5))
-            await asyncio.wait_for(started.wait(), 3)
-            task.cancel()
-            with self.assertRaises(asyncio.CancelledError):
-                await task
-            self.assertFalse(process_alive(pids[0]))
-
-    async def test_long_stdout_line_is_drained(self):
-        lines = []
-        with TemporaryDirectory() as tmp:
-            code = "print('x' * 70000, flush=True)"
-            result = await run_child([sys.executable, "-u", "-c", code], cwd=tmp, env=os.environ.copy(), on_line=lines.append, timeout=5)
-        self.assertEqual(result, 0)
-        self.assertEqual(len(lines[0]), 70000)
-
-    async def test_timeout_reaps_child(self):
-        pids = []
-        with TemporaryDirectory() as tmp:
-            code = "import os,time; print(os.getpid(),flush=True); time.sleep(4)"
-            with self.assertRaises(TimeoutError):
-                await run_child([sys.executable, "-u", "-c", code], cwd=tmp, env=os.environ.copy(), on_line=lambda text: pids.append(int(text)), timeout=0.3)
-        self.assertEqual(len(pids), 1)
-        self.assertFalse(process_alive(pids[0]))
 
 
 class OperationTests(unittest.TestCase):
