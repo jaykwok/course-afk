@@ -275,7 +275,7 @@ class TuiSmokeTests(unittest.TestCase):
         asyncio.run(asyncio.wait_for(scenario(), timeout=30.0))
 
     def test_sub_prompt_during_operation_is_dismissed_on_resume(self):
-        """长任务中途弹出的子提示（如推荐流程的「自动交卷？」）答完后，held 提示必须
+        """长任务中途弹出的子提示（如考试的「自动交卷？」）答完后，held 提示必须
         被退掉、露出 #main——与主菜单进入任务同一个坑的变体。"""
 
         async def scenario() -> None:
@@ -285,7 +285,7 @@ class TuiSmokeTests(unittest.TestCase):
 
             def caller() -> None:
                 try:
-                    cli_ui.begin_operation("推荐流程", "正在检查登录状态")
+                    cli_ui.begin_operation("AI 考试", "正在检查考试队列")
                     outcome["began"] = True
                     gate1.wait(timeout=8.0)
                     outcome["answered"] = cli_ui.prompt_yes_no("自动交卷？", default="N")

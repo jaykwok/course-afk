@@ -6,17 +6,16 @@ from typing import Callable
 from urllib.parse import urlparse
 
 from core.learning.afk_runner import run_afk_once
-from core.abort import WafBlockError
-from core.queues.learning import read_learning_failures, remember_discovery_entries
+from core.queues.learning import remember_discovery_entries
 from core.browser.session import create_browser_context, is_controller_page
 from core.browser.course_links import resolve_course_page_url
 from core.config import (
     EXAM_URLS_FILE,
     LEARNING_URLS_FILE,
-    is_ai_configured,
 )
 from core.auth.credential import AccountProfile
-from core.exam.runner import run_ai_exam_batch, run_manual_exam_batch
+from core.exam.runner import run_ai_exam_batch
+from core.exam.routing import requeue_ai_exam_reviews
 from core.queues.exam import append_exam_url, append_exam_urls, read_exam_urls
 from core.learning.zone import collect_learning_links_from_learning_zone_urls
 from core.links import extract_urls_from_text, split_manual_selection_urls
@@ -496,6 +495,7 @@ async def run_ai_exam_workflow(
     *,
     auto_submit: bool = False,
 ) -> int:
+    requeue_ai_exam_reviews()
     state = collect_project_state()
     if state.exam_count == 0:
         if status_callback:
@@ -509,23 +509,8 @@ async def run_ai_exam_workflow(
         auto_submit=auto_submit,
     )
     if status_callback:
-        status_callback(f"AI 自动考试结束，人工处理 {manual_count} 条")
+        status_callback(f"AI 自动考试结束，待复查 {manual_count} 条")
     return manual_count
-
-
-async def run_manual_exam_workflow(status_callback: StatusCallback | None = None) -> int:
-    state = collect_project_state()
-    if state.manual_exam_count == 0:
-        if status_callback:
-            status_callback("未检测到人工考试链接")
-        return 0
-
-    if status_callback:
-        status_callback(f"开始人工考试，共 {state.manual_exam_count} 条链接")
-    processed_count = await run_manual_exam_batch(status_callback=status_callback)
-    if status_callback:
-        status_callback(f"人工考试本轮结束，剩余 {collect_project_state().manual_exam_count} 条待办")
-    return processed_count
 
 
 async def run_reference_collection_workflow(
@@ -560,43 +545,3 @@ async def run_pdf_markdown_workflow(
     if status_callback:
         status_callback(f"PDF Markdown 转换{'结束，部分失败' if result['ocr_failed_count'] else '完成'}：{result['ocr_output_dir']}")
     return result
-
-
-async def run_recommended_flow(
-    status_callback: StatusCallback | None = None,
-    *,
-    ask_auto_submit: Callable[[], bool] | None = None,
-) -> str:
-    state = collect_project_state()
-    if not state.has_credential or state.credential_expired:
-        if status_callback:
-            status_callback("登录凭证不可用，请先更新登录凭证")
-        return "credential"
-
-    had_learning = state.learning_count > 0 or any(item.reason == "url_type_pending" for item in read_learning_failures())
-    if had_learning:
-        try:
-            await run_afk_workflow(status_callback=status_callback)
-        except WafBlockError:
-            if status_callback:
-                status_callback("网站防护拦截，本轮已停止；剩余待办已保留")
-            return "blocked"
-    state = collect_project_state()
-    if state.exam_count == 0:
-        if state.manual_exam_count > 0:
-            return "manual-exam-pending"
-        if state.learning_count or state.learning_failure_count:
-            return "learning-pending"
-        return "afk-only" if had_learning else "manual-selection"
-    if not is_ai_configured():
-        if status_callback:
-            status_callback("未填写 AI 配置；可配置后重试或改用人工考试")
-        return "ai-not-configured"
-    auto_submit = ask_auto_submit() if ask_auto_submit else False
-    await run_ai_exam_workflow(status_callback=status_callback, auto_submit=auto_submit)
-    state = collect_project_state()
-    if state.manual_exam_count:
-        return "manual-exam-pending"
-    if state.learning_count or state.learning_failure_count or state.exam_count:
-        return "learning-pending"
-    return "done"

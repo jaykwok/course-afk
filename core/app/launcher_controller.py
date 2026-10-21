@@ -40,15 +40,15 @@ def _begin_operation(ui, title: str, message: str) -> None:
         begin(title, message)
 
 
-def _prompt_ai_exam_auto_submit(ui) -> bool:
-    return ui.prompt_yes_no("AI考试是否自动交卷？", default="N")
-
-
 def _ensure_exam_urls_for_ai_exam(ui) -> bool:
-    from core.config import EXAM_URLS_FILE
+    from core.config import EXAM_URLS_FILE, MANUAL_EXAM_FILE
+    from core.exam.routing import requeue_ai_exam_reviews
     from core.queues.exam import append_exam_url, read_exam_urls
     from core.links import extract_urls_from_text
 
+    restored = requeue_ai_exam_reviews(exam_file=EXAM_URLS_FILE, manual_exam_file=MANUAL_EXAM_FILE)
+    if restored:
+        ui.show_info(f"已恢复 {restored} 条旧人工待办为 AI 补答，自动交卷关闭")
     existing_urls = read_exam_urls(EXAM_URLS_FILE)
     if existing_urls:
         return True
@@ -125,41 +125,6 @@ def choose_learning_zone_mode(learning_zone_urls, prompt_choice_func) -> str:
     )
     return "auto" if choice == 1 else "manual"
 
-
-_FLOW_RESULT_LABELS = {
-    "credential": "凭证不可用，请更新登录凭证",
-    "manual-selection": "未检测到学习链接，请手动选择课程或录入链接",
-    "afk-only": "挂课完成，未检测到考试链接",
-    "ai-not-configured": "未填写 AI 配置，已跳过 AI 自动考试（可改用人工考试）",
-    "manual-exam-pending": "仍有人工考试或评卷结果待复查",
-    "done": "全部流程完成",
-    "blocked": "网站防护拦截，本轮停止；剩余待办已保留",
-    "learning-pending": "本轮结束，仍有学习、失败复查或考试待办",
-}
-
-
-def handle_recommended_flow(ui) -> None:
-    from core.exam.answers import ExamAiConfigurationError
-    from core.app.workflows import run_recommended_flow
-
-    _begin_operation(ui, "推荐流程", "正在检查登录状态与待处理任务")
-    try:
-        result = run_async(
-            run_recommended_flow(
-                status_callback=ui.show_info,
-                ask_auto_submit=lambda: _prompt_ai_exam_auto_submit(ui),
-            )
-        )
-    except ExamAiConfigurationError as exc:
-        ui.show_error(str(exc))
-        ui.pause()
-        return
-
-    _maybe_delete_empty_learning_queue_file(ui)
-    _maybe_delete_empty_exam_queue_file(ui)
-    label = _FLOW_RESULT_LABELS.get(result, result)
-    ui.show_summary("推荐流程结果", [("流程状态", label)])
-    ui.pause()
 
 
 def handle_refresh_credential(state, ui, *, switch_account: bool = False) -> None:
@@ -388,7 +353,7 @@ def handle_ai_exam(ui) -> None:
     if not is_ai_configured():
         ui.show_warning(
             "未填写 AI 配置（OPENAI_COMPLETION_BASE_URL / OPENAI_COMPLETION_API_KEY / "
-            "MODEL_NAME），无法使用 AI 自动考试。请在 .env 填写后重试，或改用人工考试。"
+            "MODEL_NAME），无法使用 AI 自动考试。请在 .env 填写后重试。"
         )
         ui.pause()
         return
@@ -397,7 +362,9 @@ def handle_ai_exam(ui) -> None:
         ui.pause()
         return
 
-    auto_submit = _prompt_ai_exam_auto_submit(ui)
+    auto_submit = ui.prompt_yes_no("AI考试是否自动交卷？", default="N")
+    if auto_submit:
+        ui.show_info("本轮开启自动交卷；次数不足、续答或答案未确认等情况仅对当前考试改为人工交卷")
     _begin_operation(ui, "AI 自动考试", "正在打开浏览器并处理考试队列")
     try:
         manual_count = run_async(
@@ -412,27 +379,9 @@ def handle_ai_exam(ui) -> None:
         return
     _maybe_delete_empty_exam_queue_file(ui)
     if manual_count:
-        ui.show_warning(f"AI 自动考试结束，剩余人工考试 {manual_count} 条")
+        ui.show_warning(f"AI 自动考试结束，待复查考试 {manual_count} 条")
     else:
         ui.show_success("AI 自动考试流程结束")
-    ui.pause()
-
-
-def handle_manual_exam(ui) -> None:
-    from core.state import collect_project_state
-    from core.app.workflows import run_manual_exam_workflow
-
-    _begin_operation(ui, "人工考试", "正在打开浏览器并等待人工完成考试")
-    count = run_async(run_manual_exam_workflow(status_callback=ui.show_info))
-    state = collect_project_state()
-    if count and state.manual_exam_count == 0:
-        ui.show_success(f"人工考试流程结束，共处理 {count} 条")
-    elif count:
-        ui.show_warning(
-            f"人工考试已处理 {count} 条，仍有 {state.manual_exam_count} 条待继续处理"
-        )
-    else:
-        ui.show_warning("本次没有完成新的人工考试链接")
     ui.pause()
 
 
@@ -561,7 +510,7 @@ def handle_show_output_state(exam_urls_file, learning_urls_file, manual_exam_fil
         ("课程链接", str(len(read_learning_urls(learning_urls_file)))),
         ("挂课失败链接", str(len(failures))),
         ("考试链接", str(len(read_exam_urls(exam_urls_file)))),
-        ("人工考试链接", str(len(read_manual_exam_urls(manual_exam_file)))),
+        ("考试复查链接", str(len(read_manual_exam_urls(manual_exam_file)))),
     ]
     retriable_n = sum(
         1 for e in failures if e.reason in RETRIABLE_LEARNING_FAILURE_REASONS

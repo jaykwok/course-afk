@@ -146,7 +146,7 @@ def _tile_specs(state: ProjectState) -> list[tuple[str, Text]]:
         ("课程", state.learning_count),
         ("挂课失败", state.learning_failure_count),
         ("考试", state.exam_count),
-        ("人工考试", state.manual_exam_count),
+        ("考试复查", state.manual_exam_count),
     ):
         if label == "挂课失败" and count > 0:
             value = Text(
@@ -200,10 +200,9 @@ def build_action_line(recommended: str) -> Text:
     g = _g()
     recommended = {
         "切换账号 / 更新登录凭证": "6 账号与登录",
-        "AI 自动考试": "3 考试任务 / AI 自动考试",
-        "人工考试": "3 考试任务 / 人工考试",
-        "手动选择课程 / 录入课程或考试链接": "2 学习任务 / 选择课程",
-        "仅挂课": "1 继续学习，或 2 仅挂课",
+        "AI 自动考试": "2 AI 考试",
+        "手动选择课程 / 录入课程或考试链接": "3 添加课程 / 考试链接",
+        "仅挂课": "1 开始挂课",
     }.get(recommended, recommended)
     arrow = "💡 " if g.name == "unicode" else f"{g.arrow} "
     pointer = "▸ " if g.name == "unicode" else "> "
@@ -218,7 +217,7 @@ def build_action_line(recommended: str) -> Text:
 def build_menu_status(state: ProjectState, metadata: Any, recommended: str, *, compact: bool = False) -> Text:
     """主菜单状态区三行：账号 meta / 紧凑磁贴 / 建议操作。"""
     if compact:
-        counts = Text(f"课程 {state.learning_count}  失败 {state.learning_failure_count}  考试 {state.exam_count}  人工 {state.manual_exam_count}", style=TEXT_MUTED)
+        counts = Text(f"课程 {state.learning_count}  失败 {state.learning_failure_count}  考试 {state.exam_count}  复查 {state.manual_exam_count}", style=TEXT_MUTED)
         return Text.join(Text("\n"), [build_account_chip(state, metadata), counts])
     lines = [
         build_dashboard_meta(state, metadata),
@@ -236,7 +235,7 @@ def build_stat_tiles_grid(state: ProjectState) -> Text:
         "课程": "📚 " if g.name == "unicode" else "",
         "挂课失败": "⚠️ " if g.name == "unicode" else "",
         "考试": "🎯 " if g.name == "unicode" else "",
-        "人工考试": "👤 " if g.name == "unicode" else "",
+        "考试复查": "👤 " if g.name == "unicode" else "",
     }
     rows = []
     for index in (0, 2):

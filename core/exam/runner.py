@@ -28,29 +28,25 @@ from core.exam.flow import ExamQuestionExtractionError, ai_exam, wait_for_finish
 from core.exam.answers import ExamAiConfigurationError
 from core.exam.settings import AiSettings
 from core.runtime import close_safely
-from core.exam.rules import (
-    extract_attempt_limit_message as _extract_attempt_limit_message,
-    parse_remaining_attempts,
-    explicitly_unlimited,
-)
-from core.exam.routing import queue_exam_url_by_attempt_text
+from core.exam.rules import extract_attempt_limit_message as _extract_attempt_limit_message, parse_remaining_attempts
+from core.exam.routing import allows_auto_submit, queue_exam_url_by_attempt_text, requeue_ai_exam_reviews
 from core.file_ops import normalize_url
 from core.queues.exam import (
     has_ai_failed_model_config,
     read_exam_urls,
     record_ai_failed_model_config,
     remove_exam_url,
+    requires_manual_submission,
 )
 from core.learning.exam_bridge import get_course_exam_outcome
 from core.learning.exam_api import read_exam_state
 from core.queues.history import record_submission_intent, pending_submission, finish_submission
 from core.auth.credential import load_credential_metadata
-from core.exam.flow import _wait_for_manual_submit_completion
 from core.learning.popups import handle_rating_popup
 from core.queues.manual_exam import (
     append_manual_exam_entry,
     read_manual_exam_queue,
-    write_manual_exam_queue,
+    remove_manual_exam_url,
 )
 StatusCallback = Callable[[str], None]
 
@@ -277,42 +273,6 @@ async def _handle_attempt_limit_if_present(page, url: str) -> bool:
 
 
 
-async def _can_continue_ai_exam(
-    button_locator,
-    *,
-    threshold: int,
-    url: str,
-) -> bool:
-    button_text = await button_locator.inner_text()
-    if explicitly_unlimited(button_text):
-        logging.info("不限制考试次数, 继续 AI 自动考试")
-        return True
-
-    remaining = parse_remaining_attempts(button_text)
-    if remaining is None:
-        queue_exam_url_by_attempt_text(
-            url,
-            button_text,
-            threshold=threshold,
-            exam_file=EXAM_URLS_FILE,
-            manual_exam_file=MANUAL_EXAM_FILE,
-        )
-        return False
-
-    if remaining <= threshold:
-        queue_exam_url_by_attempt_text(
-            url,
-            button_text,
-            threshold=threshold,
-            exam_file=EXAM_URLS_FILE,
-            manual_exam_file=MANUAL_EXAM_FILE,
-        )
-        return False
-
-    logging.info(f"当前考试剩余次数为 {remaining}, 大于 {threshold} 次, 继续 AI 自动考试")
-    return True
-
-
 async def _open_course_exam_tab(page) -> None:
     await page.locator(".top").first.wait_for(timeout=5000)
     await page.locator(".top").first.click()
@@ -359,6 +319,7 @@ async def _paper_state(page, url):
 def _finish_ai_outcome(url, outcome, model_config) -> bool:
     if outcome == "passed":
         finish_submission(url, "verified", EXAM_URLS_FILE, account=model_config["account"])
+        remove_manual_exam_url(url, file_path=MANUAL_EXAM_FILE)
         return True
     if outcome == "pending_grading":
         _to_manual(url, "pending_grading", "已提交，等待服务端评卷后复查")
@@ -377,17 +338,24 @@ async def _run_course_ai_exam(page, url: str, client: AsyncOpenAI, model: str, *
     outcome = await get_course_exam_outcome(page)
     if outcome in {"passed", "pending_grading"}:
         return _finish_ai_outcome(url, outcome, model_config)
-    if pending_submission(url, EXAM_URLS_FILE, account=model_config["account"]):
-        # 没有可靠的新旧记录 ID 时，不用旧失败分数证明这次已经交卷。
-        return _to_manual(url, "submission_unverified", "发现上次未确认的提交，请先人工核对考试记录")
+    resume = bool(pending_submission(url, EXAM_URLS_FILE, account=model_config["account"]))
     button = page.locator(COURSE_EXAM_BUTTON)
     if await button.count() == 0:
         return _to_manual(url, "attempt_unknown", "未找到可用的开考入口")
-    if not await _can_continue_ai_exam(button, threshold=COURSE_EXAM_ATTEMPT_THRESHOLD, url=url):
-        return True
+    button_text = await button.inner_text()
+    if _extract_attempt_limit_message(button_text) or parse_remaining_attempts(button_text) == 0 and "继续考试" not in button_text:
+        return _to_manual(url, "attempt_limit", "平台没有剩余开考次数，保留复查")
+    if resume and "继续考试" not in button_text:
+        return _to_manual(url, "submission_unverified", "上次考试未确认且没有继续考试入口，保留复查，不自动重开")
+    can_submit = allows_auto_submit(button_text, COURSE_EXAM_ATTEMPT_THRESHOLD)
+    auto_submit = auto_submit and can_submit and not resume and not requires_manual_submission(url, file_path=EXAM_URLS_FILE)
+    if not auto_submit:
+        logging.info("继续 AI 作答，自动交卷已关闭（次数阈值、历史记录或用户设置）")
     # 在开始任何答题操作前提交意图，覆盖手动提前交卷和强制退出的窗口。
-    record_submission_intent(url, model_config, EXAM_URLS_FILE)
-    await wait_for_finish_test(client, model, page, auto_submit=auto_submit, ai_model_config=model_config)
+    if not resume:
+        record_submission_intent(url, model_config, EXAM_URLS_FILE)
+    await wait_for_finish_test(client, model, page, auto_submit=auto_submit, ai_model_config=model_config,
+        resume=resume or "继续考试" in button_text or requires_manual_submission(url, file_path=EXAM_URLS_FILE))
     await _handle_exam_result(page)
     await _open_course_exam_tab(page)
     outcome = await get_course_exam_outcome(page)
@@ -403,32 +371,34 @@ async def _run_paper_ai_exam(page, url: str, client: AsyncOpenAI, model: str, *,
     before = await _paper_state(page, url)
     if before and before.outcome in {"passed", "pending_grading"}:
         return _finish_ai_outcome(url, before.outcome, model_config)
-    if pending_submission(url, EXAM_URLS_FILE, account=model_config["account"]):
-        return _to_manual(url, "submission_unverified", "发现上次未确认的提交，请先人工核对考试记录")
-    if await _handle_attempt_limit_if_present(page, url):
+    resume = bool(pending_submission(url, EXAM_URLS_FILE, account=model_config["account"]))
+    direct_answer = await _has_ready_answer_question(page)
+    if not direct_answer and await _handle_attempt_limit_if_present(page, url):
         return True
-    if before is None:
-        return _to_manual(url, "state_unknown", "考试状态读取失败，转人工核对")
-    if before.allowed_attempts != 0 and (before.remaining_attempts is None or before.remaining_attempts <= PAPER_EXAM_ATTEMPT_THRESHOLD):
-        text = f"剩余 {before.remaining_attempts} 次" if before.remaining_attempts is not None else "次数未知"
-        queue_exam_url_by_attempt_text(url, text, threshold=PAPER_EXAM_ATTEMPT_THRESHOLD,
-            exam_file=EXAM_URLS_FILE, manual_exam_file=MANUAL_EXAM_FILE)
-        return True
-
-    record_submission_intent(url, model_config, EXAM_URLS_FILE)
+    can_submit = bool(before and (before.allowed_attempts == 0 or before.remaining_attempts is not None and before.remaining_attempts > max(1, PAPER_EXAM_ATTEMPT_THRESHOLD)))
+    auto_submit = auto_submit and can_submit and not resume and not requires_manual_submission(url, file_path=EXAM_URLS_FILE)
+    if not auto_submit:
+        logging.info("继续 AI 作答，自动交卷已关闭（次数阈值、历史记录或用户设置）")
     answer_page = page
     try:
-        if not await _has_ready_answer_question(page):
+        if not direct_answer:
             button = await _locate_exam_button(page)
             if button is None:
                 return _to_manual(url, "state_unknown", "无法定位开考按钮，转人工核对")
+            button_text = await button.inner_text()
+            if resume and "继续考试" not in button_text:
+                return _to_manual(url, "submission_unverified", "上次考试未确认且没有继续考试入口，保留复查，不自动重开")
+            if before and before.remaining_attempts == 0 and "继续考试" not in button_text:
+                return _to_manual(url, "attempt_limit", "平台没有剩余开考次数，保留复查")
             answer_page = await _open_paper_answer_page(page, button)
-        await ai_exam(client, model, answer_page, url, auto_submit=auto_submit, ai_model_config=model_config)
+        if not resume:
+            record_submission_intent(url, model_config, EXAM_URLS_FILE)
+        await ai_exam(client, model, answer_page, url, auto_submit=auto_submit, ai_model_config=model_config, resume=resume or direct_answer)
         after = await _paper_state(page, url)
         outcome = after.outcome if after else "unknown"
         if outcome == "failed" and not (
-            after.record_id and after.record_id != before.record_id
-            or after.used_attempts is not None and before.used_attempts is not None and after.used_attempts > before.used_attempts
+            before and (after.record_id and after.record_id != before.record_id
+            or after.used_attempts is not None and before.used_attempts is not None and after.used_attempts > before.used_attempts)
         ):
             outcome = "unknown"
         return _finish_ai_outcome(url, outcome, model_config)
@@ -438,6 +408,7 @@ async def _run_paper_ai_exam(page, url: str, client: AsyncOpenAI, model: str, *,
 
 
 async def run_ai_exam_batch(status_callback: StatusCallback | None = None, *, auto_submit: bool = False) -> int:
+    requeue_ai_exam_reviews(exam_file=EXAM_URLS_FILE, manual_exam_file=MANUAL_EXAM_FILE)
     urls = read_exam_urls(EXAM_URLS_FILE)
     if not urls:
         return 0
@@ -446,10 +417,7 @@ async def run_ai_exam_batch(status_callback: StatusCallback | None = None, *, au
         model_config = _build_ai_exam_model_config(model, client)
         async with create_browser_context() as (_, context):
             for index, url in enumerate(urls, start=1):
-                if has_ai_failed_model_config(url, model_config, file_path=EXAM_URLS_FILE):
-                    _to_manual(url, "ai_failed", "该账号已使用相同模型配置考试失败，请更换配置或人工处理", model_config)
-                    remove_exam_url(url, file_path=EXAM_URLS_FILE)
-                    continue
+                allow_submit = auto_submit and not has_ai_failed_model_config(url, model_config, file_path=EXAM_URLS_FILE)
                 entry_type = classify_exam_entry_url(url)
                 if entry_type not in {"course", "exam"}:
                     _to_manual(url, "unknown_url_type", "此入口需要人工展开或核对")
@@ -462,7 +430,7 @@ async def run_ai_exam_batch(status_callback: StatusCallback | None = None, *, au
                         status_callback(f"AI 考试 {index}/{len(urls)}: {url}")
                     await page.goto(url, timeout=30000)
                     runner = _run_course_ai_exam if entry_type == "course" else _run_paper_ai_exam
-                    completed = await runner(page, url, client, model, auto_submit=auto_submit)
+                    completed = await runner(page, url, client, model, auto_submit=allow_submit)
                     if completed is True:
                         remove_exam_url(url, file_path=EXAM_URLS_FILE)
                 except (UserAbortRequested, UserCancelRequested, ExamAiConfigurationError):
@@ -482,101 +450,3 @@ async def run_ai_exam_batch(status_callback: StatusCallback | None = None, *, au
     finally:
         await close_safely(client.close(), label="AI client")
     return len(read_manual_exam_queue(MANUAL_EXAM_FILE))
-
-
-async def _wait_for_manual_course_test(page) -> None:
-    async with page.expect_popup() as popup_info:
-        await page.locator(COURSE_EXAM_BUTTON).click()
-    popup = await popup_info.value
-    try:
-        await _wait_for_manual_submit_completion(popup)
-    finally:
-        await _close_page_safely(popup)
-
-
-async def _wait_for_manual_paper_test(page, exam_button=None) -> None:
-    exam_button = exam_button or await _locate_exam_button(page)
-    if exam_button is None:
-        raise UserCancelRequested("未找到考试入口，已保留待办")
-    answer_page = await _open_paper_answer_page(page, exam_button)
-    try:
-        await _wait_for_manual_submit_completion(answer_page)
-    finally:
-        if answer_page is not page:
-            await _close_page_safely(answer_page)
-
-
-async def _run_manual_course_exam(page, url: str, *, manual_exam_file=MANUAL_EXAM_FILE) -> bool:
-    account = _current_account()
-    await _open_course_exam_tab(page)
-    outcome = await get_course_exam_outcome(page)
-    if outcome == "passed":
-        finish_submission(url, "verified", manual_exam_file, account=account)
-        return True
-    if outcome == "pending_grading":
-        logging.info("考试待评卷，保留人工复查待办")
-        return False
-    record_submission_intent(url, {"account": account}, manual_exam_file)
-    await _wait_for_manual_course_test(page)
-    await _handle_exam_result(page)
-    await _open_course_exam_tab(page)
-    outcome = await get_course_exam_outcome(page)
-    if outcome != "unknown":
-        finish_submission(url, outcome, manual_exam_file, account=account)
-    return outcome == "passed"
-
-
-async def _run_manual_paper_exam(page, url: str, *, manual_exam_file=MANUAL_EXAM_FILE) -> bool:
-    account = _current_account()
-    await _raise_if_login_required(page, url)
-    before = await _paper_state(page, url)
-    if before and before.passed:
-        finish_submission(url, "verified", manual_exam_file, account=account)
-        return True
-    if before and before.pending_grading:
-        logging.info("考试待评卷，保留人工复查待办")
-        return False
-    record_submission_intent(url, {"account": account}, manual_exam_file)
-    if await _has_ready_answer_question(page):
-        await _wait_for_manual_submit_completion(page)
-    else:
-        await _wait_for_manual_paper_test(page)
-    after = await _paper_state(page, url)
-    if after and after.outcome != "unknown":
-        finish_submission(url, after.outcome, manual_exam_file, account=account)
-    return bool(after and after.passed)
-
-
-async def run_manual_exam_batch(status_callback: StatusCallback | None = None, manual_exam_file=MANUAL_EXAM_FILE) -> int:
-    entries = read_manual_exam_queue(manual_exam_file)
-    if not entries:
-        return 0
-    processed = 0
-    try:
-        async with create_browser_context() as (_, context):
-            for index, entry in enumerate(entries, start=1):
-                page = None
-                entry_type = classify_exam_entry_url(entry.url)
-                if entry_type not in {"course", "exam"}:
-                    continue
-                try:
-                    page = await context.new_page()
-                    if status_callback:
-                        status_callback(f"人工考试 {index}/{len(entries)}: {entry.url}")
-                    await page.goto(entry.url, timeout=30000)
-                    runner = _run_manual_course_exam if entry_type == "course" else _run_manual_paper_exam
-                    if await runner(page, entry.url, manual_exam_file=manual_exam_file) is True:
-                        current = read_manual_exam_queue(manual_exam_file)
-                        write_manual_exam_queue([item for item in current if item.url != entry.url], file_path=manual_exam_file, keep_file=True)
-                        processed += 1
-                except (UserAbortRequested, UserCancelRequested):
-                    raise
-                except Exception as exc:
-                    if is_target_closed_exception(exc):
-                        raise UserCancelRequested("考试页面已关闭，未确认完成的人工待办已保留") from None
-                    logging.exception("人工考试结果未确认，保留待办")
-                finally:
-                    await _close_page_safely(page)
-    except asyncio.CancelledError:
-        raise UserCancelRequested("已中断人工考试，未确认完成的待办已保留") from None
-    return processed

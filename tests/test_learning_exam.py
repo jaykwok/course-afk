@@ -327,7 +327,7 @@ class LearningExamTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, exam_url)
         mock_queue.assert_called_once_with(exam_url, "", threshold=1)
 
-    async def test_handle_subject_exam_item_routes_last_attempt_to_manual_exam(self):
+    async def test_handle_subject_exam_item_queues_last_attempt_for_ai_review(self):
         from core.learning.flows import handle_subject_exam_item
 
         learn_item = FakeSubjectExamItem(operation_text="继续考试 剩余 1 次")
@@ -337,7 +337,7 @@ class LearningExamTests(unittest.IsolatedAsyncioTestCase):
             patch("core.learning.flows.get_course_url", new=AsyncMock(return_value=exam_url)),
             patch(
                 "core.learning.flows.queue_exam_url_by_attempt_text",
-                return_value="manual",
+                return_value="ai",
             ) as mock_queue,
         ):
             result = await handle_subject_exam_item(learn_item)
@@ -365,7 +365,7 @@ class LearningExamTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(result)
         mock_queue.assert_not_called()
 
-    async def test_handle_course_exam_routes_last_attempt_to_manual_exam(self):
+    async def test_handle_course_exam_queues_last_attempt_for_ai_review(self):
         from core.learning.exam_bridge import handle_examination
 
         page = FakePage(
@@ -380,7 +380,7 @@ class LearningExamTests(unittest.IsolatedAsyncioTestCase):
 
         with patch(
             "core.learning.exam_bridge.queue_exam_url_by_attempt_text",
-            return_value="manual",
+            return_value="ai",
         ) as mock_queue:
             await handle_examination(page, exam_passed=False)
 

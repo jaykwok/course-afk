@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from playwright.async_api import async_playwright, Error
-from core.exam.actions import select_answers
+from core.exam.actions import read_existing_answers, select_answers
 from core.exam.parsing import extract_multi_questions_data
 from core.runtime import close_safely, own_playwright_driver
 
@@ -36,6 +36,15 @@ class BrowserDomTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(await select_answers(page, question, ["A", "B"], "offline"))
                 self.assertTrue(await select_answers(page, question, ["A", "B"], "offline"))
             self.assertEqual(await page.locator("input:checked").count(), 2)
+            self.assertEqual(await read_existing_answers(page, question), ["A", "B"])
+            # Match the live judge-question structure: click target is a span,
+            # while the checked radio lives in its containing dd.
+            await page.set_content('''<div data-dynamic-key="judge"><dl class="preview-list">
+                <dd><input type="radio" checked><span class="pointer">正确</span></dd>
+                <dd><input type="radio"><span class="pointer">错误</span></dd>
+            </dl></div>''')
+            judge = {"type": "judge", "text": "题干", "options": [{"label": "T", "text": "正确"}, {"label": "F", "text": "错误"}], "option_click_selector": ".preview-list dd .pointer"}
+            self.assertEqual(await read_existing_answers(page, judge, selector_prefix='[data-dynamic-key="judge"] '), ["T"])
             await page.set_content('''<div class="question-type-item" data-dynamic-key="one"><span class="o-score">单选题（1分）</span><div class="stem-content-main">可读题目</div><dl class="preview-list"><dd>A. 甲</dd><dd>B. 乙</dd></dl></div>
                 <div class="question-type-item" data-dynamic-key="two"><span class="o-score">单选题（1分）</span><div class="stem-content-main"></div></div>''')
             self.assertEqual(await extract_multi_questions_data(page), [], "one unreadable question must invalidate the whole paper")

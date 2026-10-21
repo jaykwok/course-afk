@@ -142,8 +142,10 @@ def normalize_ai_answer_text(question_type: str, answer_text: str) -> list[str]:
 
 
 async def get_ai_answers(client, model, question_data):
+    question_data.pop("answer_failure_reason", None)
     problem = question_problem(question_data)
     if problem:
+        question_data["answer_failure_reason"] = problem
         logging.info("题目需要人工处理：%s", problem)
         return []
     if not model:
@@ -162,5 +164,7 @@ async def get_ai_answers(client, model, question_data):
     except Exception as exc:
         if "unsupported model" in str(exc).lower():
             raise ExamAiConfigurationError(f"模型 {model!r} 与当前协议不兼容，请调整 .env 后重试") from exc
-        logging.warning("AI 未提供可执行答案：%s，转人工", type(exc).__name__)
+        detail = str(exc) if isinstance(exc, AiOutputError) else "AI 请求失败或超时"
+        question_data["answer_failure_reason"] = f"{detail}（{type(exc).__name__}）"
+        logging.warning("题目 %s：AI 未提供可执行答案（%s），等待人工核对", question_data.get("item_id", question_data.get("index", "single")), type(exc).__name__)
         return []

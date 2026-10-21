@@ -209,7 +209,7 @@ class LauncherControllerTests(unittest.TestCase):
             self.assertTrue(learning_file.exists())
             self.assertEqual(ui.messages, [])
 
-    def test_handle_ai_exam_prompts_for_auto_submit(self):
+    def test_handle_ai_exam_prompts_for_auto_submission_defaulting_to_no(self):
         from core.app.launcher_controller import handle_ai_exam
 
         class FakeUi:

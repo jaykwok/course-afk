@@ -433,7 +433,7 @@ def build_dashboard_renderable(state: ProjectState):
             ("课程", state.learning_count),
             ("挂课失败", state.learning_failure_count),
             ("考试", state.exam_count),
-            ("人工考试", state.manual_exam_count),
+            ("考试复查", state.manual_exam_count),
         )
     ):
         if index:

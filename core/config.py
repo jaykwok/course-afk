@@ -424,7 +424,7 @@ def setup_logging(show_startup_banner: bool | None = None):
 def is_ai_configured() -> bool:
     """是否已填写 AI 考试所需配置。
 
-    .env 未填 AI 信息时挂课、人工考试等非 AI 功能仍可用；只有 AI 自动考试
+    .env 未填 AI 信息时挂课、资料收集等非 AI 功能仍可用；只有 AI 自动考试
     需要这三项（接口地址 / API Key / 模型名）。
     """
     from core.exam.settings import ai_is_configured
@@ -571,9 +571,9 @@ EXAM_OPTION_GAP_MAX = _env_nonnegative_float("EXAM_OPTION_GAP_MAX", 0.9)
 EXAM_SUBMIT_GAP_MIN = _env_nonnegative_float("EXAM_SUBMIT_GAP_MIN", 0.8)
 EXAM_SUBMIT_GAP_MAX = _env_nonnegative_float("EXAM_SUBMIT_GAP_MAX", 2.5)
 
-# 课程内考试: 剩余次数 <= 此值时转为人工考试（1 即“小于 2 次”）
+# 课程内考试: 剩余次数 <= 此值时禁止自动交卷（1 即“小于 2 次”）
 COURSE_EXAM_ATTEMPT_THRESHOLD = 1
-# 试卷链接考试: 剩余次数 <= 此值时转为人工考试（1 即“小于 2 次”）
+# 试卷链接考试: 剩余次数 <= 此值时禁止自动交卷（1 即“小于 2 次”）
 PAPER_EXAM_ATTEMPT_THRESHOLD = 1
 
 # ============================================================

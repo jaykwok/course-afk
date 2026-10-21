@@ -4,7 +4,7 @@ import logging
 
 from core.abort import UserAbortRequested, UserCancelRequested
 from core.config import EXAM_OPTION_GAP_MAX, EXAM_OPTION_GAP_MIN, EXAM_SUBMIT_GAP_MAX, EXAM_SUBMIT_GAP_MIN, MANUAL_EXAM_FILE
-from core.exam.contracts import valid_answers
+from core.exam.contracts import question_problem, valid_answers
 from core.humanize import pause_between
 from core.queues.manual_exam import append_manual_exam_entry
 
@@ -44,11 +44,31 @@ async def _selected(option) -> bool:
     return value
 
 
+async def read_existing_answers(page, question_data, *, selector_prefix="") -> list[str] | None:
+    """读取已填答案；None 表示无法确认，不能把它当成空题覆盖。"""
+    try:
+        if question_data["type"] == "ordering":
+            value = await page.locator(f"{selector_prefix}.answer-input-shot").input_value()
+            return list(value.strip())
+        options = page.locator(f"{selector_prefix}{_get_option_click_selector(question_data)}")
+        labels = [option["label"] for option in question_data["options"]]
+        if not labels or await options.count() != len(labels):
+            return None
+        return [label for index, label in enumerate(labels) if await _selected(options.nth(index))]
+    except Exception as exc:
+        _raise_if_exam_auto_submitted(exc)
+        logging.warning("无法确认已有答案，保留当前题供人工核对：%s", type(exc).__name__)
+        return None
+
+
 async def select_answers(page, question_data, answers, course_url, selector_prefix="", ai_model_config=None):
     """Apply a desired answer set and verify it, rather than toggling blindly."""
     if not valid_answers(question_data, answers):
         reason = "fill_blank" if question_data.get("type") == "fill_blank" else "ai_no_answer"
-        message = "检测到填空题" if reason == "fill_blank" else "没有获取到有效答案, 可能是 AI 作答失败或题目解析不完整"
+        detail = question_problem(question_data) or question_data.get("answer_failure_reason") or "AI 未返回合法选项答案"
+        number = question_data.get("index")
+        identity = f"第 {number + 1} 题" if isinstance(number, int) else f"题目 {question_data.get('item_id', 'single')}"
+        message = f"{identity}（{question_data.get('type', 'unknown')}）：{detail}；已关闭自动交卷，请核对该题"
         logging.info(message)
         append_manual_exam_entry(course_url, reason=reason, reason_text=message, ai_failed_model_config=None, file_path=MANUAL_EXAM_FILE)
         return False

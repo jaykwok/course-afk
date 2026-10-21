@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from core.config import EXAM_URLS_FILE
@@ -15,6 +15,7 @@ from core.queues.history import failed_configs, record_failures
 class ExamQueueEntry:
     url: str
     ai_failed_model_configs: list[dict[str, object]]
+    requires_manual_submit: bool = False
 
 
 def _normalize_model_config(raw_config) -> dict[str, object] | None:
@@ -99,6 +100,7 @@ def _normalize_entries(raw_entries) -> list[ExamQueueEntry]:
         entries_by_url[url] = ExamQueueEntry(
             url=url,
             ai_failed_model_configs=failed_model_configs,
+            requires_manual_submit=bool(raw_entry.get("requires_manual_submit")) or bool(existing and existing.requires_manual_submit),
         )
     return list(entries_by_url.values())
 
@@ -108,6 +110,7 @@ def _serialize_entries(entries: list[ExamQueueEntry]) -> list[dict[str, object]]
         {
             "url": entry.url,
             "ai_failed_model_configs": entry.ai_failed_model_configs,
+            **({"requires_manual_submit": True} if entry.requires_manual_submit else {}),
         }
         for entry in entries
     ]
@@ -159,6 +162,7 @@ def append_exam_urls(
     urls: list[str],
     *,
     file_path: Path = EXAM_URLS_FILE,
+    requires_manual_submit: bool = False,
 ) -> list[str]:
     normalized_urls = unique_urls(urls)
     if not normalized_urls:
@@ -167,16 +171,23 @@ def append_exam_urls(
     entries = read_exam_queue(file_path=file_path)
     existing_urls = {entry.url for entry in entries}
     added: list[str] = []
+    changed = False
     for normalized_url in normalized_urls:
         if normalized_url in existing_urls:
+            if requires_manual_submit:
+                for index, entry in enumerate(entries):
+                    if entry.url == normalized_url and not entry.requires_manual_submit:
+                        entries[index] = replace(entry, requires_manual_submit=True)
+                        changed = True
+                        break
             continue
         entries.append(
-            ExamQueueEntry(url=normalized_url, ai_failed_model_configs=_unique_model_configs(failed_configs(normalized_url, file_path)))
+            ExamQueueEntry(url=normalized_url, ai_failed_model_configs=_unique_model_configs(failed_configs(normalized_url, file_path)), requires_manual_submit=requires_manual_submit)
         )
         existing_urls.add(normalized_url)
         added.append(normalized_url)
 
-    if added:
+    if added or changed:
         write_exam_queue(entries, file_path=file_path)
     return added
 
@@ -200,6 +211,10 @@ def read_exam_urls(file_path: Path = EXAM_URLS_FILE) -> list[str]:
     return [entry.url for entry in read_exam_queue(file_path=file_path)]
 
 
+def requires_manual_submission(url: str, *, file_path: Path = EXAM_URLS_FILE) -> bool:
+    return any(entry.url == url and entry.requires_manual_submit for entry in read_exam_queue(file_path))
+
+
 def count_exam_urls(file_path: Path = EXAM_URLS_FILE) -> int:
     return len(read_exam_urls(file_path=file_path))
 
@@ -213,13 +228,7 @@ def write_exam_urls(
 ) -> None:
     existing_by_url = {entry.url: entry for entry in read_exam_queue(file_path=file_path)}
     entries = [
-        ExamQueueEntry(
-            url=url,
-            ai_failed_model_configs=existing_by_url.get(
-                url,
-                ExamQueueEntry(url=url, ai_failed_model_configs=[]),
-            ).ai_failed_model_configs,
-        )
+        existing_by_url.get(url, ExamQueueEntry(url, []))
         for url in unique_urls(urls)
     ]
     write_exam_queue(entries, file_path=file_path, keep_file=keep_file)
@@ -276,8 +285,7 @@ def record_ai_failed_model_config(
         file_path=file_path,
     ):
         entries = [
-            ExamQueueEntry(
-                url=entry.url,
+            replace(entry,
                 ai_failed_model_configs=(
                     entry.ai_failed_model_configs + [normalized_config]
                     if entry.url == normalized_url

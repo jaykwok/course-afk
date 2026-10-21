@@ -180,5 +180,13 @@ def read_manual_exam_urls(file_path: Path = MANUAL_EXAM_FILE) -> list[str]:
     return [entry.url for entry in read_manual_exam_queue(file_path=file_path)]
 
 
+@serialized
+def remove_manual_exam_url(url: str, *, file_path: Path = MANUAL_EXAM_FILE) -> None:
+    entries = read_manual_exam_queue(file_path)
+    retained = [entry for entry in entries if entry.url != url]
+    if len(retained) != len(entries):
+        write_manual_exam_queue(retained, file_path=file_path, keep_file=True)
+
+
 def count_manual_exam_urls(file_path: Path = MANUAL_EXAM_FILE) -> int:
     return len(read_manual_exam_urls(file_path=file_path))

@@ -73,10 +73,8 @@ def recommend_next_step(
 ) -> str:
     if not has_credential:
         return "切换账号 / 更新登录凭证"
-    if exam_count > 0:
+    if exam_count > 0 or manual_exam_count > 0:
         return "AI 自动考试"
-    if manual_exam_count > 0:
-        return "人工考试"
     if learning_count == 0:
         return "手动选择课程 / 录入课程或考试链接"
     return "仅挂课"

@@ -118,8 +118,49 @@ class _FakeClosedPopupPage:
 
 
 class ExamFlowLoggingTests(unittest.IsolatedAsyncioTestCase):
-    async def test_ai_exam_raises_when_questions_remain_unavailable(self):
-        from core.exam.flow import ExamQuestionExtractionError, ai_exam
+    async def test_answer_failure_does_not_disable_auto_submit_for_the_next_exam(self):
+        from core.exam.flow import ai_exam
+        question = {"index": 0, "item_id": "item-0", "type": "single", "text": "题干", "options": [{"label": "A", "text": "甲"}, {"label": "B", "text": "乙"}]}
+        failed_page, normal_page = _FakePage(), _FakePage()
+        with patch("core.exam.flow.close_exam_notice_if_present", new=AsyncMock()), patch("core.exam.flow.detect_exam_mode", new=AsyncMock(return_value="multi")), patch("core.exam.flow.extract_multi_questions_data", new=AsyncMock(return_value=[question])), patch("core.exam.flow.get_ai_answers", new=AsyncMock(side_effect=[[], ["A"]])), patch("core.exam.flow.select_answers", new=AsyncMock(side_effect=[False, True])), patch("core.exam.flow.submit_exam", new=AsyncMock()) as submit, patch("core.exam.flow._wait_for_manual_submit_completion", new=AsyncMock()) as review:
+            await ai_exam(object(), "test-model", failed_page, "failed", auto_submit=True)
+            await ai_exam(object(), "test-model", normal_page, "normal", auto_submit=True)
+        review.assert_awaited_once_with(failed_page)
+        submit.assert_awaited_once_with(normal_page)
+    async def test_resume_keeps_answered_questions_and_only_fills_empty_questions(self):
+        from core.exam.flow import ai_exam
+        questions = [{"index": index, "item_id": f"item-{index}", "type": "single", "text": "题干", "options": [{"label": "A", "text": "甲"}, {"label": "B", "text": "乙"}]} for index in range(3)]
+        page = _FakePage()
+        with patch("core.exam.flow.close_exam_notice_if_present", new=AsyncMock()), patch("core.exam.flow.detect_exam_mode", new=AsyncMock(return_value="multi")), patch("core.exam.flow.extract_multi_questions_data", new=AsyncMock(return_value=questions)), patch("core.exam.flow.read_existing_answers", new=AsyncMock(side_effect=[["B"], [], None])), patch("core.exam.flow.get_ai_answers", new=AsyncMock(return_value=["A"])) as answer, patch("core.exam.flow.select_answers", new=AsyncMock(return_value=True)) as select, patch("core.exam.flow.submit_exam", new=AsyncMock()) as submit, patch("core.exam.flow._wait_for_manual_submit_completion", new=AsyncMock()) as review:
+            await ai_exam(object(), "test-model", page, "exam", auto_submit=True, resume=True)
+        answer.assert_awaited_once_with(unittest.mock.ANY, "test-model", questions[1])
+        self.assertEqual(select.await_count, 1)
+        self.assertEqual(select.call_args.args[1], questions[1])
+        submit.assert_not_awaited()
+        review.assert_awaited_once_with(page)
+
+    async def test_manual_review_keeps_same_answer_page_open_until_submission(self):
+        import asyncio
+        from core.exam.flow import ai_exam
+        page = _FakePage()
+        question = {"index": 0, "item_id": "item-0", "type": "single", "text": "题干", "options": [{"label": "A", "text": "甲"}, {"label": "B", "text": "乙"}]}
+        reviewing, submitted = asyncio.Event(), asyncio.Event()
+        async def review(current_page):
+            self.assertIs(current_page, page)
+            reviewing.set()
+            await submitted.wait()
+        with patch("core.exam.flow.close_exam_notice_if_present", new=AsyncMock()), patch("core.exam.flow.detect_exam_mode", new=AsyncMock(return_value="multi")), patch("core.exam.flow.extract_multi_questions_data", new=AsyncMock(return_value=[question])), patch("core.exam.flow.get_ai_answers", new=AsyncMock(return_value=["A"])), patch("core.exam.flow.select_answers", new=AsyncMock(return_value=True)), patch("core.exam.flow.submit_exam", new=AsyncMock()) as submit, patch("core.exam.flow._wait_for_manual_submit_completion", new=review):
+            task = asyncio.create_task(ai_exam(object(), "test-model", page, "exam", auto_submit=False))
+            try:
+                await asyncio.wait_for(reviewing.wait(), 2)
+                self.assertFalse(task.done())
+                submit.assert_not_awaited()
+            finally:
+                submitted.set()
+                await asyncio.wait_for(task, 2)
+
+    async def test_ai_exam_keeps_page_for_manual_review_when_questions_remain_unavailable(self):
+        from core.exam.flow import ai_exam
 
         page = _FakePage()
         extractor = AsyncMock(return_value=[])
@@ -128,16 +169,15 @@ class ExamFlowLoggingTests(unittest.IsolatedAsyncioTestCase):
             patch("core.exam.flow.detect_exam_mode", new=AsyncMock(return_value="multi")),
             patch("core.exam.flow.extract_multi_questions_data", new=extractor),
             patch("core.exam.flow.logging.info") as mock_info,
+            patch("core.exam.flow.append_manual_exam_entry") as record,
+            patch("core.exam.flow.submit_exam", new=AsyncMock()) as submit,
+            patch("core.exam.flow._wait_for_manual_submit_completion", new=AsyncMock()) as review,
         ):
-            with self.assertRaises(ExamQuestionExtractionError) as ctx:
-                await ai_exam(
-                    object(),
-                    "test-model",
-                    page,
-                    "https://example.com/exam",
-                )
+            await ai_exam(object(), "test-model", page, "https://example.com/exam")
 
-        self.assertIs(ctx.exception.page, page)
+        review.assert_awaited_once_with(page)
+        submit.assert_not_awaited()
+        self.assertEqual(record.call_args.kwargs["reason"], "question_parse_error")
         self.assertEqual(extractor.await_count, 3)
         self.assertFalse(
             any(call.args and call.args[0] == "考试完成" for call in mock_info.call_args_list)

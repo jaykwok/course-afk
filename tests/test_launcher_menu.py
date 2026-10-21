@@ -9,9 +9,9 @@ class LauncherMenuTests(unittest.TestCase):
         self.assertEqual(
             MENU_OPTIONS,
             [
-                "继续学习 / 推荐流程",
-                "学习任务",
-                "考试任务",
+                "开始挂课",
+                "AI 考试",
+                "添加课程 / 考试链接",
                 "课程资料",
                 "任务管理",
                 "账号与登录",

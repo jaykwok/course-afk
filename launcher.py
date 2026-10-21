@@ -40,7 +40,7 @@ def _disable_windows_console_input_modes_early() -> None:
 _disable_windows_console_input_modes_early()
 
 
-from core.app.menus import MAIN_MENU_OPTIONS, LEARNING_MENU_OPTIONS, EXAM_MENU_OPTIONS
+from core.app.menus import MAIN_MENU_OPTIONS
 
 MENU_OPTIONS = MAIN_MENU_OPTIONS
 
@@ -70,10 +70,8 @@ def main() -> int:
     from core.app.launcher_controller import (
         handle_afk,
         handle_ai_exam,
-        handle_manual_exam,
         handle_manual_selection,
         handle_reference_collection,
-        handle_recommended_flow,
         handle_account_management,
         handle_task_management,
     )
@@ -92,21 +90,11 @@ def main() -> int:
 
             try:
                 if choice == 1:
-                    handle_recommended_flow(ui)
+                    handle_afk(ui)
                 elif choice == 2:
-                    action = ui.prompt_choice("学习任务", LEARNING_MENU_OPTIONS)
-                    if action == 1:
-                        handle_afk(ui)
-                    elif action == 2:
-                        handle_manual_selection(MANUAL_SELECTION_PROMPTS, ui)
+                    handle_ai_exam(ui)
                 elif choice == 3:
-                    action = ui.prompt_choice("考试任务", EXAM_MENU_OPTIONS)
-                    if action == 1:
-                        handle_ai_exam(ui)
-                    elif action == 2:
-                        handle_manual_exam(ui)
-                    elif action == 3:
-                        handle_manual_selection(MANUAL_SELECTION_PROMPTS, ui)
+                    handle_manual_selection(MANUAL_SELECTION_PROMPTS, ui)
                 elif choice == 4:
                     handle_reference_collection(ui)
                 elif choice == 5:

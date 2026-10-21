@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from core.abort import UserCancelRequested
-from core.exam.actions import select_answers, submit_exam
+from core.exam.actions import read_existing_answers, select_answers, submit_exam
 
 
 def question(kind="single", labels=("A", "B")):
@@ -65,6 +65,20 @@ class Page:
 
 
 class ExamActionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_existing_answer_readback_does_not_modify_any_options(self):
+        page = Page(multiple=True, selected={0, 1})
+        self.assertEqual(await read_existing_answers(page, question("multiple")), ["A", "B"])
+        self.assertEqual(page.clicked, [])
+        self.assertIsNone(await read_existing_answers(Page(count=1), question()))
+
+    async def test_no_answer_review_identifies_question_and_concrete_failure(self):
+        data = {**question(), "index": 6, "answer_failure_reason": "AI 响应未完成（AiOutputError）"}
+        with patch("core.exam.actions.append_manual_exam_entry") as append:
+            self.assertFalse(await select_answers(object(), data, [], "exam"))
+        message = append.call_args.kwargs["reason_text"]
+        self.assertIn("第 7 题", message)
+        self.assertIn("AI 响应未完成", message)
+
     async def asyncSetUp(self):
         self.pause = patch("core.exam.actions.pause_between", new=AsyncMock())
         self.pause.start()

@@ -18,7 +18,7 @@ GREEN_LIGHT = "#6EE7B7"   # 极亮薄荷：高光徽标 / 按钮聚焦高光 (em
 GREEN_DEEP = "#065F46"    # 深绿：Textual 次级层次 (emerald-800)
 
 # 科技青强调色（Tailwind sky）
-CYAN = "#38BDF8"          # 科技青：推荐流程标签 / 快捷键指示 / 关键链接 (sky-400)
+CYAN = "#38BDF8"          # 科技青：建议操作标签 / 快捷键指示 / 关键链接 (sky-400)
 
 # 语义色：成功 / 警告 / 错误（CLI 图标 / TUI 日志 / 按钮变体共用）
 SUCCESS = "#34D399"       # emerald-400：与主色同族，靠亮度差区分

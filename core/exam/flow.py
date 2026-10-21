@@ -5,8 +5,10 @@ import json
 from core.abort import UserCancelRequested
 from core.exam.contracts import valid_answers
 from core.runtime import close_safely
+from core.config import MANUAL_EXAM_FILE
+from core.queues.manual_exam import append_manual_exam_entry
 
-from core.exam.actions import close_exam_notice_if_present, select_answers, submit_exam
+from core.exam.actions import close_exam_notice_if_present, read_existing_answers, select_answers, submit_exam
 from core.exam.answers import get_ai_answers
 from core.exam.parsing import (
     detect_exam_mode,
@@ -99,7 +101,17 @@ async def _extract_with_retry(page, extractor, *, empty_message: str):
     raise ExamQuestionExtractionError(empty_message, page=page)
 
 
-async def ai_exam(client, model, page, course_url, auto_submit=True, ai_model_config=None):
+async def ai_exam(client, model, page, course_url, auto_submit=True, ai_model_config=None, *, resume=False):
+    try:
+        await _answer_exam(client, model, page, course_url, auto_submit, ai_model_config, resume=resume)
+    except ExamQuestionExtractionError as exc:
+        message = f"题目解析未完成：{exc}；请在当前答题页补答并手动交卷"
+        append_manual_exam_entry(course_url, reason="question_parse_error", reason_text=message, file_path=MANUAL_EXAM_FILE)
+        logging.warning(message)
+        await _wait_for_manual_submit_completion(page)
+
+
+async def _answer_exam(client, model, page, course_url, auto_submit, ai_model_config, *, resume):
     """AI自动答题主函数"""
     logging.info("AI考试开始")
 
@@ -135,20 +147,24 @@ async def ai_exam(client, model, page, course_url, auto_submit=True, ai_model_co
             if identity in seen_questions or len(seen_questions) >= 500:
                 raise ExamQuestionExtractionError("题目导航未推进或超出题数上限，停止自动答题", page=page)
             seen_questions.add(identity)
-            answers = await get_ai_answers(client, model, question_data)
-            await select_answers(
-                page,
-                question_data,
-                answers,
-                course_url,
-                ai_model_config=ai_model_config,
-            )
+            existing = await read_existing_answers(page, question_data) if resume else []
+            if existing is None or existing:
+                logging.info("保留当前题已有答案或未确认状态，不覆盖；继续处理下一题")
+            else:
+                answers = await get_ai_answers(client, model, question_data)
+                await select_answers(
+                    page,
+                    question_data,
+                    answers,
+                    course_url,
+                    ai_model_config=ai_model_config,
+                )
             next_button = page.locator(".single-btn-next")
             next_button_classes = await next_button.get_attribute("class") or ""
 
             if "next-disabled" in next_button_classes:
-                logging.info("自动交卷已取消, 请手动交卷")
-                logging.info("页面将保持打开状态, 等待手动交卷完成...")
+                logging.info("AI 作答结束，请在当前答题页审查、补答并手动交卷")
+                logging.info("当前页面保持打开，等待人工提交...")
                 await _wait_for_manual_submit_completion(page)
                 break
 
@@ -172,15 +188,21 @@ async def ai_exam(client, model, page, course_url, auto_submit=True, ai_model_co
             question_number = question_data["index"] + 1
             logging.info(f"题目 {question_number} 类型: {question_data['type']}")
             _log_question_snapshot(question_data, index=question_number)
+            item_id = question_data["item_id"]
+            prefix = f"[data-dynamic-key={json.dumps(item_id)}] "
+            existing = await read_existing_answers(page, question_data, selector_prefix=prefix) if resume else []
+            if existing is None or existing:
+                auto_submit = False
+                logging.info("题目 %s 已有答案或状态未确认，保留原答案并关闭自动交卷", item_id)
+                continue
             answers = await get_ai_answers(client, model, question_data)
             auto_submit = _ensure_manual_submit(auto_submit, question_data, answers)
-            item_id = question_data["item_id"]
             selected_successfully = await select_answers(
                 page,
                 question_data,
                 answers,
                 course_url,
-                selector_prefix=f"[data-dynamic-key={json.dumps(item_id)}] ",
+                selector_prefix=prefix,
                 ai_model_config=ai_model_config,
             )
             auto_submit = _ensure_manual_submit(
@@ -193,14 +215,14 @@ async def ai_exam(client, model, page, course_url, auto_submit=True, ai_model_co
         if auto_submit:
             await submit_exam(page)
         else:
-            logging.info("自动交卷已取消, 请手动交卷")
-            logging.info("页面将保持打开状态, 等待手动交卷完成...")
+            logging.info("AI 作答结束，请在当前答题页审查、补答并手动交卷")
+            logging.info("当前页面保持打开，等待人工提交...")
             await _wait_for_manual_submit_completion(page)
 
     logging.info("已检测到交卷结果，等待服务端状态核对")
 
 
-async def wait_for_finish_test(client, model, page1, auto_submit=True, ai_model_config=None):
+async def wait_for_finish_test(client, model, page1, auto_submit=True, ai_model_config=None, *, resume=False):
     """打开考试弹窗并执行AI考试"""
     async with page1.expect_popup() as page2_info:
         await page1.locator(".btn.new-radius").click()
@@ -214,6 +236,7 @@ async def wait_for_finish_test(client, model, page1, auto_submit=True, ai_model_
             page1.url,
             auto_submit=auto_submit,
             ai_model_config=ai_model_config,
+            **({"resume": True} if resume else {}),
         )
     finally:
         if not _page_is_closed(page2):

@@ -14,7 +14,7 @@ def link_queue_paths(include_exams: bool = False) -> dict[str, Path]:
 
     paths = {"课程待办": config.LEARNING_URLS_FILE, "失败 / 复查": config.LEARNING_FAILURES_FILE}
     if include_exams:
-        paths.update({"AI 考试": config.EXAM_URLS_FILE, "人工考试": config.MANUAL_EXAM_FILE})
+        paths.update({"AI 考试": config.EXAM_URLS_FILE, "考试复查": config.MANUAL_EXAM_FILE})
     return paths
 
 
