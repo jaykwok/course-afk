@@ -79,14 +79,22 @@ async def _poll_authorization_header(page) -> str:
     return ""
 
 
-async def fetch_json(page, url: str, *, headers: dict[str, str]) -> object:
+async def fetch_json(
+    page, url: str, *, headers: dict[str, str], method: str = "GET", data=None,
+) -> object:
     parsed = urlparse(url)
     if parsed.scheme != "https" or parsed.hostname != "kc.zhixueyun.com" or parsed.username is not None or parsed.password is not None or parsed.port not in (None, 443):
         raise ValueError("API 地址不在允许的站点范围")
+    if method not in {"GET", "POST"}:
+        raise ValueError("API 请求方法仅支持 GET / POST")
     response = None
     try:
         async with asyncio.timeout(35):
-            response = await page.context.request.get(url, headers=headers, timeout=30000, max_redirects=0)
+            options = dict(headers=headers, timeout=30000, max_redirects=0)
+            if method == "POST":
+                response = await page.context.request.post(url, data=data, **options)
+            else:
+                response = await page.context.request.get(url, **options)
             if not response.ok:
                 raise RuntimeError(f"API 请求失败 HTTP {response.status}")
             result = await response.json()

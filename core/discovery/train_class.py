@@ -23,6 +23,9 @@ from core.discovery.subject_parse import enqueue_learning_links_with_subject_exp
 # - 查看更多: GET .../chapter-activity-list/paas/more?...&page=2|3|...&pageSize=5
 # - 首页 recordCount 不可信（本班报 5，实际 13）；以「本批条数 < pageSize」结束分页
 _API_HOST = "https://kc.zhixueyun.com"
+_REGISTRATION_API = (
+    f"{_API_HOST}/gwapi/v1/saas-stu/web-biz/latest/train/class-student"
+)
 _CHAPTER_API = (
     f"{_API_HOST}/api/v1/training/student/class-info/"
     "safe/chapter/paas?classId={class_id}"
@@ -55,6 +58,81 @@ _DIRECT_ACTIVITY_TYPE_PREFIX = {
     "2": ZHIXUEYUN_SUBJECT_PREFIX,
     "8": ZHIXUEYUN_COURSE_PREFIX,
 }
+
+
+class ClassEnrollmentError(RuntimeError):
+    """报名未确认成功，不能把班级课程当作可学习链接收集。"""
+
+
+async def _registration_progress(page, class_id: str, headers: dict[str, str]) -> dict:
+    payload = await fetch_json(
+        page,
+        f"{_REGISTRATION_API}/registrationProgress?classId={class_id}",
+        headers=headers,
+    )
+    if not isinstance(payload, dict) or str(payload.get("code")) != "0":
+        raise ClassEnrollmentError("读取培训班报名状态失败，请确认登录有效后重试入口")
+    progress = payload.get("data")
+    if (
+        not isinstance(progress, dict)
+        or str(progress.get("classInfoId") or "").lower() != class_id.lower()
+        or str(progress.get("registerStatus")) not in {"0", "1", "2", "3", "4", "5"}
+    ):
+        raise ClassEnrollmentError("培训班报名状态响应不完整，已保留入口供重试")
+    return progress
+
+
+def _check_pending_registration(progress: dict) -> None:
+    status = str(progress.get("registerStatus"))
+    if status in {"1", "3"}:
+        raise ClassEnrollmentError("培训班报名待审核，审核通过后请重新添加该入口")
+    if status == "4":
+        raise ClassEnrollmentError("培训班报名待缴费，请在平台完成后重新添加该入口")
+
+
+async def ensure_class_enrolled(
+    page, class_id: str, *, headers: dict[str, str], status_callback=None,
+) -> None:
+    """对齐页面报名接口；提交一次，并以重新查询的 registerStatus=5 确认成功。"""
+    progress = await _registration_progress(page, class_id, headers)
+    if str(progress["registerStatus"]) == "5":
+        if status_callback:
+            status_callback("培训班已报名，继续收集课程链接")
+        return
+    _check_pending_registration(progress)
+    options = progress.get("classInfoVo")
+    if not isinstance(options, dict) or str(options.get("payType")) != "0":
+        raise ClassEnrollmentError("培训班报名涉及付费或报名条件不完整，请在平台处理后重试入口")
+    if str(options.get("isRegister")) == "1" and str(options.get("isRegisterReason")) == "1":
+        raise ClassEnrollmentError("培训班报名需要填写报名理由，请在平台报名后重新添加该入口")
+    if str(options.get("signupFile")) == "1":
+        raise ClassEnrollmentError("培训班报名需要提交附件，请在平台报名后重新添加该入口")
+
+    if status_callback:
+        status_callback("培训班尚未报名，正在报名后再获取课程链接")
+    payload = await fetch_json(
+        page,
+        f"{_REGISTRATION_API}/register",
+        headers={**headers, "Content-Type": "application/json; charset=UTF-8", "permitenable": "false"},
+        method="POST",
+        data={"classId": class_id},
+    )
+    if not isinstance(payload, dict) or str(payload.get("code")) != "0":
+        raise ClassEnrollmentError("培训班报名失败，请在平台查看报名条件后重试入口")
+
+    # 接口接受申请不代表获得学习权限；等待后台状态落定，不重复提交报名。
+    for attempt in range(5):
+        if attempt:
+            await page.wait_for_timeout(500)
+        progress = await _registration_progress(page, class_id, headers)
+        if str(progress["registerStatus"]) == "5":
+            if status_callback:
+                status_callback("培训班报名成功，开始收集课程链接")
+            return
+        _check_pending_registration(progress)
+        if str(progress["registerStatus"]) == "2":
+            raise ClassEnrollmentError("培训班报名审核未通过，请在平台处理后重试入口")
+    raise ClassEnrollmentError("培训班报名已提交，但尚未确认成功，已保留入口供重试")
 
 
 def extract_class_id(url: str) -> str | None:
@@ -237,7 +315,7 @@ async def collect_learning_links_from_class_page(
     class_url: str,
     status_callback=None,
 ) -> list[str]:
-    """打开已登录的培训班页，经章节/活动 API（含 /more 分页）收集课程/主题链接。"""
+    """打开培训班页，确认报名成功后，经章节/活动 API 收集课程/主题链接。"""
     class_id = extract_class_id(class_url)
     if not class_id:
         if status_callback:
@@ -268,6 +346,10 @@ async def collect_learning_links_from_class_page(
         "Authorization": auth_header,
         "Accept": "application/json, text/plain, */*",
     }
+
+    await ensure_class_enrolled(
+        page, class_id, headers=headers, status_callback=status_callback,
+    )
 
     try:
         chapters_payload = await fetch_json(
@@ -381,7 +463,8 @@ async def collect_learning_links_from_train_class_urls(
                             "请确认班级活动含 course/subject 类型"
                         )
             except BaseException as exc:
-                record_learning_failure(url, reason="discovery_incomplete", reason_text=f"培训班收集未完成（{type(exc).__name__}），请重新解析入口", detail={"source": "train_class"})
+                reason_text = str(exc) if isinstance(exc, ClassEnrollmentError) else f"培训班收集未完成（{type(exc).__name__}），请重新解析入口"
+                record_learning_failure(url, reason="discovery_incomplete", reason_text=reason_text, detail={"source": "train_class"})
                 if not isinstance(exc, Exception):
                     raise
                 logging.error(f"解析培训班失败 {url}: {exc}")

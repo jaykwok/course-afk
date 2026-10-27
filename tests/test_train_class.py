@@ -1,11 +1,16 @@
 import unittest
+import asyncio
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from urllib.parse import parse_qs, urlparse
 
 from core.discovery.train_class import (
+    ClassEnrollmentError,
     build_activity_list_url,
+    collect_learning_links_from_class_page,
     collect_learning_links_from_train_class_urls,
+    ensure_class_enrolled,
     extract_class_id,
     extract_learning_links_from_activity_items,
     map_activity_to_learning_url,
@@ -176,8 +181,13 @@ def _activity(name: str, business_type: int, business_id: str, value: str = ""):
 class FakeRequestApi:
     """模拟实勘分页：page1=5 条，page2(more)=5 条，page3(more)=3 条。"""
 
-    def __init__(self):
+    def __init__(self, registration_status=5):
         self.calls: list[tuple[str, dict | None]] = []
+        self.post_calls = []
+        self.registration_status = registration_status
+        self.after_register_status = 5
+        self.registration_code = 0
+        self.registration_options = {"payType": 0, "isRegister": 2, "isRegisterReason": 2, "signupFile": 0}
         self._pages = {
             1: [
                 _activity(
@@ -211,6 +221,13 @@ class FakeRequestApi:
 
     async def get(self, url, headers=None, **kwargs):
         self.calls.append((url, headers))
+        if "registrationProgress?" in url:
+            class_id = parse_qs(urlparse(url).query)["classId"][0]
+            return FakeApiResponse({"code": 0, "data": {
+                "classInfoId": class_id,
+                "registerStatus": self.registration_status,
+                "classInfoVo": self.registration_options,
+            }})
         if "chapter/paas" in url and "activity" not in url:
             return FakeApiResponse(
                 [{"id": "4d06a78e-0cb2-46d1-8ac3-f672979a6a5b", "name": "阶段"}]
@@ -231,6 +248,13 @@ class FakeRequestApi:
                 {"items": items, "recordCount": 5 if page == 1 else 0}
             )
         return FakeApiResponse({"message": "missing"}, ok=False, status=404)
+
+    async def post(self, url, headers=None, data=None, **kwargs):
+        self.calls.append((url, headers))
+        self.post_calls.append((url, data, kwargs))
+        if self.registration_code == 0:
+            self.registration_status = self.after_register_status
+        return FakeApiResponse({"code": self.registration_code, "message": "报名已结束"})
 
 
 class FakeTrainClassPage:
@@ -262,6 +286,127 @@ class FakeTrainClassContext:
 
 
 class TrainClassCollectionTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.enterContext(patch("core.discovery.train_class.prepare_page_after_navigation_async", new=AsyncMock()))
+        self.enterContext(patch("core.discovery.train_class.wait_for_authorization_header", new=AsyncMock(return_value="Bearer__test-token")))
+
+    async def test_unregistered_class_is_enrolled_and_verified_before_collecting(self):
+        page = FakeTrainClassPage()
+        api = page.context.request
+        api.registration_status = 0
+        messages = []
+        url = "https://kc.zhixueyun.com/#/train-new/class-detail/6b5003f9-9163-4384-9240-8f3225ab373d"
+        links = await collect_learning_links_from_class_page(page, url, messages.append)
+
+        self.assertEqual(len(links), 13)
+        self.assertEqual(len(api.post_calls), 1)
+        self.assertEqual(api.post_calls[0][1], {"classId": extract_class_id(url)})
+        calls = [item[0] for item in api.calls]
+        self.assertIn("registrationProgress?", calls[0])
+        self.assertTrue(calls[1].endswith("/class-student/register"))
+        self.assertIn("registrationProgress?", calls[2])
+        self.assertIn("/chapter/paas?", calls[3])
+        self.assertEqual(api.post_calls[0][2]["max_redirects"], 0)
+        self.assertTrue(any("报名成功" in message for message in messages))
+
+        # 重试同一入口时，已报名状态不再提交报名。
+        await collect_learning_links_from_class_page(page, url)
+        self.assertEqual(len(api.post_calls), 1)
+
+    async def test_already_registered_class_does_not_submit_registration(self):
+        page = FakeTrainClassPage()
+        links = await collect_learning_links_from_class_page(
+            page, "https://kc.zhixueyun.com/#/train-new/class-detail/e8d1e9b6-f9cf-4960-bf0f-57cd34dc0ca9",
+        )
+        self.assertEqual(len(links), 13)
+        self.assertEqual(page.context.request.post_calls, [])
+
+    async def test_failed_or_unconfirmed_registration_never_collects_courses(self):
+        url = "https://kc.zhixueyun.com/#/train-new/class-detail/6b5003f9-9163-4384-9240-8f3225ab373d"
+        for code, after, message in ((1, 5, "报名失败"), (0, 1, "待审核"), (0, 3, "待审核"), (0, 4, "待缴费"), (0, 2, "未通过"), (0, 0, "尚未确认成功")):
+            with self.subTest(code=code, after=after):
+                page = FakeTrainClassPage()
+                api = page.context.request
+                api.registration_status = 0
+                api.registration_code = code
+                api.after_register_status = after
+                with self.assertRaisesRegex(ClassEnrollmentError, message):
+                    await collect_learning_links_from_class_page(page, url)
+                self.assertEqual(len(api.post_calls), 1)
+                self.assertFalse(any("/chapter" in call[0] for call in api.calls))
+
+    async def test_pending_payment_or_required_form_is_not_resubmitted(self):
+        cases = [(1, {}, "待审核"), (3, {}, "待审核"), (4, {}, "待缴费"),
+                 (0, {"payType": 1}, "付费"),
+                 (0, {"isRegister": 1, "isRegisterReason": 1}, "报名理由"),
+                 (0, {"signupFile": 1}, "附件")]
+        for status, options, message in cases:
+            with self.subTest(status=status, options=options):
+                page = FakeTrainClassPage()
+                api = page.context.request
+                api.registration_status = status
+                api.registration_options.update(options)
+                with self.assertRaisesRegex(ClassEnrollmentError, message):
+                    await ensure_class_enrolled(page, "class", headers={})
+                self.assertEqual(api.post_calls, [])
+
+    async def test_bad_registration_state_is_not_treated_as_enrolled(self):
+        for payload in ({"code": 9000000}, {"code": 0, "data": {}},
+                        {"code": 0, "data": {"classInfoId": "other", "registerStatus": 5}},
+                        {"code": 0, "data": {"classInfoId": "class", "registerStatus": 99}}):
+            with self.subTest(payload=payload):
+                page = FakeTrainClassPage()
+                page.context.request.get = AsyncMock(return_value=FakeApiResponse(payload))
+                with self.assertRaises(ClassEnrollmentError):
+                    await ensure_class_enrolled(page, "class", headers={})
+                self.assertEqual(page.context.request.post_calls, [])
+
+    async def test_delayed_registration_confirmation_is_polled_without_resubmitting(self):
+        page = FakeTrainClassPage()
+        real_get = page.context.request.get
+        reads = 0
+
+        async def get(url, **kwargs):
+            nonlocal reads
+            reads += 1
+            if reads == 3:
+                page.context.request.registration_status = 5
+            return await real_get(url, **kwargs)
+
+        page.context.request.registration_status = 0
+        page.context.request.after_register_status = 0
+        page.context.request.get = get
+        await ensure_class_enrolled(page, "class", headers={})
+        self.assertEqual(len(page.context.request.post_calls), 1)
+        self.assertEqual(reads, 3)
+
+    async def test_enrollment_failure_preserves_entry_and_reason_and_closes_page(self):
+        page = FakeTrainClassPage()
+        page.context.request.registration_status = 1
+        url = "https://kc.zhixueyun.com/#/train-new/class-detail/6b5003f9-9163-4384-9240-8f3225ab373d"
+        with patch("core.discovery.train_class.enqueue_learning_links_with_subject_expand", new=AsyncMock()) as enqueue, patch("core.discovery.train_class.record_learning_failure") as failure, patch("core.discovery.train_class.remove_learning_failure") as remove:
+            with self.assertRaisesRegex(ClassEnrollmentError, "待审核"):
+                await collect_learning_links_from_train_class_urls([url], context=FakeTrainClassContext(page))
+        enqueue.assert_not_awaited()
+        remove.assert_not_called()
+        self.assertEqual(failure.call_args.args, (url,))
+        self.assertIn("待审核", failure.call_args.kwargs["reason_text"])
+        self.assertTrue(page.closed)
+
+    async def test_cancelled_registration_keeps_entry_and_disposes_response(self):
+        page = FakeTrainClassPage()
+        page.context.request.registration_status = 0
+        response = SimpleNamespace(ok=True, json=AsyncMock(side_effect=asyncio.CancelledError()), dispose=AsyncMock())
+        page.context.request.post = AsyncMock(return_value=response)
+        url = "https://kc.zhixueyun.com/#/train-new/class-detail/6b5003f9-9163-4384-9240-8f3225ab373d"
+        with patch("core.discovery.train_class.record_learning_failure") as failure, patch("core.discovery.train_class.enqueue_learning_links_with_subject_expand", new=AsyncMock()) as enqueue:
+            with self.assertRaises(asyncio.CancelledError):
+                await collect_learning_links_from_train_class_urls([url], context=FakeTrainClassContext(page))
+        response.dispose.assert_awaited_once()
+        failure.assert_called_once()
+        enqueue.assert_not_awaited()
+        self.assertTrue(page.closed)
+
     async def test_collection_paginates_with_more_endpoint(self):
         page = FakeTrainClassPage()
         context = FakeTrainClassContext(page)
