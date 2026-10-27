@@ -16,6 +16,7 @@ from core.config import (
     ZHIXUEYUN_EXAM_PREFIX,
 )
 from core.humanize import jitter
+from core.learning.progress import read_server_section_state, section_completed_on_server
 
 
 @dataclass(frozen=True)
@@ -249,16 +250,14 @@ async def wait_until_learned(
     进入本函数前若已学完会立即返回。``max_wait`` / ``poll_interval`` 单位秒，
     实际每轮间隔在 ``poll_interval`` 附近抖动（整段总时长仍不超过 max_wait），
     避免「每 30 秒整点一次进度请求」这种一眼可见的固定节拍。
-    超时前会再强制读一次 DOM（滚入视口），避免「其实已同步却判超时」。
+    超时前再次读取页面并只读复核服务器章节状态，避免页面未刷新造成误报。
     """
-    from core.abort import SyncTimeoutError
-
     max_wait = max(0, int(max_wait))
     poll_interval = max(1, int(poll_interval)) if max_wait > 0 else 0
 
     current_text = await read_section_progress_text(box)
     if is_learned(current_text):
-        logging.info("课程进度已同步到服务器")
+        logging.info("页面已确认该章节完成")
         return
 
     if max_wait <= 0:
@@ -266,16 +265,10 @@ async def wait_until_learned(
         await page.wait_for_timeout(500)
         current_text = await read_section_progress_text(box)
         if is_learned(current_text):
-            logging.info("课程进度已同步到服务器")
+            logging.info("页面已确认该章节完成")
             return
-        logging.info(
-            "超时: 无额外等待窗, 课程进度仍未同步"
-            f" (文案: {_compact_progress_text(current_text)})"
-        )
-        raise SyncTimeoutError(
-            "课程进度未能同步完成",
-            reason_text="课程进度同步超时（无额外等待窗），后续可重新加入课程链接",
-        )
+        await _verify_section_before_timeout(box, page, current_text, max_wait=0)
+        return
 
     elapsed_sync_wait = 0.0
     while elapsed_sync_wait < max_wait:
@@ -292,11 +285,11 @@ async def wait_until_learned(
         current_text = await read_section_progress_text(box)
         if is_learned(current_text):
             logging.info(
-                f"课程进度已同步到服务器, 额外等待 {round(elapsed_sync_wait)} 秒"
+                f"页面已确认该章节完成, 额外等待 {round(elapsed_sync_wait)} 秒"
             )
             return
         logging.info(
-            f"课程进度仍未同步完成, 已额外等待 {round(elapsed_sync_wait)} 秒"
+            f"页面尚未确认章节完成, 已额外等待 {round(elapsed_sync_wait)} 秒"
             f" (文案: {_compact_progress_text(current_text)}), 继续等待..."
         )
 
@@ -305,17 +298,26 @@ async def wait_until_learned(
     current_text = await read_section_progress_text(box)
     if is_learned(current_text):
         logging.info(
-            f"课程进度已同步到服务器, 额外等待 {max_wait} 秒（超时边界复核）"
+            f"页面已确认该章节完成, 额外等待 {max_wait} 秒（超时边界复核）"
         )
         return
 
-    logging.info(
-        f"超时: 已额外等待{max_wait}秒, 课程进度仍未同步"
-        f" (文案: {_compact_progress_text(current_text)})"
-    )
+    await _verify_section_before_timeout(box, page, current_text, max_wait=max_wait)
+
+
+async def _verify_section_before_timeout(box, page, current_text: str, *, max_wait: int) -> None:
+    from core.abort import SyncTimeoutError
+
+    server_state = await read_server_section_state(page, box)
+    if section_completed_on_server(server_state):
+        logging.info("服务器已确认该章节完成，页面文字尚未刷新，不记为同步超时")
+        return
+    progress_text = _compact_progress_text(current_text, limit=300)
+    logging.info("等待 %s 秒后仍未确认章节完成（页面: %s，服务器: %s）", max_wait, progress_text, server_state)
     raise SyncTimeoutError(
-        f"课程进度未能在 {max_wait} 秒内同步完成",
-        reason_text=f"课程进度同步超时（已额外等待 {max_wait} 秒），后续可重新加入课程链接",
+        f"课程完成状态未能在 {max_wait} 秒等待窗内确认",
+        reason_text=f"课程完成状态确认超时（已额外等待 {max_wait} 秒），后续可重新加入课程链接",
+        detail={"last_progress_text": progress_text, "server_progress": server_state},
     )
 
 

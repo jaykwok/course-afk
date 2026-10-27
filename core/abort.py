@@ -48,20 +48,22 @@ class LearningFlowError(Exception):
 
 
 class SyncTimeoutError(LearningFlowError):
-    """学完后进度长时间未同步到服务端。"""
+    """在等待窗内未能确认章节完成，不代表已证实服务端同步失败。"""
 
     def __init__(
         self,
-        message: str = "课程进度未能在等待时间内同步完成",
+        message: str = "课程完成状态未能在等待时间内确认",
         *,
         reason_text: str | None = None,
+        detail: dict | None = None,
     ):
         super().__init__(
             message,
             reason="sync_timeout",
             reason_text=reason_text
-            or "课程进度同步超时，后续可重新加入课程链接",
+            or "课程完成状态确认超时，后续可重新加入课程链接",
             keep_pending=True,
+            detail=detail,
         )
 
 

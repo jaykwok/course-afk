@@ -36,6 +36,7 @@ from core.learning.exam_bridge import get_course_exam_outcome, handle_examinatio
 from core.runtime import close_safely
 from core.learning.exam_api import queue_course_exams_from_api
 from core.learning.handlers import handle_document, handle_h5, handle_video
+from core.learning.progress import read_server_section_states, section_completed_on_server, section_id_from_box
 from core.queues.learning import record_learning_failure
 from core.learning.popups import handle_archive_continue_popup, handle_rating_popup
 
@@ -658,13 +659,15 @@ async def course_learning(page_detail, learn_item=None):
                     "section_index": index,
                     "section_number": index + 1,
                     "section_type": section_type,
+                    "section_name": box_text,
                     "track": track,
                 }
-                _record_structured_failure(
-                    failure_url,
-                    exc,
-                    detail=failure_detail,
-                )
+                if not isinstance(exc, SyncTimeoutError):
+                    _record_structured_failure(
+                        failure_url,
+                        exc,
+                        detail=failure_detail,
+                    )
                 chapter_failures.append(
                     {
                         **failure_detail,
@@ -683,6 +686,7 @@ async def course_learning(page_detail, learn_item=None):
                     "section_index": index,
                     "section_number": index + 1,
                     "section_type": section_type,
+                    "section_name": box_text,
                     "track": track,
                     "reason": "retryable_error",
                     "reason_text": str(exc)[:500],
@@ -693,11 +697,28 @@ async def course_learning(page_detail, learn_item=None):
             continue
         logging.info(f"课程第{index + 1}节({track_label})学习完毕")
 
+    server_states = None
     if has_failed_box:
-        raise PartialCourseFailure(
-            "部分章节学习失败",
-            detail={"chapter_failures": chapter_failures},
-        )
+        # 前面一节超时后，后续章节学习期间可能已经回写成功；只复核同步超时。
+        if any(failure["reason"] == "sync_timeout" for failure in chapter_failures):
+            server_states = await read_server_section_states(page_detail)
+            remaining_failures = []
+            for failure in chapter_failures:
+                if failure["reason"] == "sync_timeout":
+                    box = chapters[failure["section_index"]][1]
+                    section_id = await section_id_from_box(box)
+                    state = server_states.get(section_id) if server_states is not None else None
+                    if section_completed_on_server(state):
+                        logging.info("课程第%s节在后续学习期间已由服务器确认完成，清除本次超时标记", failure["section_number"])
+                        continue
+                    failure.setdefault("detail", {})["server_progress_at_course_end"] = state
+                remaining_failures.append(failure)
+            chapter_failures = remaining_failures
+        if chapter_failures:
+            raise PartialCourseFailure(
+                "部分章节学习失败",
+                detail={"chapter_failures": chapter_failures},
+            )
 
     if deferred:
         return False
@@ -705,6 +726,11 @@ async def course_learning(page_detail, learn_item=None):
         return True
     for _, box in chapters:
         if not is_learned(await box.locator(".section-item-wrapper").inner_text()):
+            if server_states is None:
+                server_states = await read_server_section_states(page_detail)
+            section_id = await section_id_from_box(box)
+            if server_states is not None and section_completed_on_server(server_states.get(section_id)):
+                continue
             raise SyncTimeoutError("课程章节处理结束，但完成状态仍未确认")
     return True
 
