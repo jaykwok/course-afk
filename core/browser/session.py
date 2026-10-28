@@ -3,10 +3,12 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 import asyncio
 import logging
+import re
 import sys
 
 from playwright.async_api import async_playwright
 
+from core.abort import BrowserCertificateError
 from core.config import (
     BROWSER_ARGS,
     BROWSER_CHANNEL,
@@ -369,6 +371,15 @@ def release_controller_page(context) -> None:
     _CONTEXT_WINDOW_CLOSED.pop(id(context), None)
 
 
+def raise_for_certificate_error(exc: Exception) -> None:
+    """将浏览器证书错误转换为可恢复错误，保持 TLS 校验启用。"""
+    if isinstance(exc, BrowserCertificateError):
+        raise exc
+    match = re.search(r"net::(ERR_CERT_[A-Z_]+)", str(exc))
+    if match:
+        raise BrowserCertificateError(match.group(1)) from exc
+
+
 @asynccontextmanager
 async def create_browser_context(
     cookies_path=COOKIES_FILE, headless=False, slow_mo=None, *, controller=True
@@ -394,6 +405,9 @@ async def create_browser_context(
                 controller_page = await _open_controller_page(context, headless=headless)
                 _remember_controller_page(context, controller_page)
         yield browser, context
+    except Exception as exc:
+        raise_for_certificate_error(exc)
+        raise
     finally:
         exception_info = sys.exc_info()
         if driver_job is None:

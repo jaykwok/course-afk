@@ -7,7 +7,7 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from core.abort import UserCancelRequested
+from core.abort import BrowserCertificateError, UserCancelRequested
 from core.exam import runner
 from core.exam.answers import ExamAiConfigurationError
 from core.exam.flow import ExamQuestionExtractionError
@@ -67,6 +67,15 @@ class TransactionFixture(unittest.IsolatedAsyncioTestCase):
 
 
 class TransactionTests(TransactionFixture):
+    async def test_certificate_failure_does_not_remove_or_manually_route_exam(self):
+        self.enqueue()
+        with patch.object(runner, "_run_course_ai_exam", new=AsyncMock(side_effect=RuntimeError("net::ERR_CERT_AUTHORITY_INVALID"))):
+            with self.assertRaises(BrowserCertificateError):
+                await runner.run_ai_exam_batch()
+        self.assertEqual(read_exam_urls(self.exam_file), [COURSE, PAPER])
+        self.assertEqual(self.manual(), [])
+        self.client.close.assert_awaited_once()
+
     async def test_verified_item_is_checkpointed_before_next_item(self):
         self.enqueue()
         async def second(*_args, **_kwargs):

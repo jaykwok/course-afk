@@ -129,15 +129,13 @@ class LearningHandlerTests(unittest.IsolatedAsyncioTestCase):
                 new=AsyncMock(return_value=0),
             ),
         ):
-            # 不得向外抛 SyncTimeoutError
+            # 未确认完成时保留超时结果。
             with self.assertRaises(SyncTimeoutError):
                 await handle_document(DocPage(), DocBox())
 
         mock_wait.assert_awaited_once()
         kwargs = mock_wait.await_args.kwargs
-        # 挂机上限在 DOCUMENT_WAIT 附近抖动（±30%），不再是固定 60 秒
-        self.assertGreaterEqual(kwargs.get("max_wait"), 42)
-        self.assertLessEqual(kwargs.get("max_wait"), 78)
+        self.assertEqual(kwargs.get("max_wait"), 60)
 
     async def test_handle_document_returns_early_when_synced(self):
         from core.learning.handlers import handle_document

@@ -116,10 +116,57 @@ class SyncConfirmationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("需再学", caught.exception.detail["last_progress_text"])
                 self.assertEqual(caught.exception.detail["server_progress"], server_state)
 
-    async def test_already_completed_dom_does_not_fetch_again(self):
-        with patch.object(common, "read_server_section_state", new=AsyncMock()) as verify:
+    async def test_completed_dom_uses_fallback_when_server_is_unavailable(self):
+        with patch.object(common, "read_server_section_state", new=AsyncMock(return_value=None)) as verify:
             await common.wait_until_learned(Box(text="必修 视频 15:00"), object(), max_wait=0, poll_interval=1)
-        verify.assert_not_awaited()
+        verify.assert_awaited_once()
+
+    async def test_server_completion_during_poll_exits_before_five_minute_cap(self):
+        now = [0.0]
+        async def wait(milliseconds):
+            now[0] += milliseconds / 1000
+        page = SimpleNamespace(wait_for_timeout=AsyncMock(side_effect=wait))
+        with patch.object(common, "monotonic", side_effect=lambda: now[0]), patch.object(common, "jitter", return_value=30), patch.object(common, "read_server_section_state", new=AsyncMock(side_effect=[state(status=1), state()])) as verify:
+            await common.wait_until_learned(Box(), page, max_wait=300, poll_interval=30)
+        self.assertEqual(now[0], 30)
+        self.assertEqual(verify.await_count, 2)
+
+    async def test_initial_server_completion_returns_without_sleep(self):
+        page = SimpleNamespace(wait_for_timeout=AsyncMock())
+        with patch.object(common, "read_server_section_state", new=AsyncMock(return_value=state())):
+            await common.wait_until_learned(Box(), page, max_wait=300, poll_interval=30)
+        page.wait_for_timeout.assert_not_awaited()
+
+    async def test_unfinished_server_state_overrides_stale_completed_dom(self):
+        now = [0.0]
+        async def wait(milliseconds):
+            now[0] += milliseconds / 1000
+        page = SimpleNamespace(wait_for_timeout=AsyncMock(side_effect=wait))
+        with patch.object(common, "monotonic", side_effect=lambda: now[0]), patch.object(common, "jitter", return_value=30), patch.object(common, "read_server_section_state", new=AsyncMock(return_value=state(status=1))) as verify:
+            with self.assertRaises(SyncTimeoutError):
+                await common.wait_until_learned(Box(text="必修 视频 15:00"), page, max_wait=300, poll_interval=30)
+        self.assertEqual(now[0], 300)
+        self.assertGreater(verify.await_count, 1)
+
+    async def test_api_latency_counts_towards_total_budget(self):
+        now = [0.0]
+        async def wait(milliseconds):
+            now[0] += milliseconds / 1000
+        async def verify(*args):
+            now[0] += 10
+            return state(status=1)
+        page = SimpleNamespace(wait_for_timeout=AsyncMock(side_effect=wait))
+        with patch.object(common, "monotonic", side_effect=lambda: now[0]), patch.object(common, "jitter", return_value=30), patch.object(common, "read_server_section_state", new=verify):
+            with self.assertRaises(SyncTimeoutError):
+                await common.wait_until_learned(Box(), page, max_wait=90, poll_interval=30)
+        self.assertEqual(sum(call.args[0] for call in page.wait_for_timeout.await_args_list), 60000)
+
+    async def test_slow_api_does_not_hold_confirmation_past_deadline(self):
+        async def slow(*args):
+            await asyncio.sleep(10)
+        with patch.object(common, "read_section_progress_text", new=AsyncMock(return_value="需再学 00:08")), patch.object(common, "read_server_section_state", new=slow):
+            with self.assertRaises(SyncTimeoutError):
+                await asyncio.wait_for(common.wait_until_learned(Box(), object(), max_wait=1, poll_interval=1), timeout=2)
 
 
 class CourseFinalRecheckTests(unittest.IsolatedAsyncioTestCase):

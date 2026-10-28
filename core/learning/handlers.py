@@ -15,7 +15,7 @@ from core.config import (
     VIDEO_WATCH_SLICE_MAX,
     VIDEO_WATCH_SLICE_MIN,
 )
-from core.humanize import jitter, next_slice, sample_between
+from core.humanize import next_slice, sample_between
 from core.learning.common import (
     build_video_timing_plan,
     get_course_url,
@@ -390,7 +390,7 @@ async def handle_video(box, page):
     timing_plan = build_video_timing_plan(section_text)
     logging.info(f"课程总时长: {timing_plan.total_time} 秒")
     logging.info(f"还需学习: {timing_plan.learning_wait_time} 秒")
-    logging.info(f"预计额外等待同步: {timing_plan.sync_wait_time} 秒")
+    logging.info(f"额外同步最多等待: {timing_plan.sync_wait_time} 秒（服务器确认完成即结束）")
     if timing_plan.sync_wait_time > 0:
         logging.info(
             f"同步确认轮询间隔: {timing_plan.sync_poll_interval} 秒"
@@ -456,9 +456,8 @@ async def handle_document(page, box):
         await page.wait_for_timeout(800)
         await content.wait_for(state="visible", timeout=15000)
 
-    # 每篇文档都恰好停留 60 秒是固定节拍；抖开上限，轮询间隔由
-    # wait_until_learned 内部再抖一次
-    max_wait = max(0, round(jitter(DOCUMENT_WAIT, ratio=0.3)))
+    # 与视频复用同一同步确认流程；文档仅传入较短的等待上限。
+    max_wait = max(0, int(DOCUMENT_WAIT))
     poll = max(1, int(DOCUMENT_POLL_INTERVAL)) if max_wait > 0 else 1
     logging.info(f"文档挂机最多 {max_wait} 秒（提前同步则提前离开）")
 

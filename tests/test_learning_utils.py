@@ -87,9 +87,10 @@ class LearningUtilityTests(unittest.TestCase):
             async def wait_for_timeout(self, _ms):
                 return None
 
-        asyncio.run(
-            wait_until_learned(Box(), FakePage(), max_wait=5, poll_interval=5)
-        )
+        with patch("core.learning.common.jitter", return_value=1):
+            asyncio.run(
+                wait_until_learned(Box(), FakePage(), max_wait=5, poll_interval=5)
+            )
         # 初始 + 循环内 + 超时边界复核
         self.assertGreaterEqual(reads["n"], 3)
 
@@ -168,30 +169,30 @@ class LearningUtilityTests(unittest.TestCase):
         plan = build_video_timing_plan("总时长 50:00 剩余 33:31")
 
         self.assertEqual(plan.learning_wait_time, 2040)
-        self.assertEqual(plan.sync_wait_time, 60)
+        self.assertEqual(plan.sync_wait_time, 300)
         self.assertEqual(plan.sync_poll_interval, VIDEO_SYNC_POLL_INTERVAL)
         self.assertFalse(hasattr(plan, "learning_fallback_interval"))
 
-    def test_build_video_timing_plan_applies_min_sync_wait_when_theory_is_zero(self):
-        from core.config import VIDEO_SYNC_MIN_WAIT, VIDEO_SYNC_POLL_INTERVAL
+    def test_build_video_timing_plan_uses_full_cap_at_five_minute_boundary(self):
+        from core.config import VIDEO_SYNC_POLL_INTERVAL
         from core.learning.common import build_video_timing_plan
 
-        # 理论同步窗为 0（剩余已对齐 5 分钟边界），仍给最短宽限
+        # 不再按五分钟边界推算剩余同步窗。
         plan = build_video_timing_plan("总时长 10:00 剩余 05:00")
 
         self.assertEqual(plan.learning_wait_time, 300)
-        self.assertEqual(plan.sync_wait_time, VIDEO_SYNC_MIN_WAIT)
+        self.assertEqual(plan.sync_wait_time, 300)
         self.assertEqual(plan.sync_poll_interval, VIDEO_SYNC_POLL_INTERVAL)
 
-    def test_build_video_timing_plan_keeps_min_sync_when_learning_is_zero(self):
-        from core.config import VIDEO_SYNC_MIN_WAIT, VIDEO_SYNC_POLL_INTERVAL
+    def test_build_video_timing_plan_uses_full_cap_when_learning_is_zero(self):
+        from core.config import VIDEO_SYNC_POLL_INTERVAL
         from core.learning.common import build_video_timing_plan
 
         # 解析得到 learning=0 时也不能 0 秒直接判超时（DOM 可能仍挂「需再学」）
         plan = build_video_timing_plan("总时长 00:00 剩余 00:00")
 
         self.assertEqual(plan.learning_wait_time, 0)
-        self.assertEqual(plan.sync_wait_time, VIDEO_SYNC_MIN_WAIT)
+        self.assertEqual(plan.sync_wait_time, 300)
         self.assertEqual(plan.sync_poll_interval, VIDEO_SYNC_POLL_INTERVAL)
 
     def test_document_wait_config_is_fixed_cap_without_sync_phase(self):
@@ -203,17 +204,17 @@ class LearningUtilityTests(unittest.TestCase):
         self.assertFalse(hasattr(config, "DOCUMENT_INITIAL_WAIT"))
         self.assertFalse(hasattr(config, "DOCUMENT_SYNC_EXTRA_WAIT"))
 
-    def test_calculate_video_sync_wait_time_uses_theoretical_sync_boundary(self):
+    def test_calculate_video_sync_wait_time_always_allows_five_minutes(self):
         from core.learning.common import calculate_video_sync_wait_time
 
-        self.assertEqual(calculate_video_sync_wait_time(240, 600), 60)
-        self.assertEqual(calculate_video_sync_wait_time(300, 600), 0)
+        self.assertEqual(calculate_video_sync_wait_time(240, 600), 300)
+        self.assertEqual(calculate_video_sync_wait_time(300, 600), 300)
 
-    def test_calculate_video_sync_wait_time_caps_wait_when_video_itself_is_shorter(self):
+    def test_short_video_sync_wait_also_has_five_minute_cap(self):
         from core.learning.common import calculate_video_sync_wait_time
 
-        self.assertEqual(calculate_video_sync_wait_time(240, 240), 0)
-        self.assertEqual(calculate_video_sync_wait_time(120, 180), 0)
+        self.assertEqual(calculate_video_sync_wait_time(240, 240), 300)
+        self.assertEqual(calculate_video_sync_wait_time(120, 180), 300)
 
     def test_timer_returns_immediately_when_duration_is_zero(self):
         from core.learning.common import timer

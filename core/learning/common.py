@@ -1,16 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 import re
 import time
+from time import monotonic
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
 from core.config import (
     VIDEO_SYNC_EXTRA_WAIT,
-    VIDEO_SYNC_MIN_WAIT,
     VIDEO_SYNC_POLL_INTERVAL,
     ZHIXUEYUN_COURSE_PREFIX,
     ZHIXUEYUN_EXAM_PREFIX,
@@ -245,73 +246,49 @@ async def wait_until_learned(
     poll_interval: int,
     on_tick: Callable[[], Awaitable[Any]] | None = None,
 ) -> None:
-    """轮询章节进度直至 is_learned 或超时抛 SyncTimeoutError。
+    """每轮只读查询服务器章节状态，确认完成立即返回；接口不可用时参考页面。
 
-    进入本函数前若已学完会立即返回。``max_wait`` / ``poll_interval`` 单位秒，
-    实际每轮间隔在 ``poll_interval`` 附近抖动（整段总时长仍不超过 max_wait），
-    避免「每 30 秒整点一次进度请求」这种一眼可见的固定节拍。
-    超时前再次读取页面并只读复核服务器章节状态，避免页面未刷新造成误报。
+    max_wait 包含查询和页面操作耗时，整个确认阶段不会因接口延迟无限顺延。
     """
-    max_wait = max(0, int(max_wait))
-    poll_interval = max(1, int(poll_interval)) if max_wait > 0 else 0
-
-    current_text = await read_section_progress_text(box)
-    if is_learned(current_text):
-        logging.info("页面已确认该章节完成")
-        return
-
-    if max_wait <= 0:
-        # 最后再读一次，避免刚写完 0 秒剩余时的瞬时 stale
-        await page.wait_for_timeout(500)
-        current_text = await read_section_progress_text(box)
-        if is_learned(current_text):
-            logging.info("页面已确认该章节完成")
-            return
-        await _verify_section_before_timeout(box, page, current_text, max_wait=0)
-        return
-
-    elapsed_sync_wait = 0.0
-    while elapsed_sync_wait < max_wait:
-        wait_seconds = min(
-            jitter(poll_interval, ratio=0.3, minimum=1),
-            max_wait - elapsed_sync_wait,
-        )
-        if wait_seconds <= 0.05:
-            break
-        await page.wait_for_timeout(int(wait_seconds * 1000))
-        elapsed_sync_wait += wait_seconds
-        if on_tick is not None:
-            await on_tick()
-        current_text = await read_section_progress_text(box)
-        if is_learned(current_text):
-            logging.info(
-                f"页面已确认该章节完成, 额外等待 {round(elapsed_sync_wait)} 秒"
-            )
-            return
-        logging.info(
-            f"页面尚未确认章节完成, 已额外等待 {round(elapsed_sync_wait)} 秒"
-            f" (文案: {_compact_progress_text(current_text)}), 继续等待..."
-        )
-
-    # 超时边界再确认一次：平台有时刚好在最后一次轮询后刷掉「需再学」
-    await page.wait_for_timeout(800)
-    current_text = await read_section_progress_text(box)
-    if is_learned(current_text):
-        logging.info(
-            f"页面已确认该章节完成, 额外等待 {max_wait} 秒（超时边界复核）"
-        )
-        return
-
-    await _verify_section_before_timeout(box, page, current_text, max_wait=max_wait)
-
-
-async def _verify_section_before_timeout(box, page, current_text: str, *, max_wait: int) -> None:
     from core.abort import SyncTimeoutError
 
-    server_state = await read_server_section_state(page, box)
-    if section_completed_on_server(server_state):
-        logging.info("服务器已确认该章节完成，页面文字尚未刷新，不记为同步超时")
-        return
+    max_wait = max(0, int(max_wait))
+    poll_interval = max(1, int(poll_interval))
+    started = monotonic()
+    deadline = started + max_wait
+    current_text = ""
+    server_state = None
+
+    async def poll() -> bool:
+        nonlocal current_text, server_state
+        while True:
+            current_text = await read_section_progress_text(box)
+            server_state = await read_server_section_state(page, box)
+            if section_completed_on_server(server_state):
+                logging.info("服务器已确认该章节完成，额外等待 %s 秒", round(monotonic() - started))
+                return True
+            if server_state is None and is_learned(current_text):
+                logging.info("服务器复核暂不可用，页面已确认该章节完成")
+                return True
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                return False
+            logging.info(
+                "章节尚未确认完成，已额外等待 %s 秒（页面: %s，服务器: %s）",
+                round(monotonic() - started), _compact_progress_text(current_text), server_state,
+            )
+            wait_seconds = min(jitter(poll_interval, ratio=0.3, minimum=poll_interval), remaining)
+            await page.wait_for_timeout(max(1, int(wait_seconds * 1000)))
+            if on_tick is not None:
+                await on_tick()
+
+    try:
+        # 零等待仍允许一次只读确认；正常等待窗则是严格的总耗时上限。
+        async with asyncio.timeout(max_wait or 15):
+            if await poll():
+                return
+    except TimeoutError:
+        pass
     progress_text = _compact_progress_text(current_text, limit=300)
     logging.info("等待 %s 秒后仍未确认章节完成（页面: %s，服务器: %s）", max_wait, progress_text, server_state)
     raise SyncTimeoutError(
@@ -356,26 +333,14 @@ def calculate_remaining_time(text) -> tuple[int, int]:
 
 
 def calculate_video_sync_wait_time(remaining_time: int, total_time: int) -> int:
-    """按服务端 5 分钟记录周期，推算学完后理论上还需等待多久。"""
-    remaining_time = max(0, math.ceil(remaining_time))
-    total_time = max(0, math.ceil(total_time))
-    if remaining_time <= 0:
-        return 0
-
-    theoretical_learning_time = math.ceil(remaining_time / VIDEO_SYNC_EXTRA_WAIT) * VIDEO_SYNC_EXTRA_WAIT
-    if theoretical_learning_time >= total_time:
-        return 0
-
-    return max(0, theoretical_learning_time - remaining_time)
+    """统一使用五分钟确认上限；保留时长入参兼容现有调用。"""
+    return VIDEO_SYNC_EXTRA_WAIT
 
 
 def build_video_timing_plan(text: str) -> VideoTimingPlan:
     """根据剩余学习时长生成视频学习与同步确认的时序计划。"""
     learning_wait_time, total_time = calculate_remaining_time(text)
     sync_wait_time = calculate_video_sync_wait_time(learning_wait_time, total_time)
-    # 始终给最短同步确认窗：learning=0 但 DOM 仍挂着「需再学/需再学 0:00」时
-    # 不能 0 秒直接判超时；已同步时 wait_until_learned 会立即返回。
-    sync_wait_time = max(sync_wait_time, VIDEO_SYNC_MIN_WAIT)
     return VideoTimingPlan(
         learning_wait_time=learning_wait_time,
         sync_wait_time=sync_wait_time,

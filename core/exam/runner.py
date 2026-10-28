@@ -14,6 +14,7 @@ from core.browser.session import (
     create_browser_context,
     get_page_context,
     is_target_closed_exception,
+    raise_for_certificate_error,
 )
 from core.config import (
     COURSE_EXAM_ATTEMPT_THRESHOLD,
@@ -274,10 +275,25 @@ async def _handle_attempt_limit_if_present(page, url: str) -> bool:
 
 
 async def _open_course_exam_tab(page) -> None:
-    await page.locator(".top").first.wait_for(timeout=5000)
-    await page.locator(".top").first.click()
-    await page.locator('dl.chapter-list-box[data-sectiontype="9"]').click()
-    await page.locator(".tab-container").wait_for()
+    from core.learning.flows import prepare_course_page
+
+    # 评分/归档提示会遮住章节；新版页面还可能默认打开 AI 伴学视图。
+    await prepare_course_page(page)
+    await page.locator("dl.chapter-list-box").first.wait_for(state="visible", timeout=15000)
+    await handle_rating_popup(page)
+    sections = page.locator('dl.chapter-list-box[data-sectiontype="9"]')
+    await sections.first.wait_for(state="visible", timeout=10000)
+    if await sections.count() != 1:
+        raise UserCancelRequested("课程包含多个考试章节，无法确认目标；请添加具体试卷链接后重试，原待办已保留")
+    target = sections.locator(".section-item-wrapper")
+    try:
+        await target.click(timeout=5000)
+    except PlaywrightTimeoutError:
+        # 弹窗可能在章节渲染后才出现；只处理课程评分，不操作答题/交卷弹窗。
+        if not await handle_rating_popup(page):
+            raise
+        await target.click(timeout=5000)
+    await page.locator(".tab-container").wait_for(state="visible", timeout=15000)
     await page.wait_for_timeout(1000)
 
 
@@ -438,6 +454,7 @@ async def run_ai_exam_batch(status_callback: StatusCallback | None = None, *, au
                 except ExamQuestionExtractionError as exc:
                     raise UserCancelRequested(f"{exc}；题目提取不完整，已保留考试待办") from exc
                 except Exception as exc:
+                    raise_for_certificate_error(exc)
                     if is_target_closed_exception(exc):
                         raise UserCancelRequested("考试页面已关闭，未确认完成的待办已保留") from None
                     logging.exception("AI 考试流程失败，转人工核对")

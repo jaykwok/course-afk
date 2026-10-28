@@ -10,6 +10,18 @@ class UserCancelRequested(Exception):
     """用户取消当前菜单操作，应返回主菜单。"""
 
 
+class BrowserCertificateError(Exception):
+    """浏览器无法验证站点证书；停止本轮操作并保留待办。"""
+
+    def __init__(self, code: str):
+        self.code = code
+        super().__init__(
+            f"学习平台的安全证书未通过浏览器验证（{code}）。"
+            "本轮操作已停止，未确认完成的待办仍保留。"
+            "请检查电脑日期时间、代理或 HTTPS 检查软件及证书信任，修复后重试。"
+        )
+
+
 class NoPermissionError(Exception):
     """资源不可访问（无权限/已删除/已下架等）。
 

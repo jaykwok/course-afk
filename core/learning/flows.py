@@ -509,8 +509,8 @@ async def _collect_chapter_boxes(page_detail) -> list[tuple[str, object]]:
     return ordered
 
 
-async def course_learning(page_detail, learn_item=None):
-    """课程内容学习：必修章节优先，再挂选修。"""
+async def prepare_course_page(page_detail) -> None:
+    """挂课与课程内考试共用入口：先处理评分，再准备课程学习视图。"""
     await page_detail.wait_for_load_state("load")
 
     # 评分弹窗会遮住课程页上的其它控件，必须作为页面加载后的首项交互处理。
@@ -527,6 +527,11 @@ async def course_learning(page_detail, learn_item=None):
     # 新版详情页可能默认落在 AI 伴学；必须先回到原课程学习视图，
     # 后续章节文案才包含剩余时长，且播放进度会进入原同步链路。
     await _ensure_course_learning_view(page_detail)
+
+
+async def course_learning(page_detail, learn_item=None):
+    """课程内容学习：必修章节优先，再挂选修。"""
+    await prepare_course_page(page_detail)
 
     if await _is_course_completed(page_detail):
         try:

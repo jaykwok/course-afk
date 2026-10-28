@@ -60,7 +60,7 @@ MANUAL_SELECTION_PROMPTS = [
 
 def main() -> int:
     _check_python_version()
-    from core.abort import UserAbortRequested, UserCancelRequested
+    from core.abort import BrowserCertificateError, UserAbortRequested, UserCancelRequested
     from core.config import setup_logging
     from core.config import (
         EXAM_URLS_FILE,
@@ -113,6 +113,10 @@ def main() -> int:
             except (UserCancelRequested, asyncio.CancelledError) as exc:
                 # 浏览器关闭 / TUI Ctrl+C 等取消：剩余链接已保存，返回主菜单
                 ui.show_warning(str(exc) or "已取消当前操作，返回主菜单")
+                continue
+            except BrowserCertificateError as exc:
+                ui.show_error(str(exc))
+                ui.pause()
                 continue
     except UserAbortRequested as exc:
         ui.show_warning(str(exc))
