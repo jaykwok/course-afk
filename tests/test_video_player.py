@@ -66,6 +66,9 @@ class _Page:
 
 
 class CourseSectionActivationTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.enterContext(patch("core.learning.flows.ensure_course_started", new=AsyncMock(return_value={})))
+
     async def test_active_class_without_focus_is_not_accepted(self):
         from core.learning.common import is_course_section_focused
 
@@ -96,6 +99,9 @@ class CourseSectionActivationTests(unittest.IsolatedAsyncioTestCase):
 
 
 class VideoPlayerReadinessTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.enterContext(patch("core.learning.handlers.ensure_course_started", new=AsyncMock(return_value={})))
+
     async def test_ready_player_is_tied_to_focused_target(self):
         from core.learning.handlers import _wait_for_video_player_ready
 

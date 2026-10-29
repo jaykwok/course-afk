@@ -140,6 +140,18 @@ class VideoPlayerNotReadyError(LearningFlowError):
         )
 
 
+class CoursePlaybackNotStartedError(LearningFlowError):
+    """目标章节已选中，但开始学习遮罩或暂停状态未能解除。"""
+
+    def __init__(self, *, detail: dict | None = None):
+        super().__init__(
+            "课程尚未成功开始学习",
+            reason="playback_not_started",
+            reason_text="课程开始按钮/暂停状态未解除，已保留链接供重试",
+            detail=detail,
+        )
+
+
 class ConcurrentStudyLimitError(LearningFlowError):
     """平台限制同时打开过多课程详情页。"""
 

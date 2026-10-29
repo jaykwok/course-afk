@@ -4,6 +4,9 @@ from unittest.mock import AsyncMock, patch
 
 
 class LearningUtilityTests(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(patch('core.learning.common.ensure_course_started', new=AsyncMock(return_value={})))
+
     def test_is_learned_detects_pending_text(self):
         from core.learning.common import is_learned
 

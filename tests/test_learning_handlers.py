@@ -45,6 +45,9 @@ class _FakePage:
 
 
 class LearningHandlerTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.started = self.enterContext(patch("core.learning.handlers.ensure_course_started", new=AsyncMock(return_value={})))
+
     async def test_handle_video_cleans_up_background_tasks_when_page_closes(self):
         from core.learning.handlers import handle_video
 
@@ -153,6 +156,8 @@ class LearningHandlerTests(unittest.IsolatedAsyncioTestCase):
             await handle_document(_FakePage(RuntimeError), _FakeBox())
 
         mock_wait.assert_awaited_once()
+        # 恢复学习已整合到章节激活和通用同步巡检，文档处理器只等待完成。
+        self.started.assert_not_awaited()
 
 
 def _video_state(**overrides):
@@ -188,6 +193,9 @@ class _SleepingPage:
 
 
 class VideoWatchLoopTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.resume = self.enterContext(patch('core.learning.handlers.ensure_course_started', new=AsyncMock(return_value={})))
+
     async def test_watch_leaves_early_when_section_becomes_learned(self):
         from core.learning import handlers
 
@@ -263,7 +271,7 @@ class VideoWatchLoopTests(unittest.IsolatedAsyncioTestCase):
         # 播放位置不动 → 按落后量顺延，封顶 0.5 秒后收工；期间尝试恢复播放
         self.assertGreater(elapsed, 1.0)
         self.assertLess(elapsed, 4.0)
-        self.assertGreater(page.resume_calls, 0)
+        self.assertGreater(self.resume.await_count, 0)
 
     async def test_watch_does_not_extend_when_playback_keeps_up(self):
         from core.learning import handlers

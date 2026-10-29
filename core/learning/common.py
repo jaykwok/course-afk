@@ -18,6 +18,7 @@ from core.config import (
 )
 from core.humanize import jitter
 from core.learning.progress import read_server_section_state, section_completed_on_server
+from core.learning.playback import ensure_course_started
 
 
 @dataclass(frozen=True)
@@ -270,6 +271,11 @@ async def wait_until_learned(
             if server_state is None and is_learned(current_text):
                 logging.info("服务器复核暂不可用，页面已确认该章节完成")
                 return True
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                return False
+            # 所有可计时章节共用暂停巡检，避免文档与视频各自漏处理开始遮罩。
+            await ensure_course_started(page, box)
             remaining = deadline - monotonic()
             if remaining <= 0:
                 return False

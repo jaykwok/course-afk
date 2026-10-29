@@ -101,11 +101,15 @@ class ServerProgressTests(unittest.IsolatedAsyncioTestCase):
 
 
 class SyncConfirmationTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.started = self.enterContext(patch.object(common, 'ensure_course_started', new=AsyncMock(return_value={})))
+
     async def test_stale_dom_does_not_timeout_when_server_confirms(self):
         page = SimpleNamespace(wait_for_timeout=AsyncMock())
         with patch.object(common, "read_server_section_state", new=AsyncMock(return_value=state())) as verify:
             await common.wait_until_learned(Box(), page, max_wait=0, poll_interval=1)
         verify.assert_awaited_once()
+        self.started.assert_not_awaited()
 
     async def test_unknown_or_unfinished_server_state_keeps_failure_diagnostics(self):
         page = SimpleNamespace(wait_for_timeout=AsyncMock())
@@ -130,6 +134,7 @@ class SyncConfirmationTests(unittest.IsolatedAsyncioTestCase):
             await common.wait_until_learned(Box(), page, max_wait=300, poll_interval=30)
         self.assertEqual(now[0], 30)
         self.assertEqual(verify.await_count, 2)
+        self.started.assert_awaited_once()
 
     async def test_initial_server_completion_returns_without_sleep(self):
         page = SimpleNamespace(wait_for_timeout=AsyncMock())

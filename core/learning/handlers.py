@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 
-from core.abort import VideoPlayerNotReadyError
+from core.abort import CoursePlaybackNotStartedError, VideoPlayerNotReadyError
 from core.browser.session import is_target_closed_exception
 from core.config import (
     DOCUMENT_POLL_INTERVAL,
@@ -27,6 +27,7 @@ from core.learning.common import (
 )
 from core.queues.learning import record_learning_failure
 from core.learning.popups import check_and_handle_rating_popup, check_rating_popup_periodically
+from core.learning.playback import ensure_course_started, read_course_playback_state
 
 
 async def _cleanup_background_tasks(*tasks) -> None:
@@ -165,13 +166,6 @@ async def _ensure_video_player_ready(
 
     for attempt in range(1, attempts + 1):
         try:
-            resume_buttons = await page.locator(".register-mask-layer").all()
-            if resume_buttons:
-                try:
-                    await resume_buttons[0].click(timeout=3000)
-                except Exception as exc:
-                    logging.debug(f"点击续播遮罩失败 (第{attempt}次): {exc}")
-
             await check_and_handle_rating_popup(page)
             # 关顶层遮罩，避免控件在 DOM 中但不可见
             try:
@@ -189,7 +183,10 @@ async def _ensure_video_player_ready(
             if bool(last_state.get("ready")) and bool(
                 last_state.get("target_focused")
             ):
+                await ensure_course_started(page, box)
                 return
+        except CoursePlaybackNotStartedError:
+            raise
         except Exception as exc:
             if is_target_closed_exception(exc):
                 raise
@@ -225,21 +222,6 @@ async def _ensure_video_player_ready(
     raise VideoPlayerNotReadyError(detail=detail)
 
 
-_RESUME_VIDEO_SCRIPT = r"""
-() => {
-  const video = Array.from(document.querySelectorAll("video")).find(
-    (item) =>
-      Number(item.readyState || 0) >= 1 &&
-      Number.isFinite(item.duration) &&
-      item.duration > 0
-  );
-  if (!video || video.ended || !video.paused) return false;
-  const played = video.play();
-  if (played && typeof played.catch === "function") played.catch(() => {});
-  return true;
-}
-"""
-
 # 播放位置与墙钟的允许偏差（秒）：小于此值视为正常抖动，不顺延
 _VIDEO_LAG_TOLERANCE = 3.0
 # 距片尾多近算「已播完」（秒）
@@ -262,17 +244,6 @@ def _as_seconds(value: object) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     return float(value)
-
-
-async def _resume_stalled_video(page) -> bool:
-    """视频被暂停时点回播放；已播完或本就在播则不动。"""
-    try:
-        return bool(await page.evaluate(_RESUME_VIDEO_SCRIPT))
-    except Exception as exc:
-        if is_target_closed_exception(exc):
-            raise
-        logging.debug(f"尝试恢复播放失败: {exc}")
-        return False
 
 
 async def _watch_video_playback(page, box, *, watch_seconds: int) -> None:
@@ -350,8 +321,8 @@ async def _watch_video_playback(page, box, *, watch_seconds: int) -> None:
         if paused:
             # 互动练习等弹窗会暂停播放：先处理弹窗再点回播放
             await check_and_handle_rating_popup(page)
-            if await _resume_stalled_video(page):
-                logging.info("检测到视频暂停, 已恢复播放")
+            await ensure_course_started(page, box)
+            logging.info("检测到视频暂停，已通过课程统一恢复流程确认状态")
 
         if advanced is None:
             lag = slice_seconds if paused else 0.0
@@ -471,20 +442,9 @@ async def handle_document(page, box):
             poll_interval=poll,
         )
         logging.info("文档进度已同步，离开本节")
-    except SyncTimeoutError:
-        # 到点走人：广目类文档可能长期卡在需学 00:05，不阻断后续章节
-        try:
-            text = await box.locator(".section-item-wrapper").inner_text(timeout=3000)
-        except Exception:
-            text = ""
-        if is_learned(text):
-            logging.info("文档进度已同步，离开本节")
-        else:
-            logging.info(
-                f"文档挂机 {max_wait} 秒结束，进度仍未同步，继续下一节"
-                f" (文案: {(text or '').replace(chr(10), ' ')[:80]})"
-            )
-            raise
+    except SyncTimeoutError as exc:
+        exc.detail['playback_state'] = await read_course_playback_state(page, box)
+        raise
 
 
 async def handle_h5(page, learn_item=None):

@@ -13,6 +13,7 @@ from core.abort import (
     NoPermissionError,
     PartialCourseFailure,
     SectionActivationError,
+    CoursePlaybackNotStartedError,
 )
 from core.browser.session import is_page_browser_connected, is_target_closed_exception
 from core.browser.course_links import resolve_course_page_url
@@ -37,6 +38,7 @@ from core.runtime import close_safely
 from core.learning.exam_api import queue_course_exams_from_api
 from core.learning.handlers import handle_document, handle_h5, handle_video
 from core.learning.progress import read_server_section_states, section_completed_on_server, section_id_from_box
+from core.learning.playback import ensure_course_started
 from core.queues.learning import record_learning_failure
 from core.learning.popups import handle_archive_continue_popup, handle_rating_popup
 
@@ -125,6 +127,8 @@ async def _activate_course_section(page_detail, box) -> None:
                 box,
                 timeout_ms=5000,
             ):
+                if await box.get_attribute('data-sectiontype') in {'1', '2', '3', '5', '6'}:
+                    await ensure_course_started(page_detail, box)
                 return
             last_error = RuntimeError(
                 "目标章节点击后未进入 focus 状态"
@@ -132,6 +136,8 @@ async def _activate_course_section(page_detail, box) -> None:
             logging.info(
                 f"章节切换未生效 (第{attempt}/3次)，重新点击同一目标"
             )
+        except CoursePlaybackNotStartedError:
+            raise
         except (WafBlockError, UserCancelRequested, UserAbortRequested):
             raise
         except Exception as exc:
