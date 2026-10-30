@@ -22,13 +22,12 @@ if str(ROOT) not in sys.path:
 from core.browser.session import create_browser_context
 from core.config import COOKIES_FILE, PROJECT_ROOT
 from core.exam.runner import (
-    _get_paper_attempt_limit_message,
     _has_authorization_cookie,
     _has_ready_answer_question,
-    _locate_exam_button,
     _wait_for_target_route_after_auth,
 )
 from core.file_ops import load_cookies, normalize_url
+from core.exam.entry_api import read_exam_entry, validate_exam_entry
 
 CAPTURE_DIR = PROJECT_ROOT / "tools" / "capture" / "exam_page"
 RESULT_FILE = CAPTURE_DIR / "latest.json"
@@ -69,17 +68,6 @@ async def _inspect_selector(page, selector: str) -> dict[str, object]:
     }
 
 
-async def _classify_page_state(page) -> tuple[str, str | None]:
-    attempt_limit_message = await _get_paper_attempt_limit_message(page)
-    if attempt_limit_message:
-        return "attempt_limit", attempt_limit_message
-    if await _has_ready_answer_question(page):
-        return "answer_page", None
-    if await _locate_exam_button(page) is not None:
-        return "exam_entry", None
-    return "unknown", None
-
-
 def _save_classified_result(
     result_data: dict[str, object],
     *,
@@ -105,7 +93,7 @@ def _save_classified_result(
     return result_file, html_file
 
 
-async def main(target_url: Optional[str] = None):
+async def main(target_url: Optional[str] = None, *, validate_entry: bool = False):
     target_url = (target_url or input("请输入考试页面 URL：")).strip()
     if not target_url:
         raise ValueError("未提供考试页面 URL")
@@ -125,7 +113,11 @@ async def main(target_url: Optional[str] = None):
             else None,
         )
         await page.goto(target_url, wait_until="load")
-        await _wait_for_target_route_after_auth(page, target_url, timeout_ms=120000)
+        ready = await _wait_for_target_route_after_auth(
+            page, target_url, timeout_ms=120000, require_entry_dom=False,
+        )
+        if not ready:
+            raise RuntimeError("考试入口认证超时，已停止探针")
 
         final_url = page.url
         if normalize_url(final_url) != normalize_url(target_url):
@@ -134,6 +126,11 @@ async def main(target_url: Optional[str] = None):
                 "已停止解析，且未保存当前页面"
             )
         context_cookies = await context.cookies()
+        entry = await read_exam_entry(page, target_url)
+        validation_passed = None
+        if validate_entry:
+            await validate_exam_entry(page, entry)
+            validation_passed = True
 
         selector_results = []
         for selector in SELECTORS:
@@ -147,7 +144,11 @@ async def main(target_url: Optional[str] = None):
         page_title = await page.title()
         body_text = (await page.locator("body").inner_text()).strip()
         html = await page.content()
-        page_state, attempt_limit_message = await _classify_page_state(page)
+        page_state = (
+            "answer_page" if await _has_ready_answer_question(page)
+            else "entry_blocked" if entry.blocked_reason else "exam_entry"
+        )
+        attempt_limit_message = entry.blocked_message if entry.blocked_reason == "attempt_limit" else None
         captured_at = datetime.now()
         result_data = {
             "page_state": page_state,
@@ -157,6 +158,18 @@ async def main(target_url: Optional[str] = None):
             "title": page_title,
             "authorization_cookie_present": await _has_authorization_cookie(page),
             "attempt_limit_message": attempt_limit_message,
+            "entry_api": {
+                "exam_id": entry.exam_id,
+                "answer_url": entry.answer_url,
+                "can_resume": entry.can_resume,
+                "blocked_reason": entry.blocked_reason,
+                "blocked_message": entry.blocked_message,
+                "allowed_attempts": entry.state.allowed_attempts,
+                "used_attempts": entry.state.used_attempts,
+                "remaining_attempts": entry.state.remaining_attempts,
+                "outcome": entry.state.outcome,
+                "validation_passed": validation_passed,
+            },
             "probed_at": captured_at.astimezone().isoformat(),
             "cookies_file": str(COOKIES_FILE),
             "cookies_loaded": len(cookies) > 0,
@@ -180,6 +193,8 @@ async def main(target_url: Optional[str] = None):
         )
 
     print(f"\n页面状态: {page_state}")
+    print(f"接口解析的答题地址: {entry.answer_url}")
+    print(f"接口续考状态: {entry.can_resume}")
     print(f"探针结果已保存到 {result_file}")
     print(f"页面 HTML 已保存到 {html_file}")
 
@@ -189,5 +204,6 @@ if __name__ == "__main__":
     protect_application_children()
     parser = argparse.ArgumentParser(description="探测知学云考试页面 DOM 与授权跳转")
     parser.add_argument("url", nargs="?", help="直达考试页面 URL")
+    parser.add_argument("--validate-entry", action="store_true", help="额外执行平台资格校验，不打开答题页")
     args = parser.parse_args()
-    asyncio.run(main(args.url))
+    asyncio.run(main(args.url, validate_entry=args.validate_entry))

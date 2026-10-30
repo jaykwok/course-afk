@@ -1413,6 +1413,13 @@ class ExamAttemptRoutingTests(unittest.TestCase):
             "exam",
         )
         self.assertEqual(
+            classify_exam_entry_url(
+                "https://kc.zhixueyun.com/#/exam/exam/exam-detail/"
+                "9ace2356-f9a1-4ad1-a0c2-5c4a1d4e6a92?from=manual"
+            ),
+            "exam",
+        )
+        self.assertEqual(
             classify_exam_entry_url("https://example.com/?next=exam/course"),
             "unknown",
         )
@@ -1651,6 +1658,23 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(answer_page, page)
         self.assertEqual(page.popup_timeout, 100)
         button.click.assert_awaited_once_with()
+
+    async def test_api_auth_wait_does_not_require_button_or_question_dom(self):
+        from core.exam import runner as exam_runner
+
+        page = AsyncMock()
+        page.url = (
+            "https://kc.zhixueyun.com/#/exam/exam/exam-detail/"
+            "9ace2356-f9a1-4ad1-a0c2-5c4a1d4e6a92"
+        )
+        with (
+            patch.object(exam_runner, "_has_authorization_cookie", new=AsyncMock(return_value=True)),
+            patch.object(exam_runner, "_is_paper_entry_ready", new=AsyncMock()) as dom_ready,
+        ):
+            self.assertTrue(await exam_runner._wait_for_target_route_after_auth(
+                page, page.url, require_entry_dom=False,
+            ))
+        dom_ready.assert_not_awaited()
 
 
 

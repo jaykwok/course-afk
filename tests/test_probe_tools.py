@@ -5,6 +5,44 @@ from unittest.mock import AsyncMock, Mock, patch
 
 
 class ExamPageProbeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_probe_resolves_api_entry_without_button_matches(self):
+        from tools import probe_exam_page
+        from core.exam.entry_api import parse_exam_entry
+        from tests.test_exam_entry_api import DETAIL_URL, EXAM_ID, payload
+
+        entry = parse_exam_entry(payload(), EXAM_ID)
+        for validate_entry in (False, True):
+            with self.subTest(validate_entry=validate_entry):
+                page = AsyncMock()
+                page.url = DETAIL_URL
+                page.on = Mock()
+                page.title.return_value = "考试详情"
+                page.content.return_value = "<html><body></body></html>"
+                body = AsyncMock()
+                body.inner_text.return_value = "考试详情"
+                page.locator = Mock(return_value=body)
+                context = AsyncMock()
+                context.new_page.return_value = page
+                context.cookies.return_value = []
+                manager = AsyncMock()
+                manager.__aenter__.return_value = (None, context)
+                with (
+                    patch.object(probe_exam_page, "load_cookies", return_value=[]),
+                    patch.object(probe_exam_page, "create_browser_context", return_value=manager),
+                    patch.object(probe_exam_page, "_wait_for_target_route_after_auth", new=AsyncMock(return_value=True)),
+                    patch.object(probe_exam_page, "read_exam_entry", new=AsyncMock(return_value=entry)),
+                    patch.object(probe_exam_page, "validate_exam_entry", new=AsyncMock()) as validate,
+                    patch.object(probe_exam_page, "_inspect_selector", new=AsyncMock(return_value={"count": 0, "visible_count": 0})),
+                    patch.object(probe_exam_page, "_has_ready_answer_question", new=AsyncMock(return_value=False)),
+                    patch.object(probe_exam_page, "_has_authorization_cookie", new=AsyncMock(return_value=True)),
+                    patch.object(probe_exam_page, "_save_classified_result", return_value=(Path("result.json"), Path("page.html"))) as save,
+                ):
+                    await probe_exam_page.main(DETAIL_URL, validate_entry=validate_entry)
+                self.assertEqual(save.call_args.kwargs["page_state"], "exam_entry")
+                self.assertEqual(save.call_args.args[0]["entry_api"]["answer_url"], entry.answer_url)
+                self.assertEqual(validate.await_count, int(validate_entry))
+                page.goto.assert_awaited_once_with(DETAIL_URL, wait_until="load")
+
     async def test_login_redirect_failure_is_not_parsed_or_saved(self):
         from tools import probe_exam_page
 
@@ -81,6 +119,7 @@ class ExamPageProbeTests(unittest.IsolatedAsyncioTestCase):
                 browser_context.context.page,
                 "https://kc.zhixueyun.com/#/exam/exam/answer-paper/test",
                 timeout_ms=120000,
+                require_entry_dom=False,
             )
             browser_context.context.page.locator.assert_not_called()
             self.assertFalse(result_file.exists())

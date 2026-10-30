@@ -514,6 +514,29 @@ class ManualSelectionWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(learning_urls, [])
         self.assertEqual(exam_urls, [exam_url])
 
+    async def test_run_manual_course_selection_queues_exam_detail_without_browser(self):
+        url = (
+            "https://kc.zhixueyun.com/#/exam/exam/exam-detail/"
+            "9ace2356-f9a1-4ad1-a0c2-5c4a1d4e6a92"
+        )
+        with TemporaryDirectory() as tmp:
+            learning_file = Path(tmp) / "learning.json"
+            exam_file = Path(tmp) / "exam.json"
+            with (
+                mock.patch.object(workflows, "LEARNING_URLS_FILE", learning_file),
+                mock.patch.object(workflows, "EXAM_URLS_FILE", exam_file),
+                mock.patch.object(workflows, "create_browser_context") as create_browser,
+            ):
+                result = await workflows.run_manual_course_selection(
+                    f"考试链接：{url}\n{url}?from=manual"
+                )
+            create_browser.assert_not_called()
+            self.assertEqual(_read_exam_queue_urls(exam_file), [url])
+            self.assertFalse(learning_file.exists())
+        self.assertEqual(result["direct_exam_count"], 1)
+        self.assertEqual(result["exam_total"], 1)
+        self.assertEqual(result["entry_url_count"], 0)
+
     async def test_run_manual_course_selection_expands_direct_subject_url(self):
         subject_url = (
             "https://kc.zhixueyun.com/#/study/subject/detail/"

@@ -11,6 +11,7 @@ from core.abort import BrowserCertificateError, UserCancelRequested
 from core.exam import runner
 from core.exam.answers import ExamAiConfigurationError
 from core.exam.flow import ExamQuestionExtractionError
+from core.exam.entry_api import ExamEntry, ExamEntryUnavailable
 from core.learning.exam_api import CourseExamState
 from core.queues.exam import append_exam_urls, read_exam_urls, remove_exam_url, has_ai_failed_model_config, record_ai_failed_model_config
 from core.queues.history import pending_submission, record_submission_intent
@@ -67,6 +68,29 @@ class TransactionFixture(unittest.IsolatedAsyncioTestCase):
 
 
 class TransactionTests(TransactionFixture):
+    async def test_exam_detail_entry_uses_paper_runner_and_preserves_url(self):
+        url = (
+            "https://kc.zhixueyun.com/#/exam/exam/exam-detail/"
+            "9ace2356-f9a1-4ad1-a0c2-5c4a1d4e6a92"
+        )
+        self.enqueue((url,))
+        with patch.object(runner, "_run_paper_ai_exam", new=AsyncMock(return_value=True)) as exam:
+            await runner.run_ai_exam_batch()
+        exam.assert_awaited_once_with(self.context.pages[0], url, self.client, "test", auto_submit=False)
+        self.context.pages[0].goto.assert_awaited_once_with(url, timeout=30000)
+        self.assertEqual(read_exam_urls(self.exam_file), [])
+        self.assertEqual(self.manual(), [])
+
+    async def test_paper_state_extracts_exam_id_from_both_entry_routes(self):
+        exam_id = "9ace2356-f9a1-4ad1-a0c2-5c4a1d4e6a92"
+        page = object()
+        for route in ("answer-paper", "exam-detail"):
+            with self.subTest(route=route):
+                url = f"https://kc.zhixueyun.com/#/exam/exam/{route}/{exam_id}?from=manual"
+                with patch.object(runner, "read_exam_state", new=AsyncMock(return_value=NEW)) as read_state:
+                    self.assertIs(await runner._paper_state(page, url), NEW)
+                read_state.assert_awaited_once_with(page, exam_id)
+
     async def test_certificate_failure_does_not_remove_or_manually_route_exam(self):
         self.enqueue()
         with patch.object(runner, "_run_course_ai_exam", new=AsyncMock(side_effect=RuntimeError("net::ERR_CERT_AUTHORITY_INVALID"))):
@@ -193,22 +217,23 @@ class PaperReconciliationTests(TransactionFixture):
                 self.answer.assert_awaited_once()
                 self.assertIs(self.answer.call_args.kwargs["auto_submit"], expected)
 
-    async def test_old_unverified_history_never_clicks_start_new_exam(self):
+    async def test_old_unverified_history_without_api_resume_never_opens_exam(self):
         record_submission_intent(PAPER, MODEL, self.exam_file)
-        button = SimpleNamespace(inner_text=AsyncMock(return_value="开始考试 剩余10次"))
-        with patch.object(runner, "_has_ready_answer_question", new=AsyncMock(return_value=False)), patch.object(runner, "_locate_exam_button", new=AsyncMock(return_value=button)), patch.object(runner, "_open_paper_answer_page", new=AsyncMock()) as open_paper:
+        entry = ExamEntry(PAPER.rsplit("/", 1)[-1], PAPER, NEW, False)
+        with patch.object(runner, "_has_ready_answer_question", new=AsyncMock(return_value=False)), patch.object(runner, "read_exam_entry", new=AsyncMock(return_value=entry)), patch.object(runner, "validate_exam_entry", new=AsyncMock()) as validate:
             await self.run_paper()
-        open_paper.assert_not_awaited()
+        validate.assert_not_awaited()
         self.answer.assert_not_awaited()
         self.assertIsNotNone(self.pending())
 
-    async def test_old_unverified_history_can_use_continue_exam_button(self):
+    async def test_old_unverified_history_can_resume_using_api_record(self):
         record_submission_intent(PAPER, MODEL, self.exam_file)
-        answer_page = object()
-        button = SimpleNamespace(inner_text=AsyncMock(return_value="继续考试 剩余10次"))
-        with patch.object(runner, "_has_ready_answer_question", new=AsyncMock(return_value=False)), patch.object(runner, "_locate_exam_button", new=AsyncMock(return_value=button)), patch.object(runner, "_open_paper_answer_page", new=AsyncMock(return_value=answer_page)) as open_paper, patch.object(runner, "_close_page_safely", new=AsyncMock()):
-            await self.run_paper(after=replace(NEW, passed=True))
-        open_paper.assert_awaited_once()
+        page = AsyncMock()
+        entry = ExamEntry(PAPER.rsplit("/", 1)[-1], PAPER, NEW, True)
+        with patch.object(runner, "_has_ready_answer_question", new=AsyncMock(return_value=False)), patch.object(runner, "read_exam_entry", new=AsyncMock(return_value=entry)), patch.object(runner, "validate_exam_entry", new=AsyncMock()) as validate, patch.object(runner, "_paper_state", new=AsyncMock(return_value=replace(NEW, passed=True))):
+            await runner._run_paper_ai_exam(page, PAPER, self.client, "test")
+        validate.assert_awaited_once_with(page, entry)
+        page.goto.assert_awaited_once_with(PAPER, timeout=30000)
         self.answer.assert_awaited_once()
         self.assertFalse(self.answer.call_args.kwargs["auto_submit"])
         self.assertTrue(self.answer.call_args.kwargs["resume"])
@@ -276,6 +301,58 @@ class PaperReconciliationTests(TransactionFixture):
         with patch.object(runner, "_has_authorization_cookie", new=AsyncMock(return_value=True)), patch.object(runner, "_is_paper_entry_ready", new=slow):
             result = await asyncio.wait_for(runner._wait_for_target_route_after_auth(page, PAPER, timeout_ms=20), timeout=0.5)
         self.assertFalse(result)
+
+
+class PaperApiEntryTests(TransactionFixture):
+    def setUp(self):
+        super().setUp()
+        self.page = AsyncMock()
+        self.url = PAPER.replace("/answer-paper/", "/exam-detail/")
+        self.entry = ExamEntry(PAPER.rsplit("/", 1)[-1], PAPER, NEW, False)
+        self.stack.enter_context(patch.object(runner, "_raise_if_login_required", new=AsyncMock()))
+        self.stack.enter_context(patch.object(runner, "_has_ready_answer_question", new=AsyncMock(return_value=False)))
+        self.read_entry = self.stack.enter_context(patch.object(runner, "read_exam_entry", new=AsyncMock(return_value=self.entry)))
+        self.validate = self.stack.enter_context(patch.object(runner, "validate_exam_entry", new=AsyncMock()))
+        self.stack.enter_context(patch.object(runner, "_paper_state", new=AsyncMock(return_value=replace(NEW, passed=True))))
+        self.answer = self.stack.enter_context(patch.object(runner, "ai_exam", new=AsyncMock()))
+        self.button = self.stack.enter_context(patch.object(runner, "_locate_exam_button", new=AsyncMock(side_effect=AssertionError("API entry must not inspect buttons"))))
+
+    async def test_api_entry_records_intent_before_navigation_and_ignores_buttons(self):
+        async def navigate(*_args, **_kwargs):
+            self.assertIsNotNone(self.pending(self.url))
+        self.page.goto.side_effect = navigate
+        await runner._run_paper_ai_exam(self.page, self.url, self.client, "test", auto_submit=True)
+        self.read_entry.assert_awaited_once_with(self.page, self.url)
+        self.validate.assert_awaited_once_with(self.page, self.entry)
+        self.page.goto.assert_awaited_once_with(PAPER, timeout=30000)
+        self.answer.assert_awaited_once()
+        self.assertFalse(self.answer.call_args.kwargs["resume"])
+        self.button.assert_not_awaited()
+        self.page.locator.assert_not_called()
+        self.assertIsNone(self.pending(self.url))
+
+    async def test_api_resume_without_local_history_preserves_answers_and_manual_submission(self):
+        self.read_entry.return_value = replace(self.entry, can_resume=True)
+        await runner._run_paper_ai_exam(self.page, self.url, self.client, "test", auto_submit=True)
+        self.assertTrue(self.answer.call_args.kwargs["resume"])
+        self.assertFalse(self.answer.call_args.kwargs["auto_submit"])
+        self.button.assert_not_awaited()
+
+    async def test_api_denial_never_opens_paper_or_records_a_new_attempt(self):
+        self.validate.side_effect = ExamEntryUnavailable("attempt_limit", "次数已用完")
+        await runner._run_paper_ai_exam(self.page, self.url, self.client, "test")
+        self.page.goto.assert_not_awaited()
+        self.answer.assert_not_awaited()
+        self.assertIsNone(self.pending(self.url))
+        self.assertEqual(self.manual()[0].reason, "attempt_limit")
+
+    async def test_malformed_entry_never_falls_back_to_button_text(self):
+        self.read_entry.side_effect = ExamEntryUnavailable("state_unknown", "响应不完整")
+        await runner._run_paper_ai_exam(self.page, self.url, self.client, "test")
+        self.validate.assert_not_awaited()
+        self.page.goto.assert_not_awaited()
+        self.button.assert_not_awaited()
+        self.assertEqual(self.manual()[0].reason, "state_unknown")
 
 
 class CourseSubmissionPolicyTests(TransactionFixture):

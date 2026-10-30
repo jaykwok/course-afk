@@ -114,6 +114,32 @@ class LinkParsingTests(unittest.TestCase):
             "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
         )
 
+    def test_exam_detail_url_is_recognized_and_preserves_entry_route(self):
+        url = (
+            "https://kc.zhixueyun.com/#/exam/exam/exam-detail/"
+            "9ace2356-f9a1-4ad1-a0c2-5c4a1d4e6a92"
+        )
+        for raw in (url, url + "?from=manual", "  " + url + "  "):
+            with self.subTest(raw=raw):
+                self.assertTrue(is_exam_url(raw))
+                self.assertEqual(normalize_url(raw), url)
+        self.assertEqual(
+            split_manual_selection_urls([url, url + "?from=manual"]),
+            ([], [url], [], [], []),
+        )
+
+    def test_exam_detail_url_rejects_invalid_ids_and_unrelated_routes(self):
+        prefix = "https://kc.zhixueyun.com/#/exam/exam/exam-detail/"
+        for url in (
+            prefix,
+            prefix + "invalid-id",
+            prefix + "9ace2356-f9a1-4ad1-a0c2-5c4a1d4e6a92extra",
+            prefix.replace("kc.zhixueyun.com", "example.com")
+            + "9ace2356-f9a1-4ad1-a0c2-5c4a1d4e6a92",
+        ):
+            with self.subTest(url=url):
+                self.assertFalse(is_exam_url(url))
+
     def test_course_and_subject_detail_url_helpers(self):
         course = (
             "https://kc.zhixueyun.com/#/study/course/detail/"

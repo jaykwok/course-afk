@@ -6,7 +6,7 @@ from urllib.parse import parse_qs, unquote
 
 from core.config import (
     ZHIXUEYUN_COURSE_PREFIX,
-    ZHIXUEYUN_EXAM_PREFIX,
+    ZHIXUEYUN_EXAM_PREFIXES,
     ZHIXUEYUN_SUBJECT_PREFIX,
     ZHIXUEYUN_TRAIN_CLASS_PREFIX,
 )
@@ -66,7 +66,7 @@ _BUSINESS_TYPE_PREFIX_MAP = {
 _COURSE_PREFIX_ESCAPED = re.escape(ZHIXUEYUN_COURSE_PREFIX)
 _SUBJECT_PREFIX_ESCAPED = re.escape(ZHIXUEYUN_SUBJECT_PREFIX)
 _TRAIN_CLASS_PREFIX_ESCAPED = re.escape(ZHIXUEYUN_TRAIN_CLASS_PREFIX)
-_EXAM_PREFIX_ESCAPED = re.escape(ZHIXUEYUN_EXAM_PREFIX)
+_EXAM_PREFIX_ESCAPED = "(?:" + "|".join(map(re.escape, ZHIXUEYUN_EXAM_PREFIXES)) + ")"
 _COURSE_CONTEXT = rf"/[1-9][0-9]*/[01]/{_UUID}"
 _COMPLIANT_URL_PATTERN = re.compile(
     rf"^(?:{_COURSE_PREFIX_ESCAPED}{_UUID}(?:{_COURSE_CONTEXT})?|{_SUBJECT_PREFIX_ESCAPED}{_UUID})$"
@@ -210,6 +210,6 @@ def is_train_class_url(url: str) -> bool:
 
 
 def is_exam_url(url: str) -> bool:
-    """判断 URL 是否为标准智学云试卷答题链接。"""
+    """判断 URL 是否为知学云考试详情或试卷答题链接。"""
 
     return bool(_EXAM_URL_PATTERN.match(normalize_url(url)))

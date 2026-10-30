@@ -22,12 +22,15 @@ from core.config import (
     MANUAL_EXAM_FILE,
     PAPER_EXAM_ATTEMPT_THRESHOLD,
     ZHIXUEYUN_COURSE_PREFIX,
-    ZHIXUEYUN_EXAM_PREFIX,
+    ZHIXUEYUN_EXAM_PREFIXES,
     ZHIXUEYUN_SUBJECT_PREFIX,
 )
 from core.exam.flow import ExamQuestionExtractionError, ai_exam, wait_for_finish_test
 from core.exam.answers import ExamAiConfigurationError
 from core.exam.settings import AiSettings
+from core.exam.entry_api import (
+    ExamEntryUnavailable, exam_id_from_url, read_exam_entry, validate_exam_entry,
+)
 from core.runtime import close_safely
 from core.exam.rules import extract_attempt_limit_message as _extract_attempt_limit_message, parse_remaining_attempts
 from core.exam.routing import allows_auto_submit, queue_exam_url_by_attempt_text, requeue_ai_exam_reviews
@@ -70,7 +73,7 @@ LOGIN_REDIRECT_POLL_MS = 500
 def classify_exam_entry_url(url: str) -> str:
     """按标准 hash 路由区分考试入口，避免普通查询参数误命中。"""
     normalized = normalize_url(url)
-    if normalized.startswith(ZHIXUEYUN_EXAM_PREFIX):
+    if normalized.startswith(ZHIXUEYUN_EXAM_PREFIXES):
         return "exam"
     if normalized.startswith(ZHIXUEYUN_COURSE_PREFIX):
         return "course"
@@ -153,8 +156,9 @@ async def _wait_for_target_route_after_auth(
     *,
     timeout_ms: int = LOGIN_REDIRECT_TIMEOUT_MS,
     interval_ms: int = LOGIN_REDIRECT_POLL_MS,
+    require_entry_dom: bool = True,
 ) -> bool:
-    """等待 OAuth 完成且原考试路由的可用 DOM 已稳定挂载。
+    """等待 OAuth 返回原考试路由；接口调用可跳过按钮/题目 DOM 等待。
 
     自动认证有绝对期限；人工答题等待另行处理，不能让登录无限挂起。
     """
@@ -181,9 +185,9 @@ async def _wait_for_target_route_after_auth(
             observed_external_route = True
             return False
         auth_completed = observed_external_route or await _has_authorization_cookie(page)
-        if not auth_completed or not await _is_paper_entry_ready(page):
+        if not auth_completed or (require_entry_dom and not await _is_paper_entry_ready(page)):
             return False
-        logging.info("登录授权已完成，考试页面内容已就绪")
+        logging.info("登录授权已完成，考试入口已就绪")
         return True
 
     try:
@@ -194,7 +198,7 @@ async def _wait_for_target_route_after_auth(
 
 
 async def _raise_if_login_required(page, target_url: str) -> None:
-    if not await _wait_for_target_route_after_auth(page, target_url):
+    if not await _wait_for_target_route_after_auth(page, target_url, require_entry_dom=False):
         raise UserCancelRequested(
             "考试链接进入登录页后未完成授权并加载考试内容；"
             "已保留当前及剩余考试链接，请先更新登录凭证后重试"
@@ -322,9 +326,8 @@ def _to_manual(url: str, reason: str, message: str, model_config=None) -> bool:
 
 
 async def _paper_state(page, url):
-    exam_id = url.split(ZHIXUEYUN_EXAM_PREFIX, 1)[-1].split("?")[0].split("/")[0]
     try:
-        return await read_exam_state(page, exam_id)
+        return await read_exam_state(page, exam_id_from_url(url))
     except Exception as exc:
         if is_target_closed_exception(exc):
             raise
@@ -384,43 +387,47 @@ async def _run_course_ai_exam(page, url: str, client: AsyncOpenAI, model: str, *
 async def _run_paper_ai_exam(page, url: str, client: AsyncOpenAI, model: str, *, auto_submit: bool = True) -> bool:
     model_config = _build_ai_exam_model_config(model, client)
     await _raise_if_login_required(page, url)
-    before = await _paper_state(page, url)
+    direct_answer = await _has_ready_answer_question(page)
+    entry = None
+    if direct_answer:
+        before = await _paper_state(page, url)
+    else:
+        try:
+            entry = await read_exam_entry(page, url)
+        except ExamEntryUnavailable as exc:
+            return _to_manual(url, exc.reason, str(exc))
+        before = entry.state
     if before and before.outcome in {"passed", "pending_grading"}:
         return _finish_ai_outcome(url, before.outcome, model_config)
     resume = bool(pending_submission(url, EXAM_URLS_FILE, account=model_config["account"]))
-    direct_answer = await _has_ready_answer_question(page)
-    if not direct_answer and await _handle_attempt_limit_if_present(page, url):
-        return True
+    continuing = bool(entry and entry.can_resume)
+    if entry and resume and not continuing:
+        return _to_manual(url, "submission_unverified", "上次考试未确认且接口没有可续考记录，保留复查，不自动重开")
+    if entry:
+        try:
+            await validate_exam_entry(page, entry)
+        except ExamEntryUnavailable as exc:
+            return _to_manual(url, exc.reason, str(exc))
     can_submit = bool(before and (before.allowed_attempts == 0 or before.remaining_attempts is not None and before.remaining_attempts > max(1, PAPER_EXAM_ATTEMPT_THRESHOLD)))
-    auto_submit = auto_submit and can_submit and not resume and not requires_manual_submission(url, file_path=EXAM_URLS_FILE)
+    auto_submit = auto_submit and can_submit and not resume and not continuing and not requires_manual_submission(url, file_path=EXAM_URLS_FILE)
     if not auto_submit:
         logging.info("继续 AI 作答，自动交卷已关闭（次数阈值、历史记录或用户设置）")
-    answer_page = page
-    try:
-        if not direct_answer:
-            button = await _locate_exam_button(page)
-            if button is None:
-                return _to_manual(url, "state_unknown", "无法定位开考按钮，转人工核对")
-            button_text = await button.inner_text()
-            if resume and "继续考试" not in button_text:
-                return _to_manual(url, "submission_unverified", "上次考试未确认且没有继续考试入口，保留复查，不自动重开")
-            if before and before.remaining_attempts == 0 and "继续考试" not in button_text:
-                return _to_manual(url, "attempt_limit", "平台没有剩余开考次数，保留复查")
-            answer_page = await _open_paper_answer_page(page, button)
-        if not resume:
-            record_submission_intent(url, model_config, EXAM_URLS_FILE)
-        await ai_exam(client, model, answer_page, url, auto_submit=auto_submit, ai_model_config=model_config, resume=resume or direct_answer)
-        after = await _paper_state(page, url)
-        outcome = after.outcome if after else "unknown"
-        if outcome == "failed" and not (
-            before and (after.record_id and after.record_id != before.record_id
-            or after.used_attempts is not None and before.used_attempts is not None and after.used_attempts > before.used_attempts)
-        ):
-            outcome = "unknown"
-        return _finish_ai_outcome(url, outcome, model_config)
-    finally:
-        if answer_page is not page:
-            await _close_page_safely(answer_page)
+    if not resume:
+        record_submission_intent(url, model_config, EXAM_URLS_FILE)
+    if entry:
+        # Resolve the official answer route from the API ID; labels and popup
+        # behavior do not participate in exam entry or resume decisions.
+        await page.goto(entry.answer_url, timeout=30000)
+        await _raise_if_login_required(page, entry.answer_url)
+    await ai_exam(client, model, page, url, auto_submit=auto_submit, ai_model_config=model_config, resume=resume or direct_answer or continuing)
+    after = await _paper_state(page, url)
+    outcome = after.outcome if after else "unknown"
+    if outcome == "failed" and not (
+        before and (after.record_id and after.record_id != before.record_id
+        or after.used_attempts is not None and before.used_attempts is not None and after.used_attempts > before.used_attempts)
+    ):
+        outcome = "unknown"
+    return _finish_ai_outcome(url, outcome, model_config)
 
 
 async def run_ai_exam_batch(status_callback: StatusCallback | None = None, *, auto_submit: bool = False) -> int:

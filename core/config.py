@@ -494,6 +494,8 @@ ZHIXUEYUN_COURSE_PREFIX = "https://kc.zhixueyun.com/#/study/course/detail/"
 ZHIXUEYUN_SUBJECT_PREFIX = "https://kc.zhixueyun.com/#/study/subject/detail/"
 ZHIXUEYUN_TRAIN_CLASS_PREFIX = "https://kc.zhixueyun.com/#/train-new/class-detail/"
 ZHIXUEYUN_EXAM_PREFIX = "https://kc.zhixueyun.com/#/exam/exam/answer-paper/"
+ZHIXUEYUN_EXAM_DETAIL_PREFIX = "https://kc.zhixueyun.com/#/exam/exam/exam-detail/"
+ZHIXUEYUN_EXAM_PREFIXES = (ZHIXUEYUN_EXAM_PREFIX, ZHIXUEYUN_EXAM_DETAIL_PREFIX)
 
 # ============================================================
 # 超时 / 等待时间（秒）
