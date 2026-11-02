@@ -61,6 +61,7 @@ async def discover(host, payload):
 
     task = _task(host, payload)
     details = {}
+    discovery_complete = False
     try:
         async with create_browser_context() as (_, context):
             if task["kind"] == "class":
@@ -76,13 +77,16 @@ async def discover(host, payload):
                         page=page,
                         status_callback=host.status_callback,
                         source_label="培训班",
+                        parent_url=task["url"],
                     )
+                    discovery_complete = details.get("complete") is True
                 finally:
                     await close_safely(page.close(), label="discovery class page")
             elif task["kind"] == "subject":
                 details = await expand_and_append_subject_urls(
                     [task["url"]], context=context, status_callback=host.status_callback
                 )
+                discovery_complete = details.get("complete") is True
             elif is_learning_zone_url(task["url"]):
                 if payload["options"].get("zone_mode", "auto") == "manual":
                     counts = await collect_learning_links_from_entry_urls(
@@ -94,13 +98,23 @@ async def discover(host, payload):
                         "manual_record_count": counts[1],
                         "manual_exam_record_count": counts[2],
                     }
+                    discovery_complete = True
                 else:
+                    result = await collect_learning_links_from_learning_zone_urls(
+                        [task["url"]],
+                        context=context,
+                        status_callback=host.status_callback,
+                        detailed=True,
+                    )
+                    from core.discovery.contracts import CollectionResult
+
+                    discovery_complete = (
+                        isinstance(result, CollectionResult) and result.complete
+                    )
                     details = {
-                        "learning_added": await collect_learning_links_from_learning_zone_urls(
-                            [task["url"]],
-                            context=context,
-                            status_callback=host.status_callback,
-                        )
+                        "learning_added": result.added
+                        if isinstance(result, CollectionResult)
+                        else result
                     }
             else:
                 counts = await collect_learning_links_from_entry_urls(
@@ -110,17 +124,28 @@ async def discover(host, payload):
                     "manual_record_count": counts[1],
                     "manual_exam_record_count": counts[2],
                 }
-        remove_learning_failure(task["url"], reason="discovery_incomplete")
+                discovery_complete = True
+        details["discovery_complete"] = discovery_complete
+        if discovery_complete:
+            remove_learning_failure(task["url"], reason="discovery_incomplete")
+            remove_learning_failure(task["url"], reason="enrollment_blocked")
+        else:
+            record_learning_failure(
+                task["url"],
+                reason="discovery_incomplete",
+                reason_text="入口清单尚未完整确认，请重新解析；已发现的任务已保留",
+            )
         failures = [e for e in read_learning_failures() if e.url == task["url"]]
         children = [r["task_id"] for r in host.repository.children(task["task_id"])]
         return TaskOutcome(
             task["task_id"],
-            Status.WAITING_CHILDREN
-            if children
-            else Status.NEEDS_REVIEW
+            Status.NEEDS_REVIEW
             if failures
+            else Status.WAITING_CHILDREN
+            if details.get("residual_count")
             else Status.COMPLETED,
-            [e.reason for e in failures],
+            [e.reason for e in failures]
+            or (["subject_residual"] if details.get("residual_count") else []),
             child_refs=children,
             details=details,
         )

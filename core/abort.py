@@ -10,6 +10,15 @@ class UserCancelRequested(Exception):
     """用户取消当前菜单操作，应返回主菜单。"""
 
 
+def raise_for_batch_stop(exc: Exception) -> None:
+    """Preserve operation-wide signals before any local fallback/aggregation."""
+    from core.browser.session import raise_for_certificate_error
+
+    raise_for_certificate_error(exc)
+    if isinstance(exc, (UserCancelRequested, UserAbortRequested, WafBlockError)):
+        raise exc
+
+
 class BrowserCertificateError(Exception):
     """浏览器无法验证站点证书；停止本轮操作并保留待办。"""
 
@@ -72,8 +81,7 @@ class SyncTimeoutError(LearningFlowError):
         super().__init__(
             message,
             reason="sync_timeout",
-            reason_text=reason_text
-            or "课程完成状态确认超时，后续可重新加入课程链接",
+            reason_text=reason_text or "课程完成状态确认超时，后续可重新加入课程链接",
             keep_pending=True,
             detail=detail,
         )
@@ -113,8 +121,7 @@ class SectionActivationError(LearningFlowError):
         super().__init__(
             message,
             reason="section_activation_failed",
-            reason_text=reason_text
-            or "目标章节点击后未激活，已保留链接供后续重试",
+            reason_text=reason_text or "目标章节点击后未激活，已保留链接供后续重试",
             keep_pending=True,
             detail=detail,
         )
@@ -164,8 +171,7 @@ class ConcurrentStudyLimitError(LearningFlowError):
         super().__init__(
             message,
             reason="concurrent_study_limit",
-            reason_text=reason_text
-            or "平台并发学习限流，已保留链接待下轮再试",
+            reason_text=reason_text or "平台并发学习限流，已保留链接待下轮再试",
             keep_pending=True,
         )
 

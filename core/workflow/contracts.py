@@ -14,6 +14,7 @@ class Status(StrEnum):
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     INTERRUPTED = "INTERRUPTED"
+    DISMISSED = "DISMISSED"
 
 
 @dataclass

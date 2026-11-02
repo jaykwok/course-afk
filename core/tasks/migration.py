@@ -177,7 +177,17 @@ def initialize_store():
             "SELECT count(*) FROM imports WHERE source IN (?,?,?,?,?)", sources
         ).fetchone()[0]
     if count < len(sources):
-        return migrate(LINKS_DIR, repo)
+        migrate(LINKS_DIR, repo)
+    from core.tasks.repair import repair_state
+
+    result = repair_state(repo, LINKS_DIR, apply=True)
+    if result.get("missing_source_snapshots"):
+        import logging
+
+        logging.warning(
+            "部分迁移原始快照缺失，无法证明失败模型历史已全部补齐；请查看 workflow_state.py repair-check，补回原备份后运行 repair。"
+        )
+    return result
 
 
 def bind_unbound(repo: TaskRepository, account: str) -> int:
@@ -274,12 +284,55 @@ def bind_unbound(repo: TaskRepository, account: str) -> int:
                 mapping.get(edge["child"], edge["child"]),
             )
             if parent != edge["parent"] or child != edge["child"]:
-                repo.link(parent, child, required=edge["required"], db=db)
+                evidence = list(
+                    db.execute(
+                        "SELECT * FROM task_edge_evidence WHERE parent=? AND child=?",
+                        (edge["parent"], edge["child"]),
+                    )
+                )
+                for proof in evidence:
+                    repo.link(
+                        parent,
+                        child,
+                        required=edge["required"],
+                        db=db,
+                        source=proof["source"],
+                        evidence=json.loads(proof["evidence"]),
+                    )
+                if not evidence:
+                    repo.link(parent, child, required=edge["required"], db=db)
+                db.execute(
+                    "DELETE FROM task_edge_evidence WHERE parent=? AND child=?",
+                    (edge["parent"], edge["child"]),
+                )
                 db.execute(
                     "DELETE FROM task_edges WHERE parent=? AND child=?",
                     (edge["parent"], edge["child"]),
                 )
         for row in rows:
+            for dismissal in list(
+                db.execute(
+                    "SELECT * FROM task_dismissals WHERE task_id=?", (row["task_id"],)
+                )
+            ):
+                db.execute(
+                    "INSERT OR IGNORE INTO task_dismissals VALUES(?,?,?)",
+                    (mapping[row["task_id"]], dismissal["scope"], dismissal["at"]),
+                )
+            db.execute("DELETE FROM task_dismissals WHERE task_id=?", (row["task_id"],))
+            local = db.execute(
+                "SELECT * FROM task_local_outcomes WHERE task_id=?", (row["task_id"],)
+            ).fetchone()
+            if local:
+                payload = json.loads(local["payload"])
+                payload["task_id"] = mapping[row["task_id"]]
+                db.execute(
+                    "INSERT OR IGNORE INTO task_local_outcomes VALUES(?,?,?)",
+                    (mapping[row["task_id"]], local["run_id"], encode(payload)),
+                )
+                db.execute(
+                    "DELETE FROM task_local_outcomes WHERE task_id=?", (row["task_id"],)
+                )
             if not db.execute(
                 "SELECT 1 FROM runs WHERE task_id=?", (row["task_id"],)
             ).fetchone():

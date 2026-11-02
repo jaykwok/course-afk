@@ -144,6 +144,8 @@ async def _collect_learning_links_on_entry_context(
 
             url = await _wait_for_manual_popup_record_url(new_page)
             if url:
+                from core.tasks.relations import record_discovered_tasks
+                record_discovered_tasks([url],source='manual_popup')
                 if is_exam_url(url):
                     normalized_exam_url = normalize_url(url)
                     append_exam_url(normalized_exam_url, file_path=EXAM_URLS_FILE)

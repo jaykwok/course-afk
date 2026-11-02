@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from core.abort import raise_for_batch_stop
+
 import logging
 import re
 import math
@@ -18,9 +20,7 @@ from core.abort import UserAbortRequested, UserCancelRequested, WafBlockError
 _API_HOST = "https://kc.zhixueyun.com"
 _COURSE_INFO_API = f"{_API_HOST}/api/v1/course-study/course-front/info/{{course_id}}"
 _EXAM_BASIC_API = f"{_API_HOST}/api/v1/exam/exam/basic-by-ids?ids={{exam_ids}}"
-_EXAM_USER_RECORD_API = (
-    f"{_API_HOST}/api/v1/exam/exam/front/user-record/{{exam_id}}"
-)
+_EXAM_USER_RECORD_API = f"{_API_HOST}/api/v1/exam/exam/front/user-record/{{exam_id}}"
 _COURSE_ID_PATTERN = re.compile(
     r"/study/course/detail/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-"
     r"[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})",
@@ -113,7 +113,11 @@ def _as_int(value: object) -> int | None:
         return None
     try:
         number = float(value)
-        return int(number) if math.isfinite(number) and number.is_integer() and number >= 0 else None
+        return (
+            int(number)
+            if math.isfinite(number) and number.is_integer() and number >= 0
+            else None
+        )
     except (TypeError, ValueError):
         return None
 
@@ -196,7 +200,9 @@ def evaluate_course_exam_state(
     )
     passed = _score_reaches_pass_line(score, pass_score, total_score)
     is_finished = _as_int(exam_record.get("isFinished")) == 1
-    pending_grading = is_finished and not passed and _first_number(exam_record.get("score")) is None
+    pending_grading = (
+        is_finished and not passed and _first_number(exam_record.get("score")) is None
+    )
 
     return CourseExamState(
         passed=passed,
@@ -216,13 +222,24 @@ async def read_exam_state(page, exam_id: str) -> CourseExamState:
     if not auth:
         raise ValueError("缺少考试状态读取凭证")
     headers = {"Authorization": auth, "Version": "12.1.1", "Accept": "application/json"}
-    items = await fetch_json(page, _EXAM_BASIC_API.format(exam_ids=exam_id), headers=headers)
+    items = await fetch_json(
+        page, _EXAM_BASIC_API.format(exam_ids=exam_id), headers=headers
+    )
     if isinstance(items, dict):
         items = items.get("data")
     if not isinstance(items, list):
         raise ValueError("考试基本信息响应缺少列表")
-    basic = next((item for item in items if isinstance(item, dict) and str(item.get("id")) == exam_id), None)
-    user = await fetch_json(page, _EXAM_USER_RECORD_API.format(exam_id=exam_id), headers=headers)
+    basic = next(
+        (
+            item
+            for item in items
+            if isinstance(item, dict) and str(item.get("id")) == exam_id
+        ),
+        None,
+    )
+    user = await fetch_json(
+        page, _EXAM_USER_RECORD_API.format(exam_id=exam_id), headers=headers
+    )
     if basic is None or not isinstance(user, dict) or not _payload_data(user):
         raise ValueError("考试状态响应不完整")
     return evaluate_course_exam_state(basic, user)
@@ -245,9 +262,15 @@ async def queue_course_exams_from_api(page) -> CourseExamQueueResult | None:
         }
         from core.tasks.identity import parse_entry
         from urllib.parse import urlencode
+
         source = parse_entry(str(page.url), "probe").key
         from core.browser.course_links import observed_course_source
-        query = {"type": source.source_type, "sourceId": source.source_id} if source.source_type else observed_course_source(page,course_id) or {}
+
+        query = (
+            {"type": source.source_type, "sourceId": source.source_id}
+            if source.source_type
+            else observed_course_source(page, course_id) or {}
+        )
         course_payload = await fetch_json(
             page,
             f"{_COURSE_INFO_API.format(course_id=course_id)}?{urlencode(query)}",
@@ -266,7 +289,13 @@ async def queue_course_exams_from_api(page) -> CourseExamQueueResult | None:
             ),
             headers=headers,
         )
-        basic_items = basic_payload if isinstance(basic_payload, list) else basic_payload.get("data", []) if isinstance(basic_payload, dict) else []
+        basic_items = (
+            basic_payload
+            if isinstance(basic_payload, list)
+            else basic_payload.get("data", [])
+            if isinstance(basic_payload, dict)
+            else []
+        )
         basic_by_id = {
             str(item.get("id")): item
             for item in basic_items
@@ -286,12 +315,11 @@ async def queue_course_exams_from_api(page) -> CourseExamQueueResult | None:
             )
             if not isinstance(user_record, dict) or not _payload_data(user_record):
                 return None
-            resolved.append(
-                (section, evaluate_course_exam_state(basic, user_record))
-            )
+            resolved.append((section, evaluate_course_exam_state(basic, user_record)))
     except (UserAbortRequested, UserCancelRequested, WafBlockError):
         raise
     except Exception as exc:
+        raise_for_batch_stop(exc)
         logging.info(f"课程内考试接口读取失败，改用页面兜底: {exc}")
         return None
 
@@ -299,20 +327,33 @@ async def queue_course_exams_from_api(page) -> CourseExamQueueResult | None:
     manual_queued = 0
     completed = 0
     for section, state in resolved:
+        from core.tasks.relations import record_discovered_tasks
+
+        record_discovered_tasks(
+            [section.url],
+            parent_url=str(page.url),
+            source="course_exam_api",
+            course_exam=True,
+            completed_urls=[section.url] if state.passed else [],
+        )
         if state.passed:
             completed += 1
-            logging.info(
-                f"课程内考试已通过，跳过: {section.name or section.exam_id}"
-            )
+            logging.info(f"课程内考试已通过，跳过: {section.name or section.exam_id}")
             continue
         if state.pending_grading:
-            append_manual_exam_entry(section.url, reason="pending_grading", reason_text="已提交，等待服务端评卷后复查")
+            append_manual_exam_entry(
+                section.url,
+                reason="pending_grading",
+                reason_text="已提交，等待服务端评卷后复查",
+            )
             manual_queued += 1
             continue
         attempt_text = (
             f"剩余 {state.remaining_attempts} 次"
             if state.remaining_attempts is not None
-            else "不限次数" if state.allowed_attempts == 0 else "次数未知"
+            else "不限次数"
+            if state.allowed_attempts == 0
+            else "次数未知"
         )
         destination = queue_exam_url_by_attempt_text(
             section.url,

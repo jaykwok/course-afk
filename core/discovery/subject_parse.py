@@ -17,11 +17,20 @@ from core.file_ops import (
     normalize_url,
     build_subject_course_url,
 )
-from core.queues.learning import append_learning_urls, remember_discovery_entries, remove_learning_failure
+from core.queues.learning import (
+    append_learning_urls,
+    remember_discovery_entries,
+    remove_learning_failure,
+)
 from core.links import unique_urls
 from core.browser.page_auth import fetch_json, wait_for_authorization_header
 from core.browser.overlays import prepare_page_after_navigation_async
-from core.abort import UserAbortRequested, UserCancelRequested, WafBlockError
+from core.abort import (
+    UserAbortRequested,
+    UserCancelRequested,
+    WafBlockError,
+    raise_for_batch_stop,
+)
 from core.runtime import close_safely
 
 
@@ -64,6 +73,7 @@ class SubjectExpandResult:
     unknown_section_types: tuple[int, ...] = ()
     url_section_count: int = 0
     section_total: int = 0
+    complete: bool = False
 
 
 def extract_subject_id(url: str) -> str | None:
@@ -193,7 +203,9 @@ def expand_chapter_progress(
             if course_id:
                 source_id = subject_id or _section_uuid(section, ("courseId",))
                 try:
-                    candidate = build_subject_course_url(course_id, source_id or "", section.get("required"))
+                    candidate = build_subject_course_url(
+                        course_id, source_id or "", section.get("required")
+                    )
                 except ValueError:
                     # 来源/必修标记未知时保留专题，由平台原入口处理。
                     unknown_types.append(section_type)
@@ -231,9 +243,7 @@ def expand_chapter_progress(
             seen_types.add(item)
             unique_unknown.append(item)
 
-    has_residual = (
-        bool(unique_unknown) or url_section_count > 0 or section_total == 0
-    )
+    has_residual = bool(unique_unknown) or url_section_count > 0 or section_total == 0
     residual = None
     if has_residual and subject_url:
         residual = normalize_url(subject_url)
@@ -245,6 +255,7 @@ def expand_chapter_progress(
         unknown_section_types=tuple(unique_unknown),
         url_section_count=url_section_count,
         section_total=section_total,
+        complete=section_total > 0,
     )
 
 
@@ -264,7 +275,8 @@ async def expand_subject_from_page(
     await page.goto(normalized, wait_until="load")
     try:
         await page.wait_for_load_state("networkidle", timeout=8000)
-    except Exception:
+    except Exception as exc:
+        raise_for_batch_stop(exc)
         await page.wait_for_timeout(1500)
     await prepare_page_after_navigation_async(page, status_callback=status_callback)
     auth_header = await wait_for_authorization_header(
@@ -283,6 +295,7 @@ async def expand_subject_from_page(
     try:
         payload = await fetch_json(page, url, headers=headers)
     except Exception as exc:
+        raise_for_batch_stop(exc)
         logging.error(f"读取主题章节进度失败 subjectId={subject_id}: {exc}")
         if status_callback:
             status_callback(f"读取主题章节失败: {exc}")
@@ -348,6 +361,7 @@ async def enqueue_learning_links_with_subject_expand(
     page=None,
     status_callback=None,
     source_label: str = "来源",
+    parent_url: str | None = None,
 ) -> dict[str, int]:
     """
     将混合课程/主题链接分流入队（课直接进学习队列，主题按章节类型展开）。
@@ -356,10 +370,14 @@ async def enqueue_learning_links_with_subject_expand(
     learning_added / exam_added。
     """
     course_links, subject_links = partition_course_and_subject_urls(learning_links)
+    from core.tasks.relations import record_discovered_tasks
+
+    record_discovered_tasks(learning_links, parent_url=parent_url, source="entry_links")
     course_added_urls = append_learning_urls(course_links)
     course_added = len(course_added_urls)
     subject_learning_added = 0
     exam_added = 0
+    complete = True
     if subject_links:
         if status_callback:
             status_callback(
@@ -372,6 +390,7 @@ async def enqueue_learning_links_with_subject_expand(
         )
         subject_learning_added = expand_stats["learning_added"]
         exam_added = expand_stats["exam_added"]
+        complete = expand_stats.get("complete") is True
     return {
         "course_links": len(course_links),
         "subject_links": len(subject_links),
@@ -379,6 +398,7 @@ async def enqueue_learning_links_with_subject_expand(
         "subject_learning_added": subject_learning_added,
         "learning_added": course_added + subject_learning_added,
         "exam_added": exam_added,
+        "complete": complete,
     }
 
 
@@ -403,6 +423,7 @@ async def expand_and_append_subject_urls(
         "learning_added": 0,
         "exam_added": 0,
         "subject_count": 0,
+        "complete": True,
     }
     if not subject_urls:
         if before_close_callback:
@@ -418,20 +439,26 @@ async def expand_and_append_subject_urls(
     async def _run_with_page(active_page) -> None:
         for index, url in enumerate(unique_subjects, start=1):
             if status_callback:
-                status_callback(
-                    f"正在展开主题链接 {index}/{len(unique_subjects)}"
-                )
+                status_callback(f"正在展开主题链接 {index}/{len(unique_subjects)}")
             try:
                 result = await expand_subject_from_page(
                     active_page, url, status_callback=status_callback
                 )
-            except (UserAbortRequested, UserCancelRequested, WafBlockError, asyncio.CancelledError):
+            except (
+                UserAbortRequested,
+                UserCancelRequested,
+                WafBlockError,
+                asyncio.CancelledError,
+            ):
                 # Preserve every unvisited entry before propagating the stop.
-                append_learning_urls(unique_subjects[index - 1:])
+                append_learning_urls(unique_subjects[index - 1 :])
                 raise
             except Exception as exc:
+                raise_for_batch_stop(exc)
                 if is_target_closed_exception(exc):
-                    raise UserCancelRequested("主题页面已关闭，未完成的解析入口已保留") from None
+                    raise UserCancelRequested(
+                        "主题页面已关闭，未完成的解析入口已保留"
+                    ) from None
                 logging.error(f"展开主题失败 {url}: {exc}")
                 if status_callback:
                     status_callback(f"展开主题失败，保留原链接: {exc}")
@@ -441,7 +468,26 @@ async def expand_and_append_subject_urls(
             if result.residual_subject_url:
                 stats["residual_count"] += 1
             learning_n, exam_n = append_expand_result(result)
-            remove_learning_failure(url, keep_file=True)
+            from core.tasks.relations import record_discovered_tasks
+
+            record_discovered_tasks(
+                result.course_urls + result.exam_urls,
+                parent_url=url,
+                source="subject_api",
+            )
+            if result.complete:
+                remove_learning_failure(
+                    url, reason="discovery_incomplete", keep_file=True
+                )
+            else:
+                from core.queues.learning import record_learning_failure
+
+                record_learning_failure(
+                    url,
+                    reason="discovery_incomplete",
+                    reason_text="主题章节清单尚未完整确认，请重新解析入口",
+                )
+                stats["complete"] = False
             stats["learning_added"] += learning_n
             stats["exam_added"] += exam_n
 

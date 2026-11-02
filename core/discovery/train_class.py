@@ -460,9 +460,11 @@ async def collect_learning_links_from_train_class_urls(
                     page=page,
                     status_callback=status_callback,
                     source_label="培训班",
+                    parent_url=url,
                 )
                 total_added += enqueue["learning_added"]
-                remove_learning_failure(url, keep_file=True)
+                if enqueue.get('complete') is True:
+                    remove_learning_failure(url,reason='discovery_incomplete',keep_file=True)
                 if status_callback:
                     if learning_links:
                         status_callback(

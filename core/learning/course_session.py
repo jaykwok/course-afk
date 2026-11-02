@@ -30,9 +30,9 @@ class CompletionPolicy:
         return cls.evidence(state) == CompletionEvidence.SERVER_COMPLETE
 
     @classmethod
-    def record(cls, states):
+    def record(cls, states, *, course_url=None, source="section"):
         from core.workflow.host import activity_context, current_host
-        from core.tasks.identity import TaskKey, Entry
+        from core.tasks.identity import TaskKey, Entry, parse_entry
         from core.tasks.repository import encode, now
         import json
 
@@ -41,6 +41,17 @@ class CompletionPolicy:
             return
         repo = current_host().repository
         parent = repo.task(context["task_id"])
+        if course_url:
+            entry = parse_entry(course_url, parent["account"])
+            if entry.key.kind == "course" and entry.key.task_id != parent["task_id"]:
+                child = repo.upsert(entry)
+                repo.link(
+                    parent["task_id"],
+                    child,
+                    source="course_page",
+                    evidence={"url": entry.url},
+                )
+                parent = repo.task(child)
         identity = json.loads(parent["identity"])
         with repo.connect() as db:
             for section_id, state in (states or {}).items():
@@ -48,10 +59,16 @@ class CompletionPolicy:
                     identity["tenant"],
                     identity["account"],
                     "section",
-                    context["task_id"] + ":" + section_id,
+                    parent["task_id"] + ":" + section_id,
                 )
                 child = repo.upsert(Entry(key, parent["url"], ()), db=db)
-                repo.link(parent["task_id"], child, db=db)
+                repo.link(
+                    parent["task_id"],
+                    child,
+                    db=db,
+                    source=source,
+                    evidence={"section_id": section_id},
+                )
                 db.execute(
                     "UPDATE tasks SET status=?,outcome=?,updated_at=? WHERE task_id=?",
                     (
@@ -61,6 +78,16 @@ class CompletionPolicy:
                         child,
                     ),
                 )
+            repo.refresh_ancestors(
+                [
+                    row[0]
+                    for row in db.execute(
+                        "SELECT child FROM task_edges WHERE parent=?",
+                        (parent["task_id"],),
+                    )
+                ],
+                db=db,
+            )
 
 
 class CourseSession:
@@ -86,9 +113,11 @@ class CourseSession:
             handle_archive_continue_popup,
         )
         from core.browser.overlays import dismiss_topmost_overlays_async
+        from core.learning.popups import check_and_handle_rating_popup
 
         await handle_rating_popup(self.page)
         await handle_archive_continue_popup(self.page)
+        await check_and_handle_rating_popup(self.page)
         await dismiss_topmost_overlays_async(self.page, max_count=2)
 
 

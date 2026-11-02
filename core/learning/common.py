@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from core.abort import raise_for_batch_stop
+
 import asyncio
 import logging
 import math
@@ -17,7 +19,10 @@ from core.config import (
     ZHIXUEYUN_EXAM_PREFIX,
 )
 from core.humanize import jitter
-from core.learning.progress import read_server_section_state, section_completed_on_server
+from core.learning.progress import (
+    read_server_section_state,
+    section_completed_on_server,
+)
 from core.learning.playback import ensure_course_started
 
 
@@ -64,6 +69,7 @@ async def detect_access_denial(frame) -> tuple[str, str] | None:
         text_content = await frame.content()
     except Exception as exc:
         # 读取 DOM 失败可能是瞬时导航/页面关闭，不能据此永久清理链接。
+        raise_for_batch_stop(exc)
         logging.debug(f"检查资源访问权限时读取页面失败: {exc}")
         return None
     return match_access_denial(text_content)
@@ -102,6 +108,7 @@ async def detect_concurrent_study_limit(frame_or_page) -> str | None:
         # Page 与 Frame 均有 content()
         text_content = await frame_or_page.content()
     except Exception as exc:
+        raise_for_batch_stop(exc)
         logging.debug(f"检测并发限流时读 content 失败: {exc}")
         return None
     return match_concurrent_study_limit(text_content)
@@ -136,6 +143,7 @@ async def detect_waf_block(frame_or_page) -> str | None:
     try:
         text_content = await frame_or_page.content()
     except Exception as exc:
+        raise_for_batch_stop(exc)
         logging.debug(f"检测网站安全防护拦截时读 content 失败: {exc}")
         return None
     return match_waf_block(text_content)
@@ -160,9 +168,7 @@ async def ensure_course_page_ready(page) -> None:
 
 # 未学标记后「整段」剩余时长为 0 才视为已同步。
 # 注意：不能写成 0+(?::0+){0,2}，否则「需学 00:05」会误匹配前缀「需学 00」。
-_ZERO_REMAINING_PROGRESS = re.compile(
-    r"(?:需学|需再学)\s*(?:0+(?::0+){1,2}|0)(?!\d|:)"
-)
+_ZERO_REMAINING_PROGRESS = re.compile(r"(?:需学|需再学)\s*(?:0+(?::0+){1,2}|0)(?!\d|:)")
 _PENDING_PROGRESS = re.compile(r"需学|需再学")
 
 
@@ -184,7 +190,13 @@ def is_learned(text: str) -> bool:
         return True
     # 旧版课页的完成态保留“必修/选修 + 类型 + 总时长”，没有剩余标记。
     # 只接受已观察到的完整布局，标题或局部加载文本不能推导成功。
-    return bool(re.search(r"(?:必修|选修).*?(?:视频|文档|网页).*?\b\d{1,3}:\d{2}(?::\d{2})?\b", text, re.S))
+    return bool(
+        re.search(
+            r"(?:必修|选修).*?(?:视频|文档|网页).*?\b\d{1,3}:\d{2}(?::\d{2})?\b",
+            text,
+            re.S,
+        )
+    )
 
 
 async def is_course_section_focused(box) -> bool:
@@ -193,6 +205,7 @@ async def is_course_section_focused(box) -> bool:
         class_names = (await box.get_attribute("class") or "").split()
         return "focus" in class_names
     except Exception as exc:
+        raise_for_batch_stop(exc)
         logging.debug(f"读取目标章节激活状态失败: {exc}")
         return False
 
@@ -230,11 +243,13 @@ async def read_section_progress_text(box) -> str:
     wrapper = box.locator(".section-item-wrapper")
     try:
         await wrapper.scroll_into_view_if_needed(timeout=3000)
-    except Exception:
+    except Exception as exc:
+        raise_for_batch_stop(exc)
         pass
     try:
         return await wrapper.inner_text(timeout=5000)
     except Exception as exc:
+        raise_for_batch_stop(exc)
         logging.debug(f"读取章节进度文案失败: {exc}")
         return ""
 
@@ -258,6 +273,7 @@ async def wait_until_learned(
     started = monotonic()
     from core.learning.course_session import PhaseBudget, CompletionPolicy
     from core.learning.progress import section_id_from_box
+
     budget = PhaseBudget(max_wait, "sync:" + str(await section_id_from_box(box)))
     deadline = started + budget.remaining
     current_text = ""
@@ -269,8 +285,16 @@ async def wait_until_learned(
             current_text = await read_section_progress_text(box)
             server_state = await read_server_section_state(page, box)
             if CompletionPolicy.complete(server_state):
-                CompletionPolicy.record({str(await section_id_from_box(box)): server_state})
-                logging.info("服务器已确认该章节完成，额外等待 %s 秒", round(monotonic() - started))
+                from core.browser.course_links import resolve_course_page_url
+
+                CompletionPolicy.record(
+                    {str(await section_id_from_box(box)): server_state},
+                    course_url=await resolve_course_page_url(page),
+                )
+                logging.info(
+                    "服务器已确认该章节完成，额外等待 %s 秒",
+                    round(monotonic() - started),
+                )
                 return True
             remaining = deadline - monotonic()
             if remaining <= 0:
@@ -282,9 +306,13 @@ async def wait_until_learned(
                 return False
             logging.info(
                 "章节尚未确认完成，已额外等待 %s 秒（页面: %s，服务器: %s）",
-                round(monotonic() - started), _compact_progress_text(current_text), server_state,
+                round(monotonic() - started),
+                _compact_progress_text(current_text),
+                server_state,
             )
-            wait_seconds = min(jitter(poll_interval, ratio=0.3, minimum=poll_interval), remaining)
+            wait_seconds = min(
+                jitter(poll_interval, ratio=0.3, minimum=poll_interval), remaining
+            )
             await page.wait_for_timeout(max(1, int(wait_seconds * 1000)))
             if on_tick is not None:
                 await on_tick()
@@ -299,7 +327,12 @@ async def wait_until_learned(
     finally:
         budget.save()
     progress_text = _compact_progress_text(current_text, limit=300)
-    logging.info("等待 %s 秒后仍未确认章节完成（页面: %s，服务器: %s）", max_wait, progress_text, server_state)
+    logging.info(
+        "等待 %s 秒后仍未确认章节完成（页面: %s，服务器: %s）",
+        max_wait,
+        progress_text,
+        server_state,
+    )
     raise SyncTimeoutError(
         f"课程完成状态未能在 {max_wait} 秒等待窗内确认",
         reason_text=f"课程完成状态确认超时（已额外等待 {max_wait} 秒），后续可重新加入课程链接",

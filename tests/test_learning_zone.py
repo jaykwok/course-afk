@@ -281,6 +281,7 @@ class LearningZoneCollectionTests(unittest.IsolatedAsyncioTestCase):
             page=None,
             status_callback=None,
             source_label: str = "来源",
+            parent_url=None,
         ):
             enqueue_calls.append(list(learning_links))
             return {

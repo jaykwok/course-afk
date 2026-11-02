@@ -8,7 +8,11 @@ from bs4 import BeautifulSoup
 
 from core.browser.session import create_browser_context, is_target_closed_exception
 from core.abort import UserCancelRequested, UserAbortRequested, WafBlockError
-from core.queues.learning import record_learning_failure, remove_learning_failure, remember_discovery_entries
+from core.queues.learning import (
+    record_learning_failure,
+    remove_learning_failure,
+    remember_discovery_entries,
+)
 from core.runtime import close_safely
 from core.config import ZHIXUEYUN_COURSE_PREFIX, ZHIXUEYUN_SUBJECT_PREFIX
 from core.file_ops import is_compliant_url_regex, normalize_url
@@ -248,7 +252,6 @@ async def _evaluate(page, script):
         return await page.evaluate(script)
 
 
-
 def _extract_query_params_from_app_href(href: str) -> dict[str, list[str]]:
     parsed_url = urlparse(href.strip())
     params = parse_qs(parsed_url.query)
@@ -464,12 +467,16 @@ async def _ensure_ctexpert_case_pool_authenticated(
 ) -> None:
     try:
         async with asyncio.timeout(_CASE_POOL_AUTH_WAIT_MS / 1000):
-            await _poll_ctexpert_case_pool_authenticated(page, target_url, status_callback)
+            await _poll_ctexpert_case_pool_authenticated(
+                page, target_url, status_callback
+            )
     except TimeoutError as exc:
         raise RuntimeError("专家助手自动认证超过 60 秒，入口已保留供重试") from exc
 
 
-async def _poll_ctexpert_case_pool_authenticated(page, target_url: str, status_callback=None) -> None:
+async def _poll_ctexpert_case_pool_authenticated(
+    page, target_url: str, status_callback=None
+) -> None:
     """自动完成 A→登录页→SSO→A 回跳；仅检查 token 是否存在。"""
 
     elapsed = 0
@@ -580,6 +587,7 @@ async def collect_learning_links_from_learning_zone_urls(
     before_close_callback=None,
     *,
     context=None,
+    detailed=False,
 ) -> int:
     """
     解析学习专区链接并写入学习队列。
@@ -587,10 +595,13 @@ async def collect_learning_links_from_learning_zone_urls(
     可传入已有 context 复用浏览器；否则自建 context。
     """
     if not learning_zone_urls:
-        return 0
+        from core.discovery.contracts import CollectionResult
+
+        return CollectionResult(complete=True) if detailed else 0
 
     remember_discovery_entries(learning_zone_urls)
     total_added = 0
+    incomplete = []
 
     async def _run_with_context(active_context) -> None:
         nonlocal total_added
@@ -630,9 +641,10 @@ async def collect_learning_links_from_learning_zone_urls(
                     )
 
                 if is_case_pool:
-                    learning_links, case_pool_api_stats = (
-                        await _fetch_ctexpert_case_pool_links(page)
-                    )
+                    (
+                        learning_links,
+                        case_pool_api_stats,
+                    ) = await _fetch_ctexpert_case_pool_links(page)
                     case_pool_api_direct = case_pool_api_stats.get("complete") is True
                     if learning_links and status_callback:
                         status_callback(
@@ -670,7 +682,10 @@ async def collect_learning_links_from_learning_zone_urls(
                     elapsed += LEARNING_ZONE_LINK_POLL_MILLISECONDS
 
                 if is_case_pool and not case_pool_api_direct:
-                    learning_links, page_clicks = await _collect_ctexpert_case_pool_pages(
+                    (
+                        learning_links,
+                        page_clicks,
+                    ) = await _collect_ctexpert_case_pool_pages(
                         page,
                         learning_links,
                         status_callback=status_callback,
@@ -685,28 +700,50 @@ async def collect_learning_links_from_learning_zone_urls(
                     if more_clicks and status_callback:
                         status_callback(f"已展开「更多」{more_clicks} 次")
 
-                    learning_links = unique_urls(learning_links + extract_learning_links_from_learning_zone_html(await page.content()))
+                    learning_links = unique_urls(
+                        learning_links
+                        + extract_learning_links_from_learning_zone_html(
+                            await page.content()
+                        )
+                    )
                     if not rendered_links:
-                        incomplete_reason = "未能确认学习专区的课程清单已加载，请重试此入口"
+                        incomplete_reason = (
+                            "未能确认学习专区的课程清单已加载，请重试此入口"
+                        )
                 # 再从渲染后的 DOM 文本兜底扫一轮（含非 a 标签）
-                body_text = await _evaluate(page,
-                    "() => (document.body && document.body.innerText) || ''"
+                body_text = await _evaluate(
+                    page, "() => (document.body && document.body.innerText) || ''"
                 )
-                learning_links = unique_urls(learning_links + _extract_detail_urls_from_text(body_text or ""))
+                learning_links = unique_urls(
+                    learning_links + _extract_detail_urls_from_text(body_text or "")
+                )
 
                 enqueue = await enqueue_learning_links_with_subject_expand(
                     learning_links,
                     page=page,
                     status_callback=status_callback,
                     source_label=source_label,
+                    parent_url=url,
                 )
                 total_added += enqueue["learning_added"]
+                if enqueue.get("complete") is not True and not incomplete_reason:
+                    incomplete_reason = "入口中的主题章节尚未完整确认，请重新解析此入口"
                 if incomplete_reason:
-                    record_learning_failure(url, reason="discovery_incomplete", reason_text=incomplete_reason, detail={"source": source_label})
+                    incomplete.append("discovery_incomplete")
+                    record_learning_failure(
+                        url,
+                        reason="discovery_incomplete",
+                        reason_text=incomplete_reason,
+                        detail={"source": source_label},
+                    )
                     if status_callback:
                         status_callback(incomplete_reason)
                 else:
-                    remove_learning_failure(url, keep_file=True)
+                    remove_learning_failure(
+                        url, reason="discovery_incomplete", keep_file=True
+                    )
+                if enqueue.get("complete") is not True:
+                    incomplete.append("discovery_incomplete")
                 if status_callback:
                     if learning_links:
                         status_callback(
@@ -721,15 +758,32 @@ async def collect_learning_links_from_learning_zone_urls(
                             "可改用手动选择模式"
                         )
             except (UserAbortRequested, UserCancelRequested, WafBlockError):
-                record_learning_failure(url, reason="discovery_incomplete", reason_text="入口收集被中断，请重新解析", detail={"source": source_label})
+                record_learning_failure(
+                    url,
+                    reason="discovery_incomplete",
+                    reason_text="入口收集被中断，请重新解析",
+                    detail={"source": source_label},
+                )
                 raise
             except asyncio.CancelledError:
-                record_learning_failure(url, reason="discovery_incomplete", reason_text="入口收集被取消，请重新解析", detail={"source": source_label})
+                record_learning_failure(
+                    url,
+                    reason="discovery_incomplete",
+                    reason_text="入口收集被取消，请重新解析",
+                    detail={"source": source_label},
+                )
                 raise
             except Exception as exc:
-                record_learning_failure(url, reason="discovery_incomplete", reason_text=f"入口收集不完整（{type(exc).__name__}），请重新解析", detail={"source": source_label})
+                record_learning_failure(
+                    url,
+                    reason="discovery_incomplete",
+                    reason_text=f"入口收集不完整（{type(exc).__name__}），请重新解析",
+                    detail={"source": source_label},
+                )
                 if is_target_closed_exception(exc):
-                    raise UserCancelRequested("收集页面已关闭，入口已保存供重试") from None
+                    raise UserCancelRequested(
+                        "收集页面已关闭，入口已保存供重试"
+                    ) from None
                 raise
             finally:
                 await close_safely(page.close(), label="discovery page")
@@ -744,4 +798,10 @@ async def collect_learning_links_from_learning_zone_urls(
             if before_close_callback:
                 before_close_callback(total_added)
 
-    return total_added
+    from core.discovery.contracts import CollectionResult
+
+    return (
+        CollectionResult(total_added, not incomplete, tuple(set(incomplete)))
+        if detailed
+        else total_added
+    )

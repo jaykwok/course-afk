@@ -221,7 +221,9 @@ async def _wait_for_course_bootstrap(page, monitor: _CourseInfoMonitor | None) -
             pass
 
 
-def _write_learning_queue(urls: list[str], *, learning_file: Path | None = None) -> None:
+def _write_learning_queue(
+    urls: list[str], *, learning_file: Path | None = None
+) -> None:
     if learning_file is None:
         learning_file = LEARNING_URLS_FILE
     if urls or learning_file.exists():
@@ -275,12 +277,8 @@ async def _open_course_page(context):
     if not await browser_still_usable(context):
         # 心跳页被关（可能是整窗关闭，也可能是单关心跳页）时给出对应文案
         if is_controller_window_closed(context):
-            raise UserCancelRequested(
-                "心跳页已关闭，已保留剩余学习链接，返回主菜单"
-            )
-        raise UserCancelRequested(
-            "浏览器窗口已关闭，已保留剩余学习链接，返回主菜单"
-        )
+            raise UserCancelRequested("心跳页已关闭，已保留剩余学习链接，返回主菜单")
+        raise UserCancelRequested("浏览器窗口已关闭，已保留剩余学习链接，返回主菜单")
     try:
         return await context.new_page()
     except Exception as exc:
@@ -293,69 +291,119 @@ async def _open_course_page(context):
         raise
 
 
-async def _process_url(context, url, handler, *, capture_callback=None, failure_file=None):
+async def _process_url(
+    context, url, handler, *, capture_callback=None, failure_file=None
+):
     """One fresh page activity. A typed outcome never implies queue deletion."""
     from core.workflow.contracts import TaskOutcome, Status
     from core.workflow.errors import error_outcome
     from core.workflow.host import activity_context
     from core.tasks.identity import parse_entry, account_id
     from core.browser.session import raise_for_certificate_error
+
     page = None
     monitor = None
     failure_path = failure_file or LEARNING_FAILURES_FILE
     current = activity_context.get()
-    task_id = current['task_id'] if current else parse_entry(url,account_id()).key.task_id
+    task_id = (
+        current["task_id"] if current else parse_entry(url, account_id()).key.task_id
+    )
 
     async def capture(stage):
         if capture_callback is not None and page is not None:
             try:
-                await capture_callback(page,stage)
+                await capture_callback(page, stage)
             except Exception:
-                logging.debug('页面探针捕获失败',exc_info=True)
+                logging.debug("页面探针捕获失败", exc_info=True)
+
     try:
         page = await _open_course_page(context)
         if is_course_detail_url(url):
             monitor = _install_course_info_monitor(page)
-        await capture('page_created')
+        await capture("page_created")
         # Business dialogs precede generic overlay cleanup in CourseSession.
-        await page.goto(url, wait_until='load')
-        await capture('after_navigation')
-        await _wait_for_course_bootstrap(page,monitor)
+        await page.goto(url, wait_until="load")
+        await capture("after_navigation")
+        await _wait_for_course_bootstrap(page, monitor)
         await ensure_course_page_ready(page)
         completed = await handler(page)
-        await capture('after_handler')
+        await capture("after_handler")
         if completed is True:
-            for reason in ('sync_timeout','retryable_error','partial_course_failure','playback_not_started','section_activation_failed','video_player_not_ready'):
-                remove_learning_failure(url,reason=reason,file_path=failure_path)
+            from core.queues.learning import (
+                RETRIABLE_LEARNING_FAILURE_REASONS,
+                ACCESS_DENIED_LEARNING_FAILURE_REASONS,
+            )
+
+            # A verified successful course resolves prior automatic learning
+            # failures, while manual/discovery/exam issues remain independent.
+            for reason in (
+                RETRIABLE_LEARNING_FAILURE_REASONS
+                | ACCESS_DENIED_LEARNING_FAILURE_REASONS
+            ):
+                remove_learning_failure(url, reason=reason, file_path=failure_path)
         issues = [e for e in read_learning_failures(failure_path) if e.url == url]
-        status = Status.COMPLETED if completed is True and not issues else Status.WAITING_CHILDREN if completed is False or issues else Status.WAITING_SYNC
-        return TaskOutcome(task_id,status,[e.reason for e in issues],evidence_refs=['server_section_progress'] if completed is True else [])
+        status = (
+            Status.COMPLETED
+            if completed is True and not issues
+            else Status.WAITING_CHILDREN
+            if completed is False or issues
+            else Status.WAITING_SYNC
+        )
+        return TaskOutcome(
+            task_id,
+            status,
+            [e.reason for e in issues],
+            evidence_refs=["server_section_progress"] if completed is True else [],
+            details={"local_work_complete": completed is True},
+        )
     except WafBlockError as exc:
-        record_learning_failure(url,reason=exc.reason,reason_text=exc.reason_text,file_path=failure_path)
+        record_learning_failure(
+            url, reason=exc.reason, reason_text=exc.reason_text, file_path=failure_path
+        )
         raise
-    except (UserCancelRequested,UserAbortRequested):
+    except (UserCancelRequested, UserAbortRequested):
         raise
     except Exception as exc:
-        await capture('error')
+        await capture("error")
         raise_for_certificate_error(exc)
         if is_target_closed_exception(exc):
             if not await browser_still_usable(context):
-                raise UserCancelRequested('浏览器窗口已关闭，当前及剩余任务保留') from None
-            return TaskOutcome(task_id,Status.INTERRUPTED,['course_page_closed'],retry_policy='next_operation')
-        if not isinstance(exc,(NoPermissionError,LearningFlowError)) and not await browser_still_usable(context):
-            raise UserCancelRequested('浏览器窗口已关闭，当前及剩余任务保留') from None
-        result = error_outcome(task_id,exc)
-        reason = getattr(exc,'reason','retryable_error')
-        record_learning_failure(url,reason=reason,reason_text=getattr(exc,'reason_text',f"挂课处理失败，后续可重新加入课程链接: {exc}"),detail=getattr(exc,'detail',{}),file_path=failure_path)
+                raise UserCancelRequested(
+                    "浏览器窗口已关闭，当前及剩余任务保留"
+                ) from None
+            return TaskOutcome(
+                task_id,
+                Status.INTERRUPTED,
+                ["course_page_closed"],
+                retry_policy="next_operation",
+            )
+        if not isinstance(
+            exc, (NoPermissionError, LearningFlowError)
+        ) and not await browser_still_usable(context):
+            raise UserCancelRequested("浏览器窗口已关闭，当前及剩余任务保留") from None
+        result = error_outcome(task_id, exc)
+        reason = getattr(exc, "reason", "retryable_error")
+        record_learning_failure(
+            url,
+            reason=reason,
+            reason_text=getattr(
+                exc, "reason_text", f"挂课处理失败，后续可重新加入课程链接: {exc}"
+            ),
+            detail=getattr(exc, "detail", {}),
+            file_path=failure_path,
+        )
         return result
     finally:
         if monitor:
-            for task in tuple(getattr(monitor,'tasks',())):
+            for task in tuple(getattr(monitor, "tasks", ())):
                 task.cancel()
-            await asyncio.gather(*tuple(getattr(monitor,'tasks',())),return_exceptions=True)
+            await asyncio.gather(
+                *tuple(getattr(monitor, "tasks", ())), return_exceptions=True
+            )
         await _close_page_quiet(page)
 
 
 async def run_afk_once(status_callback=None):
     from core.app.service import ApplicationService
+
     return await ApplicationService().learn(status_callback=status_callback)

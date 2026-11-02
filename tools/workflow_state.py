@@ -17,7 +17,16 @@ def main():
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "action", choices=("dry-run", "migrate", "status", "export", "bind-current")
+        "action",
+        choices=(
+            "dry-run",
+            "migrate",
+            "status",
+            "export",
+            "bind-current",
+            "repair-check",
+            "repair",
+        ),
     )
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
@@ -28,6 +37,12 @@ def main():
             repo = TaskRepository(DATA_DIR / "workflows" / "state.sqlite")
             if args.action == "migrate":
                 result = migrate(LINKS_DIR, repo)
+            elif args.action in {"repair", "repair-check"}:
+                from core.tasks.repair import repair_state
+
+                result = repair_state(
+                    repo, LINKS_DIR, apply=args.action == "repair", recheck=True
+                )
             elif args.action == "bind-current":
                 repo.backup(repo.path.parent / "before-binding.sqlite")
                 result = {"bound_tasks": bind_unbound(repo, account_id())}

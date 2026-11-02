@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from core.abort import raise_for_batch_stop
+
 import asyncio
 import json
 import logging
@@ -43,14 +45,22 @@ async def _cleanup_background_tasks(*tasks) -> None:
 
 async def _read_video_player_state(page) -> dict[str, object]:
     from core.learning.playback import read_playback_snapshot
+
     state = await read_playback_snapshot(page)
-    return {**state, 'videos': [{**video,
-        'readyState': video.get('ready_state',video.get('readyState')),
-        'networkState': video.get('network_state',video.get('networkState')),
-        'currentTime': video.get('current_time',video.get('currentTime')),
-        'errorCode': video.get('error_code',video.get('errorCode')),
-        'sourceKind': video.get('source_kind',video.get('sourceKind')),
-    } for video in state.get('videos',[])]}
+    return {
+        **state,
+        "videos": [
+            {
+                **video,
+                "readyState": video.get("ready_state", video.get("readyState")),
+                "networkState": video.get("network_state", video.get("networkState")),
+                "currentTime": video.get("current_time", video.get("currentTime")),
+                "errorCode": video.get("error_code", video.get("errorCode")),
+                "sourceKind": video.get("source_kind", video.get("sourceKind")),
+            }
+            for video in state.get("videos", [])
+        ],
+    }
 
 
 async def _describe_video_target(box) -> dict[str, object]:
@@ -62,12 +72,14 @@ async def _describe_video_target(box) -> dict[str, object]:
     ):
         try:
             detail[key] = await box.get_attribute(attribute)
-        except Exception:
+        except Exception as exc:
+            raise_for_batch_stop(exc)
             detail[key] = None
     try:
         text = await box.locator(".section-item-wrapper").inner_text(timeout=2000)
         detail["text"] = " ".join((text or "").split())[:200]
-    except Exception:
+    except Exception as exc:
+        raise_for_batch_stop(exc)
         pass
     return detail
 
@@ -101,11 +113,13 @@ async def _reclick_video_target(page, box) -> None:
     wrapper = box.locator(".section-item-wrapper")
     try:
         await wrapper.scroll_into_view_if_needed(timeout=3000)
-    except Exception:
+    except Exception as exc:
+        raise_for_batch_stop(exc)
         pass
     try:
         await wrapper.click(timeout=3000)
-    except Exception:
+    except Exception as exc:
+        raise_for_batch_stop(exc)
         await wrapper.click(timeout=3000, force=True)
     await page.wait_for_timeout(500)
 
@@ -128,7 +142,8 @@ async def _ensure_video_player_ready(
                 from core.browser.overlays import dismiss_topmost_overlays_async
 
                 await dismiss_topmost_overlays_async(page, max_count=2)
-            except Exception:
+            except Exception as exc:
+                raise_for_batch_stop(exc)
                 pass
 
             last_state = await _wait_for_video_player_ready(
@@ -136,14 +151,13 @@ async def _ensure_video_player_ready(
                 box=box,
                 timeout_ms=wait_timeout_ms,
             )
-            if bool(last_state.get("ready")) and bool(
-                last_state.get("target_focused")
-            ):
+            if bool(last_state.get("ready")) and bool(last_state.get("target_focused")):
                 await ensure_course_started(page, box)
                 return
         except CoursePlaybackNotStartedError:
             raise
         except Exception as exc:
+            raise_for_batch_stop(exc)
             if is_target_closed_exception(exc):
                 raise
             last_state = {
@@ -162,6 +176,7 @@ async def _ensure_video_player_ready(
                 await page.wait_for_timeout(800)
                 await _reclick_video_target(page, box)
             except Exception as exc:
+                raise_for_batch_stop(exc)
                 if is_target_closed_exception(exc):
                     raise
                 logging.debug(f"重新点击目标视频章节失败: {exc}")
@@ -220,7 +235,12 @@ async def _watch_video_playback(page, box, *, watch_seconds: int) -> None:
     loop = asyncio.get_running_loop()
     from core.learning.course_session import PhaseBudget
     from core.learning.progress import section_id_from_box
-    budget=PhaseBudget(watch_seconds,"watch:"+str(await section_id_from_box(box)),offline_consumes=False)
+
+    budget = PhaseBudget(
+        watch_seconds,
+        "watch:" + str(await section_id_from_box(box)),
+        offline_consumes=False,
+    )
     deadline = loop.time() + budget.remaining
     extended_total = 0.0
     stall_cap_logged = False
@@ -242,15 +262,19 @@ async def _watch_video_playback(page, box, *, watch_seconds: int) -> None:
             # 由上层的 TargetClosed 路径接管（保存剩余链接并停止）。
             await page.wait_for_timeout(int(slice_seconds * 1000))
 
-            from core.learning.progress import read_server_section_state, section_completed_on_server
-            if section_completed_on_server(await read_server_section_state(page,box)):
+            from core.learning.progress import (
+                read_server_section_state,
+                section_completed_on_server,
+            )
+
+            if section_completed_on_server(await read_server_section_state(page, box)):
                 logging.info(
                     "章节进度已提前标记为已学, 剩余 %s 秒不再空等",
                     max(0, round(deadline - loop.time())),
                 )
                 return
 
-            await ensure_course_started(page,box)
+            await ensure_course_started(page, box)
             video = _pick_active_video(await _read_video_player_state(page))
             if video is None:
                 continue
@@ -281,9 +305,7 @@ async def _watch_video_playback(page, box, *, watch_seconds: int) -> None:
             last_media_time = media_time
 
             if paused:
-                # 互动练习等弹窗会暂停播放：先处理弹窗再点回播放
-                await check_and_handle_rating_popup(page)
-                await ensure_course_started(page, box)
+                # CourseSession handles interaction gates before resuming media.
                 logging.info("检测到视频暂停，已通过课程统一恢复流程确认状态")
 
             if advanced is None:
@@ -303,7 +325,7 @@ async def _watch_video_playback(page, box, *, watch_seconds: int) -> None:
                         VIDEO_STALL_MAX_EXTRA_WAIT,
                     )
                 continue
-            extra=budget.extend(extra,VIDEO_STALL_MAX_EXTRA_WAIT)
+            extra = budget.extend(extra, VIDEO_STALL_MAX_EXTRA_WAIT)
             deadline += extra
             extended_total += extra
             budget.save()
@@ -327,11 +349,11 @@ async def handle_video(box, page):
     timing_plan = build_video_timing_plan(section_text)
     logging.info(f"课程总时长: {timing_plan.total_time} 秒")
     logging.info(f"还需学习: {timing_plan.learning_wait_time} 秒")
-    logging.info(f"额外同步最多等待: {timing_plan.sync_wait_time} 秒（服务器确认完成即结束）")
+    logging.info(
+        f"额外同步最多等待: {timing_plan.sync_wait_time} 秒（服务器确认完成即结束）"
+    )
     if timing_plan.sync_wait_time > 0:
-        logging.info(
-            f"同步确认轮询间隔: {timing_plan.sync_poll_interval} 秒"
-        )
+        logging.info(f"同步确认轮询间隔: {timing_plan.sync_poll_interval} 秒")
 
     # 剩余时长被向上取整到整分钟，直接照做等于每节都卡整分钟离开；加一段随机
     # 余量，顺带补偿平台按秒结算时的边界。
@@ -379,13 +401,15 @@ async def handle_document(page, box):
     content = page.locator("[class*='fullScreen-content']").first
     try:
         await content.wait_for(state="visible", timeout=15000)
-    except Exception:
+    except Exception as exc:
         # 文档区加载慢或被弹窗挡住：关遮罩后短等再试一次
+        raise_for_batch_stop(exc)
         try:
             from core.browser.overlays import dismiss_topmost_overlays_async
 
             await dismiss_topmost_overlays_async(page, max_count=2)
-        except Exception:
+        except Exception as exc:
+            raise_for_batch_stop(exc)
             pass
         await page.wait_for_timeout(800)
         await content.wait_for(state="visible", timeout=15000)
@@ -406,7 +430,7 @@ async def handle_document(page, box):
         )
         logging.info("文档进度已同步，离开本节")
     except SyncTimeoutError as exc:
-        exc.detail['playback_state'] = await read_course_playback_state(page, box)
+        exc.detail["playback_state"] = await read_course_playback_state(page, box)
         raise
 
 

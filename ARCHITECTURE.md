@@ -12,6 +12,8 @@ CLI 与 TUI 均通过 `ApplicationService` 顺序派发任务。`WorkflowHost` �
 
 ## 存储与故障窗口
 
+后续审计 R1–R9 的修复、旧状态库修复流程和新增验收范围见 [WORKFLOW_AUDIT_FIXES.md](WORKFLOW_AUDIT_FIXES.md)。队列快照不再隐式建立任务关系；关系由明确发现结果写入并记录来源。业务库 v2 另存本阶段结果、用户移除决定与修复记录，以便正确聚合父子任务并遵守清空行为。
+
 `data/workflows/execution.sqlite` 完全由 DBOS 管理，应用不读写其内部表。`state.sqlite` 是业务状态的唯一来源。`core/queues/*` 是仓储投影的兼容门面，JSON 仅作首次导入和可读快照；修改快照不会自动覆盖 SQLite。
 
 1. 业务事务先保存任务及 PLANNED 的稳定 run ID，再用同一 ID 派发 DBOS。
@@ -52,6 +54,8 @@ python tools/workflow_state.py migrate
 python tools/workflow_state.py status
 python tools/workflow_state.py export --output <私有本地文件.json>
 python tools/workflow_state.py bind-current
+python tools/workflow_state.py repair-check
+python tools/workflow_state.py repair
 ```
 
 `bind-current` 是操作者明确核对归属后的操作；先更新登录凭证。遇到目标账号已有同一考试历史时事务回滚，需逐项核实，避免覆盖记录。导出含业务链接和历史，应留在私有目录，不能上传到 CI。

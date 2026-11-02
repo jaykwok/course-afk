@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from core.abort import raise_for_batch_stop
+
 import asyncio
 import logging
 
@@ -19,7 +21,8 @@ async def handle_archive_continue_popup(page) -> bool:
         transition = page.locator(".study-transition-page").filter(has_text="归档")
         try:
             await transition.first.wait_for(state="visible", timeout=2000)
-        except Exception:
+        except Exception as exc:
+            raise_for_batch_stop(exc)
             transition = None
 
         if transition is not None and await transition.count() > 0:
@@ -37,11 +40,13 @@ async def handle_archive_continue_popup(page) -> bool:
             logging.info("检测到归档课程中转页，已点击继续学习")
             try:
                 await transition.first.wait_for(state="hidden", timeout=5000)
-            except Exception:
+            except Exception as exc:
+                raise_for_batch_stop(exc)
                 await page.wait_for_timeout(800)
             try:
                 await page.wait_for_load_state("load", timeout=10000)
-            except Exception:
+            except Exception as exc:
+                raise_for_batch_stop(exc)
                 pass
             return True
 
@@ -49,12 +54,15 @@ async def handle_archive_continue_popup(page) -> bool:
         dialog = page.locator(".ant-modal-content").filter(has_text="归档")
         try:
             await dialog.first.wait_for(state="visible", timeout=1500)
-        except Exception:
+        except Exception as exc:
+            raise_for_batch_stop(exc)
             return False
 
         continue_btn = dialog.locator("button").filter(has_text="继续学习")
         if await continue_btn.count() == 0:
-            continue_btn = dialog.locator("div.btn, a, span").filter(has_text="继续学习")
+            continue_btn = dialog.locator("div.btn, a, span").filter(
+                has_text="继续学习"
+            )
         if await continue_btn.count() == 0:
             continue_btn = page.get_by_role("button", name="继续学习")
         if await continue_btn.count() == 0:
@@ -65,10 +73,12 @@ async def handle_archive_continue_popup(page) -> bool:
         logging.info("检测到归档课程确认弹窗，已点击继续学习")
         try:
             await dialog.first.wait_for(state="hidden", timeout=3000)
-        except Exception:
+        except Exception as exc:
+            raise_for_batch_stop(exc)
             await page.wait_for_timeout(500)
         return True
     except Exception as exc:
+        raise_for_batch_stop(exc)
         logging.warning(f"处理归档确认弹窗时出错: {exc}")
         return False
 
@@ -85,7 +95,8 @@ async def handle_rating_popup(page):
             dialog_count = await dialogs.count()
             if dialog_count == 0:
                 return False
-        except Exception:
+        except Exception as exc:
+            raise_for_batch_stop(exc)
             return False
 
         # 页面可能保留已隐藏的历史 modal；只操作当前可见弹窗。
@@ -96,7 +107,8 @@ async def handle_rating_popup(page):
                 if await candidate.is_visible():
                     dialog = candidate
                     break
-            except Exception:
+            except Exception as exc:
+                raise_for_batch_stop(exc)
                 continue
         if dialog is None:
             return False
@@ -106,7 +118,8 @@ async def handle_rating_popup(page):
         # 归档确认也是 ant-modal，勿当评分弹窗硬点「确定」
         try:
             dialog_text = await dialog.inner_text(timeout=500)
-        except Exception:
+        except Exception as exc:
+            raise_for_batch_stop(exc)
             dialog_text = ""
         if "归档" in (dialog_text or ""):
             return await handle_archive_continue_popup(page)
@@ -114,8 +127,9 @@ async def handle_rating_popup(page):
         stars_container = dialog.locator("ul.ant-rate")
         try:
             await stars_container.wait_for(state="visible", timeout=1000)
-        except Exception:
+        except Exception as exc:
             # 有 ant-modal 但不是评分（其它业务弹窗）
+            raise_for_batch_stop(exc)
             return False
 
         try:
@@ -125,13 +139,16 @@ async def handle_rating_popup(page):
             await fifth_star.wait_for(state="visible", timeout=1000)
             try:
                 await fifth_star.scroll_into_view_if_needed(timeout=1000)
-            except Exception:
+            except Exception as exc:
+                raise_for_batch_stop(exc)
                 pass
             try:
                 await fifth_star.click(timeout=3000)
-            except Exception:
+            except Exception as exc:
+                raise_for_batch_stop(exc)
                 await fifth_star.click(timeout=3000, force=True)
         except Exception as exc:
+            raise_for_batch_stop(exc)
             logging.warning(f"点击星星失败: {exc}")
             return False
 
@@ -153,9 +170,11 @@ async def handle_rating_popup(page):
             logging.info("已点击确定按钮")
             return True
         except Exception as exc:
+            raise_for_batch_stop(exc)
             logging.error(f"点击确定按钮时出错: {exc}")
             return False
     except Exception as exc:
+        raise_for_batch_stop(exc)
         logging.error(f"处理评分弹窗时出错: {exc}")
         return False
 
@@ -179,6 +198,7 @@ async def check_and_handle_rating_popup(page):
                 await page.wait_for_timeout(1000)
                 return True
     except Exception as exc:
+        raise_for_batch_stop(exc)
         logging.warning(f"处理评价弹窗时出错: {str(exc)}")
 
     return False

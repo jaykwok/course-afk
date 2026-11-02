@@ -72,6 +72,16 @@ class TaskRepository:
                     PRIMARY KEY(collection,task_id,item_key));
                 CREATE TABLE IF NOT EXISTS exam_history(
                     task_id TEXT PRIMARY KEY REFERENCES tasks, payload TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS task_edge_evidence(
+                    parent TEXT NOT NULL REFERENCES tasks, child TEXT NOT NULL REFERENCES tasks,
+                    source TEXT NOT NULL, evidence TEXT NOT NULL, PRIMARY KEY(parent,child,source));
+                CREATE TABLE IF NOT EXISTS task_local_outcomes(
+                    task_id TEXT PRIMARY KEY REFERENCES tasks, run_id TEXT NOT NULL, payload TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS task_dismissals(
+                    task_id TEXT NOT NULL REFERENCES tasks, scope TEXT NOT NULL, at TEXT NOT NULL,
+                    PRIMARY KEY(task_id,scope));
+                CREATE TABLE IF NOT EXISTS state_repairs(
+                    repair_key TEXT PRIMARY KEY, kind TEXT NOT NULL, payload TEXT NOT NULL, at TEXT NOT NULL);
             """)
 
     @contextmanager
@@ -125,20 +135,52 @@ class TaskRepository:
             return [
                 row[0]
                 for row in db.execute(
-                    "SELECT DISTINCT p.url FROM task_edges e JOIN tasks p ON p.task_id=e.parent JOIN tasks c ON c.task_id=e.child WHERE p.account=? AND c.kind='url_review' AND c.status!='COMPLETED'",
+                    "SELECT DISTINCT p.url FROM task_edges e JOIN tasks p ON p.task_id=e.parent JOIN tasks c ON c.task_id=e.child WHERE p.account=? AND c.kind='url_review' AND c.status NOT IN ('COMPLETED','DISMISSED') AND NOT EXISTS(SELECT 1 FROM task_dismissals d WHERE d.task_id=p.task_id AND d.scope='learn')",
                     (account,),
                 )
             ]
 
-    def link(self, parent: str, child: str, *, required=True, db=None):
+    def link(
+        self,
+        parent: str,
+        child: str,
+        *,
+        required=True,
+        db=None,
+        source="explicit",
+        evidence=None,
+    ):
         if parent == child:
             return
         if db is None:
             with self.connect() as connection:
-                return self.link(parent, child, required=required, db=connection)
+                return self.link(
+                    parent,
+                    child,
+                    required=required,
+                    db=connection,
+                    source=source,
+                    evidence=evidence,
+                )
+        if db.execute(
+            "WITH RECURSIVE descendants(id) AS (SELECT child FROM task_edges WHERE parent=? UNION SELECT e.child FROM task_edges e JOIN descendants d ON e.parent=d.id) SELECT 1 FROM descendants WHERE id=?",
+            (child, parent),
+        ).fetchone():
+            raise ValueError("任务关系不能形成循环")
+        owners = list(
+            db.execute(
+                "SELECT account FROM tasks WHERE task_id IN (?,?)", (parent, child)
+            )
+        )
+        if len(owners) != 2 or owners[0][0] != owners[1][0]:
+            raise ValueError("父子任务必须属于同一账号")
         db.execute(
-            "INSERT OR IGNORE INTO task_edges VALUES(?,?,?)",
+            "INSERT INTO task_edges VALUES(?,?,?) ON CONFLICT(parent,child) DO UPDATE SET required=MAX(required,excluded.required)",
             (parent, child, int(required)),
+        )
+        db.execute(
+            "INSERT OR REPLACE INTO task_edge_evidence VALUES(?,?,?,?)",
+            (parent, child, source, encode(evidence or {})),
         )
 
     def plan(self, task_id: str, kind: str, options: dict, version: str) -> dict:
@@ -195,19 +237,16 @@ class TaskRepository:
 
     def save_outcome(self, run_id: str, outcome: dict, *, finalized=False):
         with self.connect() as db:
-            # Required children remain visible even after the automatic part ends.
-            children = list(
+            previous = db.execute(
+                "SELECT run_id FROM task_local_outcomes WHERE task_id=?",
+                (outcome["task_id"],),
+            ).fetchone()
+            if not finalized or previous is None or previous[0] != run_id:
                 db.execute(
-                    "SELECT t.task_id,t.status FROM task_edges e JOIN tasks t ON t.task_id=e.child WHERE e.parent=? AND e.required=1 AND t.status!='COMPLETED'",
-                    (outcome["task_id"],),
+                    "INSERT OR REPLACE INTO task_local_outcomes VALUES(?,?,?)",
+                    (outcome["task_id"], run_id, encode(outcome)),
                 )
-            )
-            if children and outcome["status"] == "COMPLETED":
-                outcome = {
-                    **outcome,
-                    "status": "WAITING_CHILDREN",
-                    "child_refs": [r[0] for r in children],
-                }
+            outcome = self._aggregate(outcome["task_id"], db)
             value = encode(outcome)
             db.execute(
                 "UPDATE tasks SET status=?,outcome=?,updated_at=? WHERE task_id=?",
@@ -241,7 +280,120 @@ class TaskRepository:
                         "DELETE FROM queue_items WHERE task_id=? AND collection=?",
                         (outcome["task_id"], collection),
                     )
+            self.refresh_ancestors({outcome["task_id"]}, db=db)
         return outcome
+
+    def _aggregate(self, task_id, db):
+        row = db.execute(
+            "SELECT payload FROM task_local_outcomes WHERE task_id=?", (task_id,)
+        ).fetchone()
+        if not row:
+            return None
+        own = json.loads(row[0])
+        # An incomplete discovery or independent manual work must not be
+        # completed merely because its currently known children have finished.
+        local_complete = own["status"] == "COMPLETED" or (
+            own["status"] == "WAITING_CHILDREN"
+            and own.get("details", {}).get(
+                "local_work_complete", not own.get("reason_codes")
+            )
+            and own.get("details", {}).get("discovery_complete", True)
+        )
+        if not local_complete:
+            return own
+        children = [
+            r[0]
+            for r in db.execute(
+                "SELECT t.task_id FROM task_edges e JOIN tasks t ON t.task_id=e.child WHERE e.parent=? AND e.required=1 AND t.status!='COMPLETED'",
+                (task_id,),
+            )
+        ]
+        return {
+            **own,
+            "status": "WAITING_CHILDREN" if children else "COMPLETED",
+            "child_refs": children,
+            "reason_codes": own.get("reason_codes", []) if children else [],
+        }
+
+    def refresh_ancestors(self, changed, *, db=None):
+        if db is None:
+            with self.connect() as connection:
+                return self.refresh_ancestors(changed, db=connection)
+        affected = set()
+        frontier = list(changed)
+        while frontier:
+            for parent in db.execute(
+                "SELECT parent FROM task_edges WHERE child=?", (frontier.pop(),)
+            ):
+                if parent[0] not in affected:
+                    affected.add(parent[0])
+                    frontier.append(parent[0])
+        # Aggregate children before parents, including diamonds/multiple roots.
+        dependencies = {
+            task: {
+                r[0]
+                for r in db.execute(
+                    "SELECT child FROM task_edges WHERE parent=?", (task,)
+                )
+            }
+            & affected
+            for task in affected
+        }
+        ready = [task for task, children in dependencies.items() if not children]
+        while ready:
+            parent = ready.pop()
+            row = db.execute(
+                "SELECT status,outcome FROM tasks WHERE task_id=?", (parent,)
+            ).fetchone()
+            if row["status"] not in {"RUNNING", "DISMISSED"}:
+                outcome = self._aggregate(parent, db)
+                if outcome is not None and (
+                    row["status"] != outcome["status"]
+                    or row["outcome"] != encode(outcome)
+                ):
+                    db.execute(
+                        "UPDATE tasks SET status=?,outcome=?,updated_at=? WHERE task_id=?",
+                        (outcome["status"], encode(outcome), now(), parent),
+                    )
+            dependencies.pop(parent)
+            for ancestor, children in dependencies.items():
+                if parent in children:
+                    children.remove(parent)
+                    if not children:
+                        ready.append(ancestor)
+        # Legacy cycles cannot be completed without evidence; repair quarantines them.
+
+    def dismiss(self, task_ids, scope, *, db):
+        for task_id in task_ids:
+            db.execute(
+                "INSERT OR REPLACE INTO task_dismissals VALUES(?,?,?)",
+                (task_id, scope, now()),
+            )
+            run_kinds = ("learn", "discover") if scope == "learn" else ("exam",)
+            for kind in run_kinds:
+                db.execute(
+                    "UPDATE runs SET dispatch='DISMISSED' WHERE task_id=? AND kind=? AND dispatch IN ('PLANNED','INTERRUPTED','DISPATCHED','RESULT_SAVED')",
+                    (task_id, kind),
+                )
+            db.execute(
+                "UPDATE tasks SET status='DISMISSED',updated_at=? WHERE task_id=? AND status!='COMPLETED'",
+                (now(), task_id),
+            )
+            # Removing an issue withdraws that obligation; it supplies no
+            # completion evidence. Explicit rediscovery restores required=1.
+            db.execute(
+                "UPDATE task_edges SET required=0 WHERE child=? AND EXISTS(SELECT 1 FROM tasks t WHERE t.task_id=child AND t.kind IN ('issue','url_review'))",
+                (task_id,),
+            )
+
+    def select(self, task_id, scope, *, db):
+        db.execute(
+            "DELETE FROM task_dismissals WHERE task_id=? AND scope=?", (task_id, scope)
+        )
+        db.execute(
+            "UPDATE tasks SET status='READY',updated_at=? WHERE task_id=? AND status='DISMISSED'",
+            (now(), task_id),
+        )
 
     def running(self, task_id: str):
         with self.connect() as db:
@@ -322,5 +474,9 @@ class TaskRepository:
                     "imports",
                     "queue_items",
                     "exam_history",
+                    "task_edge_evidence",
+                    "task_local_outcomes",
+                    "task_dismissals",
+                    "state_repairs",
                 )
             }

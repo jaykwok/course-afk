@@ -62,6 +62,8 @@ class IdentityAndIssuesTests(unittest.TestCase):
                 append_exam_urls([EXAM, other], file_path=path)
             finally:
                 activity_context.reset(token)
+            from core.tasks.relations import record_discovered_tasks
+            record_discovered_tasks([EXAM,other],parent_url=COURSE,source='course_exam_api',course_exam=True,repository=repo,account='unbound')
             self.assertIsNotNone(pending_submission(EXAM, path))
             self.assertIsNotNone(pending_submission(other, path))
             self.assertEqual(len(repo.pending_intents(parent, "submit")), 1)

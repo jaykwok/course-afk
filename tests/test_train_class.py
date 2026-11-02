@@ -428,6 +428,7 @@ class TrainClassCollectionTests(unittest.IsolatedAsyncioTestCase):
             page=None,
             status_callback=None,
             source_label: str = "来源",
+            parent_url=None,
         ):
             enqueue_calls.append(list(learning_links))
             # 5+5+3=13 活动：12 课程 + 1 主题展开 1 条 → learning_added=13
