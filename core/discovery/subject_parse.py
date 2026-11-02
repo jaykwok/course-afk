@@ -468,7 +468,10 @@ async def expand_and_append_subject_urls(
             if result.residual_subject_url:
                 stats["residual_count"] += 1
             learning_n, exam_n = append_expand_result(result)
-            from core.tasks.relations import record_discovered_tasks
+            from core.tasks.relations import (
+                record_discovered_tasks,
+                record_local_outcome,
+            )
 
             record_discovered_tasks(
                 result.course_urls + result.exam_urls,
@@ -488,6 +491,28 @@ async def expand_and_append_subject_urls(
                     reason_text="主题章节清单尚未完整确认，请重新解析入口",
                 )
                 stats["complete"] = False
+            from core.queues.learning import read_learning_failures
+            from core.workflow.contracts import Status
+
+            failures = [item for item in read_learning_failures() if item.url == url]
+            local_complete = result.complete and not result.residual_subject_url
+            record_local_outcome(
+                url,
+                Status.NEEDS_REVIEW
+                if failures
+                else Status.COMPLETED
+                if local_complete
+                else Status.WAITING_CHILDREN,
+                source="subject_api",
+                reason_codes=[item.reason for item in failures]
+                or (["subject_residual"] if result.residual_subject_url else []),
+                evidence_refs=["subject_chapter_list"] if result.complete else [],
+                details={
+                    "discovery_complete": result.complete,
+                    "local_work_complete": local_complete,
+                    "residual_count": int(bool(result.residual_subject_url)),
+                },
+            )
             stats["learning_added"] += learning_n
             stats["exam_added"] += exam_n
 

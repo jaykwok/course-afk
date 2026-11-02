@@ -277,6 +277,24 @@ class TaskRepository:
             self.refresh_ancestors({outcome["task_id"]}, db=db)
         return outcome
 
+    def observe_outcome(self, outcome: dict, *, source: str, db=None):
+        """Commit local work performed inline, without inventing a workflow run."""
+        if db is None:
+            with self.connect() as connection:
+                return self.observe_outcome(outcome, source=source, db=connection)
+        task_id = outcome["task_id"]
+        db.execute(
+            "INSERT OR REPLACE INTO task_local_outcomes VALUES(?,?,?)",
+            (task_id, "observation:" + source, encode(outcome)),
+        )
+        result = self._aggregate(task_id, db)
+        db.execute(
+            "UPDATE tasks SET status=?,outcome=?,updated_at=? WHERE task_id=?",
+            (result["status"], encode(result), now(), task_id),
+        )
+        self.refresh_ancestors({task_id}, db=db)
+        return result
+
     def _aggregate(self, task_id, db):
         row = db.execute(
             "SELECT payload FROM task_local_outcomes WHERE task_id=?", (task_id,)

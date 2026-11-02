@@ -7,19 +7,10 @@ import json
 
 from core.tasks.identity import account_id, parse_entry
 from core.tasks.records import merge_history
-from core.tasks.repository import encode, now
+from core.tasks.repository import encode
 
 
-def record_discovered_tasks(
-    urls,
-    *,
-    source,
-    parent_url=None,
-    course_exam=False,
-    completed_urls=(),
-    repository=None,
-    account=None,
-):
+def _task_scope(repository=None, account=None):
     from core.workflow.host import activity_context, current_host
 
     context = activity_context.get()
@@ -34,6 +25,46 @@ def record_discovered_tasks(
     account = account or (
         context["account"] if context and "account" in context else account_id()
     )
+    return repository, account, context
+
+
+def record_local_outcome(
+    url,
+    status,
+    *,
+    source,
+    reason_codes=(),
+    evidence_refs=(),
+    details=None,
+    repository=None,
+    account=None,
+):
+    from core.workflow.contracts import TaskOutcome
+
+    repository, account, _ = _task_scope(repository, account)
+    with repository.connect() as db:
+        task_id = repository.upsert(parse_entry(url, account), db=db)
+        outcome = TaskOutcome(
+            task_id,
+            status,
+            list(reason_codes),
+            evidence_refs=list(evidence_refs),
+            details=dict(details or {}),
+        )
+        return repository.observe_outcome(outcome.to_dict(), source=source, db=db)
+
+
+def record_discovered_tasks(
+    urls,
+    *,
+    source,
+    parent_url=None,
+    course_exam=False,
+    completed_urls=(),
+    repository=None,
+    account=None,
+):
+    repository, account, context = _task_scope(repository, account)
     if parent_url is None:
         if not context:
             return []
@@ -77,15 +108,7 @@ def record_discovered_tasks(
                     "stop_scope": "task",
                     "details": {"observed_complete": True},
                 }
-                db.execute(
-                    "INSERT OR REPLACE INTO task_local_outcomes VALUES(?,?,?)",
-                    (child, "observation:" + source, encode(outcome)),
-                )
-                outcome = repository._aggregate(child, db)
-                db.execute(
-                    "UPDATE tasks SET status=?,outcome=?,updated_at=? WHERE task_id=?",
-                    (outcome["status"], encode(outcome), now(), child),
-                )
+                repository.observe_outcome(outcome, source=source, db=db)
         repository.refresh_ancestors(children, db=db)
     return children
 

@@ -222,6 +222,16 @@ def remove_learning_failure(
     write_learning_failures(entries, file_path=file_path, keep_file=keep_file)
 
 
+def resolve_automatic_learning_failures(
+    url: str, *, file_path: Path = LEARNING_FAILURES_FILE
+) -> None:
+    """Verified local learning resolves automatic failures, preserving manual work."""
+    for reason in (
+        RETRIABLE_LEARNING_FAILURE_REASONS | ACCESS_DENIED_LEARNING_FAILURE_REASONS
+    ):
+        remove_learning_failure(url, reason=reason, file_path=file_path)
+
+
 def count_learning_failures(file_path: Path = LEARNING_FAILURES_FILE) -> int:
     return len(read_learning_failures(file_path=file_path))
 

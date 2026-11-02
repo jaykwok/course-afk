@@ -49,6 +49,7 @@ from core.learning.progress import (
     section_id_from_box,
 )
 from core.learning.playback import ensure_course_started
+from core.learning.contracts import LearningResult
 from core.queues.learning import record_learning_failure, remove_learning_failure
 from core.learning.popups import handle_archive_continue_popup, handle_rating_popup
 
@@ -376,6 +377,7 @@ async def subject_learning(page):
     learn_count = await learn_locator.count()
 
     deferred = False
+    local_work_complete = True
     has_url_sections = False
     has_failed_course = False
     subject_course_failures: list[dict[str, object]] = []
@@ -389,20 +391,40 @@ async def subject_learning(page):
 
         if section_type == "课程":
             page_detail = await _open_subject_item_popup(page, learn_item)
+            course_url = None
             try:
-                course_completed = await course_learning(page_detail, learn_item)
-                if course_completed is True:
-                    course_url = await resolve_course_page_url(page_detail)
-                    if course_url:
-                        from core.tasks.relations import record_discovered_tasks
+                from core.tasks.relations import (
+                    record_discovered_tasks,
+                    record_local_outcome,
+                )
+                from core.workflow.contracts import Status
 
-                        record_discovered_tasks(
-                            [course_url],
-                            parent_url=page.url,
-                            source="subject_course_page",
-                            completed_urls=[course_url],
-                        )
-                else:
+                # Persist the dependency before preparation can fail or deny access.
+                course_url = await resolve_course_page_url(page_detail)
+                if course_url:
+                    record_discovered_tasks(
+                        [course_url], parent_url=page.url, source="subject_course_page"
+                    )
+                learning = LearningResult.from_value(
+                    await course_learning(page_detail, learn_item)
+                )
+                if course_url:
+                    if learning.local_work_complete:
+                        from core.queues.learning import resolve_automatic_learning_failures
+
+                        resolve_automatic_learning_failures(course_url)
+                    record_local_outcome(
+                        course_url,
+                        Status.COMPLETED
+                        if learning.completed
+                        else Status.WAITING_CHILDREN,
+                        source="subject_course_page",
+                        evidence_refs=learning.evidence_refs,
+                        details={"local_work_complete": learning.local_work_complete},
+                    )
+                elif not learning.completed:
+                    local_work_complete = False
+                if not learning.completed:
                     deferred = True
             except (WafBlockError, UserCancelRequested, UserAbortRequested):
                 raise
@@ -428,11 +450,27 @@ async def subject_learning(page):
                 else:
                     logging.error(f"发生错误: {str(exc)}")
                     logging.error(traceback.format_exc())
-                course_url = await resolve_course_page_url(page_detail) or page.url
+                course_url = (
+                    course_url or await resolve_course_page_url(page_detail) or page.url
+                )
                 _record_structured_failure(
                     course_url, exc, detail={"source": "subject_course"}
                 )
                 if isinstance(exc, NoPermissionError):
+                    deferred = True
+                    if course_url != page.url:
+                        record_discovered_tasks(
+                            [course_url], parent_url=page.url, source="subject_course_page"
+                        )
+                        record_local_outcome(
+                            course_url,
+                            Status.BLOCKED,
+                            source="subject_course_page",
+                            reason_codes=[exc.reason],
+                            details={"local_work_complete": False, "message": str(exc)},
+                        )
+                    else:
+                        local_work_complete = False
                     logging.info(
                         f"主题内课程不可访问，已记入失败链接并跳过: {course_url}"
                     )
@@ -492,10 +530,19 @@ async def subject_learning(page):
 
         elif section_type == "考试":
             deferred = True
-            await handle_subject_exam_item(learn_item)
+            exam_url = await handle_subject_exam_item(learn_item)
+            if exam_url:
+                from core.tasks.relations import record_discovered_tasks
+
+                record_discovered_tasks(
+                    [exam_url], parent_url=page.url, source="subject_exam_page"
+                )
+            else:
+                local_work_complete = False
 
         elif section_type == "调研":
             deferred = True
+            local_work_complete = False
             logging.info("调研学习类型, 记录为需要人工处理")
             record_learning_failure(
                 await get_course_url(learn_item),
@@ -506,6 +553,7 @@ async def subject_learning(page):
 
         else:
             deferred = True
+            local_work_complete = False
             logging.info("非课程及考试类学习类型, 记录为需要人工处理")
             record_learning_failure(
                 page.url,
@@ -527,7 +575,14 @@ async def subject_learning(page):
             remove_learning_failure(page.url, reason="url_type_pending")
         else:
             deferred = True
-    return not deferred
+            local_work_complete = False
+    if deferred:
+        return LearningResult(
+            completed=False,
+            local_work_complete=local_work_complete,
+            evidence_refs=("subject_items_processed",) if local_work_complete else (),
+        )
+    return True
 
 
 async def _collect_chapter_boxes(page_detail) -> list[tuple[str, object]]:
@@ -644,6 +699,7 @@ async def course_learning(page_detail, learn_item=None):
     # 1/2/3=文档网页, 4=H5, 5/6=视频, 9=课程内考试。主题外链 URL 的 API 类型 3 不在此列。
     deferred = False
     completed_exams = set()
+    queued_exams = set()
     has_failed_box = False
     chapter_failures: list[dict[str, object]] = []
     for index, (track, box) in enumerate(chapters):
@@ -665,6 +721,8 @@ async def course_learning(page_detail, learn_item=None):
             if course_exam_api_result.completed == course_exam_api_result.discovered:
                 completed_exams.add(index)
                 await record_exam(box)
+            else:
+                queued_exams.add(index)
             logging.info("课程内考试已由接口完成状态判断与入队，跳过页面解析")
             continue
 
@@ -808,13 +866,11 @@ async def course_learning(page_detail, learn_item=None):
                 detail={"chapter_failures": chapter_failures},
             )
 
-    if deferred:
-        return False
     server_states = await read_server_section_states(page_detail)
     record_media(server_states)
     for index, (_, box) in enumerate(chapters):
         section_type = await box.get_attribute("data-sectiontype")
-        if section_type == "9" and index in completed_exams:
+        if section_type == "9" and index in (completed_exams | queued_exams):
             continue
         if section_type not in {"1", "2", "3", "5", "6"}:
             return False
@@ -823,4 +879,10 @@ async def course_learning(page_detail, learn_item=None):
             server_states.get(section_id) if server_states is not None else None
         ):
             raise SyncTimeoutError("课程章节处理结束，但服务器完成状态仍未确认")
+    if deferred:
+        return LearningResult(
+            completed=False,
+            local_work_complete=True,
+            evidence_refs=("server_section_progress",),
+        )
     return True

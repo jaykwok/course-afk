@@ -326,35 +326,36 @@ async def _process_url(
         await capture("after_navigation")
         await _wait_for_course_bootstrap(page, monitor)
         await ensure_course_page_ready(page)
-        completed = await handler(page)
+        from core.learning.contracts import LearningResult
+
+        handler_result = await handler(page)
+        learning = LearningResult.from_value(handler_result)
+        completed = learning.completed
         await capture("after_handler")
-        if completed is True:
-            from core.queues.learning import (
-                RETRIABLE_LEARNING_FAILURE_REASONS,
-                ACCESS_DENIED_LEARNING_FAILURE_REASONS,
-            )
+        if learning.local_work_complete:
+            from core.queues.learning import resolve_automatic_learning_failures
 
             # A verified successful course resolves prior automatic learning
             # failures, while manual/discovery/exam issues remain independent.
-            for reason in (
-                RETRIABLE_LEARNING_FAILURE_REASONS
-                | ACCESS_DENIED_LEARNING_FAILURE_REASONS
-            ):
-                remove_learning_failure(url, reason=reason, file_path=failure_path)
+            resolve_automatic_learning_failures(url, file_path=failure_path)
         issues = [e for e in read_learning_failures(failure_path) if e.url == url]
         status = (
             Status.COMPLETED
-            if completed is True and not issues
+            if completed and not issues
             else Status.WAITING_CHILDREN
-            if completed is False or issues
+            if (
+                handler_result is False
+                or isinstance(handler_result, LearningResult)
+                or issues
+            )
             else Status.WAITING_SYNC
         )
         return TaskOutcome(
             task_id,
             status,
             [e.reason for e in issues],
-            evidence_refs=["server_section_progress"] if completed is True else [],
-            details={"local_work_complete": completed is True},
+            evidence_refs=list(learning.evidence_refs),
+            details={"local_work_complete": learning.local_work_complete},
         )
     except WafBlockError as exc:
         record_learning_failure(
