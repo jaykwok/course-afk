@@ -69,11 +69,11 @@ class ApplicationService:
         return results
 
     async def learn(self, status_callback=None):
-        from core.queues.learning import read_learning_urls, read_learning_failures
+        from core.queues.learning import read_learning_urls
 
         urls = read_learning_urls()
         urls.extend(
-            e.url for e in read_learning_failures() if e.reason == "url_type_pending"
+            self.host.repository.learning_reviews(self.host.identity_provider())
         )
         return await self.batch(urls, "learn", status_callback=status_callback)
 

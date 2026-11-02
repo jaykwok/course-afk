@@ -192,10 +192,45 @@ def bind_unbound(repo: TaskRepository, account: str) -> int:
             raise RuntimeError("存在未结束执行，请先核实执行状态")
         rows = list(db.execute("SELECT * FROM tasks WHERE account='unbound'"))
         mapping = {}
+        keys = {
+            row["task_id"]: replace(
+                TaskKey(**json.loads(row["identity"])), account=account
+            )
+            for row in rows
+        }
+        # Composite child identities contain their parent's ID. Re-key the
+        # parent first, otherwise later section/issue resolution misses them.
+        for old_id, key in keys.items():
+            if key.kind not in {"issue", "section", "url_review"}:
+                mapping[old_id] = key.task_id
+        for old_id, key in list(keys.items()):
+            if key.kind in {"issue", "section", "url_review"}:
+                parent, separator, suffix = key.business_id.partition(":")
+                if parent in mapping and separator:
+                    keys[old_id] = replace(
+                        key, business_id=mapping[parent] + ":" + suffix
+                    )
+            mapping[old_id] = keys[old_id].task_id
         for row in rows:
-            key = replace(TaskKey(**json.loads(row["identity"])), account=account)
+            key = keys[row["task_id"]]
+            existed = db.execute(
+                "SELECT 1 FROM tasks WHERE task_id=?", (key.task_id,)
+            ).fetchone()
             task_id = repo.upsert(Entry(key, row["url"], (row["url"],)), db=db)
-            mapping[row["task_id"]] = task_id
+            if not existed:
+                db.execute(
+                    "UPDATE tasks SET status=?,outcome=? WHERE task_id=?",
+                    (row["status"], row["outcome"], task_id),
+                )
+            for alias in list(
+                db.execute(
+                    "SELECT alias FROM task_aliases WHERE task_id=?", (row["task_id"],)
+                )
+            ):
+                db.execute(
+                    "INSERT OR IGNORE INTO task_aliases VALUES(?,?,?)",
+                    (account, alias[0], task_id),
+                )
             for item in list(
                 db.execute(
                     "SELECT * FROM queue_items WHERE task_id=?", (row["task_id"],)
@@ -244,4 +279,12 @@ def bind_unbound(repo: TaskRepository, account: str) -> int:
                     "DELETE FROM task_edges WHERE parent=? AND child=?",
                     (edge["parent"], edge["child"]),
                 )
+        for row in rows:
+            if not db.execute(
+                "SELECT 1 FROM runs WHERE task_id=?", (row["task_id"],)
+            ).fetchone():
+                db.execute(
+                    "DELETE FROM task_aliases WHERE task_id=?", (row["task_id"],)
+                )
+                db.execute("DELETE FROM tasks WHERE task_id=?", (row["task_id"],))
         return len(rows)

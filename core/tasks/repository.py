@@ -120,6 +120,16 @@ class TaskRepository:
                 )
             ]
 
+    def learning_reviews(self, account: str) -> list[str]:
+        with self.connect() as db:
+            return [
+                row[0]
+                for row in db.execute(
+                    "SELECT DISTINCT p.url FROM task_edges e JOIN tasks p ON p.task_id=e.parent JOIN tasks c ON c.task_id=e.child WHERE p.account=? AND c.kind='url_review' AND c.status!='COMPLETED'",
+                    (account,),
+                )
+            ]
+
     def link(self, parent: str, child: str, *, required=True, db=None):
         if parent == child:
             return
@@ -151,6 +161,12 @@ class TaskRepository:
                 "kind": kind,
                 "options": options,
             }
+            previous = db.execute(
+                "SELECT run_id FROM runs WHERE task_id=? AND kind=? AND dispatch='INCOMPATIBLE' ORDER BY created_at DESC LIMIT 1",
+                (task_id, kind),
+            ).fetchone()
+            if previous:
+                payload["previous_run_id"] = previous[0]
             db.execute(
                 "INSERT INTO runs VALUES(?,?,?,?,?,?,NULL,?)",
                 (run_id, task_id, kind, version, encode(payload), "PLANNED", now()),
@@ -233,6 +249,18 @@ class TaskRepository:
                 "UPDATE tasks SET status='RUNNING',updated_at=? WHERE task_id=?",
                 (now(), task_id),
             )
+
+    def incompatible(self, run_id: str, outcome: dict):
+        with self.connect() as db:
+            db.execute(
+                "UPDATE runs SET dispatch='INCOMPATIBLE',outcome=? WHERE run_id=?",
+                (encode(outcome), run_id),
+            )
+            db.execute(
+                "UPDATE tasks SET status='NEEDS_REVIEW',outcome=?,updated_at=? WHERE task_id=?",
+                (encode(outcome), now(), outcome["task_id"]),
+            )
+        return outcome
 
     def intent(self, task_id: str, operation: str, baseline: dict) -> dict:
         with self.connect() as db:

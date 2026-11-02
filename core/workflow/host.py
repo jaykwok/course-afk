@@ -169,9 +169,10 @@ class WorkflowHost:
             task_id = self.repository.upsert(entry)
             run = self.repository.plan(task_id, kind, options or {}, VERSION)
             if run["version"] != VERSION:
-                return TaskOutcome(
+                outcome = TaskOutcome(
                     task_id, Status.NEEDS_REVIEW, ["workflow_version_incompatible"]
                 ).to_dict()
+                return self.repository.incompatible(run["run_id"], outcome)
             payload = json.loads(run["payload"])
             self.scopes[run["run_id"]] = {**payload, "options": options or {}}
             self.status_callback = status_callback

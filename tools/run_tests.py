@@ -24,6 +24,7 @@ def main():
     (OUTPUT / "environment.json").write_text(
         json.dumps(metadata, indent=2), encoding="utf-8"
     )
+    print(json.dumps(metadata, ensure_ascii=False), flush=True)
     # Tests own temporary data roots. No runtime data directories are artifacts.
     with (OUTPUT / "tests.txt").open("w", encoding="utf-8") as log:
         result = subprocess.run(

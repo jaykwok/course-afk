@@ -33,13 +33,13 @@ from core.learning.common import (
     timer,
     wait_for_course_section_focus,
 )
-from core.learning.exam_bridge import get_course_exam_outcome, handle_examination
+from core.learning.exam_bridge import get_course_exam_outcome, handle_examination, is_subject_url_completed
 from core.runtime import close_safely
 from core.learning.exam_api import queue_course_exams_from_api
 from core.learning.handlers import handle_document, handle_h5, handle_video
 from core.learning.progress import read_server_section_states, section_completed_on_server, section_id_from_box
 from core.learning.playback import ensure_course_started
-from core.queues.learning import record_learning_failure
+from core.queues.learning import record_learning_failure,remove_learning_failure
 from core.learning.popups import handle_archive_continue_popup, handle_rating_popup
 
 
@@ -344,11 +344,13 @@ async def subject_learning(page):
     learn_count = await learn_locator.count()
 
     deferred = False
+    has_url_sections = False
     has_failed_course = False
     subject_course_failures: list[dict[str, object]] = []
     for i in range(learn_count):
         learn_item = learn_locator.nth(i)
         section_type = await learn_item.locator(".section-type").inner_text()
+        has_url_sections = has_url_sections or section_type == 'URL'
         if section_type != "课程" and await is_subject_item_completed(learn_item):
             logging.info("主题小节已完成（重新学习），跳过")
             continue
@@ -415,9 +417,8 @@ async def subject_learning(page):
                 await close_safely(page_detail.close(), label="subject child page")
 
         elif section_type == "URL":
-            deferred = True
             logging.info("URL学习类型, 记录为待复查")
-            # record_learning_failure 按 URL 合并，重复调用会刷新文案，不堆多条
+            # URL 复查有独立子事项；其它类型的事项不会覆盖它。
             record_learning_failure(
                 page.url,
                 reason="url_type_pending",
@@ -477,6 +478,11 @@ async def subject_learning(page):
             detail={"course_failures": subject_course_failures},
         )
 
+    if has_url_sections:
+        if await is_subject_url_completed(page):
+            remove_learning_failure(page.url,reason='url_type_pending')
+        else:
+            deferred=True
     return not deferred
 
 

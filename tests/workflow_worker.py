@@ -115,6 +115,8 @@ def main():
             run = host.repository.plan(task_id, "learn", {}, "incompatible-v0")
             result = host.submit(host.execute(URL, "learn")).result(10)
             assert result["status"] == "NEEDS_REVIEW"
+            assert host.repository.task(task_id)["status"] == "NEEDS_REVIEW"
+            assert host.repository.run(run["run_id"])["dispatch"] == "INCOMPATIBLE"
             event("version_preserved")
             return
         if MODE == "cancel":

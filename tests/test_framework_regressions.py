@@ -28,6 +28,44 @@ EXAM = "https://kc.zhixueyun.com/#/exam/exam/answer-paper/" + UUID
 
 
 class IdentityAndIssuesTests(unittest.TestCase):
+    def test_binding_rekeys_child_issues_and_is_idempotent(self):
+        from core.tasks.migration import bind_unbound
+
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "挂课失败链接.json"
+            for reason in ("url_type_pending", "other_learning_type"):
+                record_learning_failure(
+                    COURSE, reason=reason, reason_text=reason, file_path=path
+                )
+            repo = repository_for(path)
+            self.assertEqual(bind_unbound(repo, "verified-account"), 3)
+            self.assertEqual(bind_unbound(repo, "verified-account"), 0)
+            with patch("core.tasks.store.account_id", return_value="verified-account"):
+                remove_learning_failure(
+                    COURSE, reason="url_type_pending", file_path=path
+                )
+            children = repo.children(
+                parse_entry(COURSE, "verified-account").key.task_id
+            )
+            self.assertEqual(sum(c["status"] == "NEEDS_REVIEW" for c in children), 1)
+            self.assertEqual(sum(c["status"] == "COMPLETED" for c in children), 1)
+
+    def test_course_unknown_submission_protects_each_verified_exam_id(self):
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "考试链接.json"
+            repo = repository_for(path)
+            parent = repo.upsert(parse_entry(COURSE, "unbound"))
+            repo.intent(parent, "submit", {"record_id": "unknown-course-exam"})
+            token = activity_context.set({"task_id": parent})
+            try:
+                other = EXAM.replace(UUID, SOURCE)
+                append_exam_urls([EXAM, other], file_path=path)
+            finally:
+                activity_context.reset(token)
+            self.assertIsNotNone(pending_submission(EXAM, path))
+            self.assertIsNotNone(pending_submission(other, path))
+            self.assertEqual(len(repo.pending_intents(parent, "submit")), 1)
+
     def test_A1_alias_intents_and_sticky_manual_protection_survive_queue_clear(self):
         with TemporaryDirectory() as tmp:
             path = Path(tmp) / "考试链接.json"
@@ -74,6 +112,55 @@ class IdentityAndIssuesTests(unittest.TestCase):
 
 
 class CourseAndEnrollmentTests(unittest.IsolatedAsyncioTestCase):
+    async def test_subject_url_recheck_clears_only_its_own_issue(self):
+        from unittest.mock import MagicMock
+        from core.learning import flows
+
+        page = MagicMock()
+        page.url = COURSE.replace("/course/", "/subject/")
+        page.wait_for_load_state = AsyncMock()
+        items = MagicMock()
+        items.last.wait_for = AsyncMock()
+        items.locator.return_value.last.wait_for = AsyncMock()
+        items.count = AsyncMock(return_value=2)
+        page.locator.return_value = items
+        first, second = MagicMock(), MagicMock()
+        first.locator.return_value.inner_text = AsyncMock(return_value="URL")
+        second.locator.return_value.inner_text = AsyncMock(return_value="未知类型")
+        items.nth.side_effect = [first, second]
+        popup = SimpleNamespace(wait_for_timeout=AsyncMock(), close=AsyncMock())
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "挂课失败链接.json"
+
+            def record(url, **kwargs):
+                record_learning_failure(url, file_path=path, **kwargs)
+
+            def clear(url, **kwargs):
+                remove_learning_failure(url, file_path=path, **kwargs)
+
+            with (
+                patch.object(flows, "ensure_course_page_ready", new=AsyncMock()),
+                patch.object(
+                    flows,
+                    "is_subject_item_completed",
+                    new=AsyncMock(return_value=False),
+                ),
+                patch.object(
+                    flows, "_open_subject_item_popup", new=AsyncMock(return_value=popup)
+                ),
+                patch.object(flows, "timer", new=AsyncMock()),
+                patch.object(
+                    flows, "is_subject_url_completed", new=AsyncMock(return_value=True)
+                ),
+                patch.object(flows, "record_learning_failure", side_effect=record),
+                patch.object(flows, "remove_learning_failure", side_effect=clear),
+            ):
+                self.assertFalse(await flows.subject_learning(page))
+            self.assertEqual(
+                [e.reason for e in read_learning_failures(path)],
+                ["other_learning_type"],
+            )
+
     async def test_A2_all_dom_fast_paths_require_fresh_server_evidence(self):
         from core.learning import flows
         from core.abort import SyncTimeoutError

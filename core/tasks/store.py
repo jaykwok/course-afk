@@ -171,13 +171,33 @@ def _replace(repo, db, collection, rows, account, *, merge=False):
                             "INSERT OR REPLACE INTO exam_history VALUES(?,?)",
                             (task_id, encode(history)),
                         )
-                    db.execute(
-                        "UPDATE action_intents SET task_id=? WHERE task_id=? AND operation='submit'",
-                        (task_id, context["task_id"]),
-                    )
+                    # More than one exam may be found in a course. Preserve the
+                    # original ambiguity and protect every verified exam ID.
+                    for intent in list(
+                        db.execute(
+                            "SELECT * FROM action_intents WHERE task_id=? AND operation='submit' AND state='unverified'",
+                            (context["task_id"],),
+                        )
+                    ):
+                        action_id = hashlib.sha256(
+                            (intent["action_id"] + task_id).encode()
+                        ).hexdigest()
+                        db.execute(
+                            "INSERT OR IGNORE INTO action_intents VALUES(?,?,?,'unverified',?,NULL,?)",
+                            (
+                                action_id,
+                                task_id,
+                                "submit",
+                                intent["baseline"],
+                                intent["created_at"],
+                            ),
+                        )
         if row.get("reason"):
+            issue_kind = (
+                "url_review" if row["reason"] == "url_type_pending" else "issue"
+            )
             issue_key = TaskKey(
-                entry.key.tenant, account, "issue", task_id + ":" + item_key
+                entry.key.tenant, account, issue_kind, task_id + ":" + item_key
             )
             issue_id = repo.upsert(Entry(issue_key, entry.url, ()), db=db)
             retained_issues.add(issue_id)
@@ -210,7 +230,9 @@ def _replace(repo, db, collection, rows, account, *, merge=False):
             issue = TaskKey(
                 identity["tenant"],
                 account,
-                "issue",
+                "url_review"
+                if previous_item["item_key"].startswith("url_type_pending:")
+                else "issue",
                 previous_item["task_id"] + ":" + previous_item["item_key"],
             ).task_id
             if issue not in retained_issues:
