@@ -1,19 +1,15 @@
 from __future__ import annotations
 
-from core.queues.learning import record_learning_failure, remove_learning_failure, remember_discovery_entries
-from core.runtime import close_safely
 
 import logging
 import re
 from urllib.parse import unquote
 
-from core.browser.session import create_browser_context
 from core.config import ZHIXUEYUN_COURSE_PREFIX, ZHIXUEYUN_SUBJECT_PREFIX
 from core.file_ops import is_compliant_url_regex, is_train_class_url, normalize_url
 from core.links import unique_urls
 from core.browser.page_auth import fetch_json, wait_for_authorization_header
 from core.browser.overlays import prepare_page_after_navigation_async
-from core.discovery.subject_parse import enqueue_learning_links_with_subject_expand
 
 
 # 实勘确认（class 活动列表）:
@@ -423,85 +419,3 @@ async def collect_learning_links_from_class_page(
     return learning_links
 
 
-async def collect_learning_links_from_train_class_urls(
-    train_class_urls: list[str],
-    status_callback=None,
-    before_close_callback=None,
-    *,
-    context=None,
-) -> int:
-    """
-    打开培训班详情页，经 API（首屏 + /more）提取课程/主题链接并写入学习队列。
-
-    可传入已有 context 复用浏览器；否则自建 context。
-    """
-    if not train_class_urls:
-        return 0
-
-    remember_discovery_entries(train_class_urls)
-    total_added = 0
-
-    async def _run_with_context(active_context) -> None:
-        nonlocal total_added
-        for index, url in enumerate(train_class_urls, start=1):
-            if status_callback:
-                status_callback(
-                    f"正在解析培训班链接 {index}/{len(train_class_urls)}"
-                )
-            page = await active_context.new_page()
-            try:
-                learning_links = await collect_learning_links_from_class_page(
-                    page,
-                    url,
-                    status_callback=status_callback,
-                )
-                enqueue = await enqueue_learning_links_with_subject_expand(
-                    learning_links,
-                    page=page,
-                    status_callback=status_callback,
-                    source_label="培训班",
-                    parent_url=url,
-                )
-                total_added += enqueue["learning_added"]
-                if enqueue.get('complete') is True:
-                    remove_learning_failure(url,reason='discovery_incomplete',keep_file=True)
-                if status_callback:
-                    if learning_links:
-                        status_callback(
-                            "已从培训班识别 "
-                            f"{enqueue['course_links']} 条课程、"
-                            f"{enqueue['subject_links']} 个主题"
-                            f"（展开后学习队列 +{enqueue['learning_added']}）"
-                        )
-                    else:
-                        status_callback(
-                            "该培训班暂未识别到可挂机课程/主题链接；"
-                            "请确认班级活动含 course/subject 类型"
-                        )
-            except BaseException as exc:
-                reason_text = str(exc) if isinstance(exc, ClassEnrollmentError) else f"培训班收集未完成（{type(exc).__name__}），请重新解析入口"
-                record_learning_failure(url, reason="discovery_incomplete", reason_text=reason_text, detail={"source": "train_class"})
-                if not isinstance(exc, Exception):
-                    raise
-                if isinstance(exc, ClassEnrollmentError):
-                    if status_callback:
-                        status_callback(str(exc))
-                    continue
-                logging.error(f"解析培训班失败 {url}: {exc}")
-                if status_callback:
-                    status_callback(f"解析培训班失败: {exc}")
-                raise
-            finally:
-                await close_safely(page.close(), label="training class page")
-
-    if context is not None:
-        await _run_with_context(context)
-        if before_close_callback:
-            before_close_callback(total_added)
-    else:
-        async with create_browser_context() as (_, new_context):
-            await _run_with_context(new_context)
-            if before_close_callback:
-                before_close_callback(total_added)
-
-    return total_added

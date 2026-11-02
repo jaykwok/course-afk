@@ -21,7 +21,6 @@ from core.config import (
 from core.humanize import jitter
 from core.learning.progress import (
     read_server_section_state,
-    section_completed_on_server,
 )
 from core.learning.playback import ensure_course_started
 
@@ -164,39 +163,6 @@ async def ensure_course_page_ready(page) -> None:
     await ensure_no_waf_block(frame)
     await ensure_resource_accessible(frame)
     await ensure_no_concurrent_study_limit(frame)
-
-
-# 未学标记后「整段」剩余时长为 0 才视为已同步。
-# 注意：不能写成 0+(?::0+){0,2}，否则「需学 00:05」会误匹配前缀「需学 00」。
-_ZERO_REMAINING_PROGRESS = re.compile(r"(?:需学|需再学)\s*(?:0+(?::0+){1,2}|0)(?!\d|:)")
-_PENDING_PROGRESS = re.compile(r"需学|需再学")
-
-
-def is_learned(text: str) -> bool:
-    """判断章节是否已学完。
-
-    实勘：已学/未学 class 相同；未学文案含「需学」「需再学」。
-    「需再学 0:00」/「需学 0:00」视为已学完（剩余为 0，DOM 尚未摘掉标记）。
-    「需学 00:05」仍是未学（5 秒剩余，勿被零时长规则误伤）。
-    空文案不能当已学（避免 DOM 未渲染时误跳过）。
-    """
-    if not (text or "").strip():
-        return False
-    if _ZERO_REMAINING_PROGRESS.search(text):
-        return True
-    if _PENDING_PROGRESS.search(text):
-        return False
-    if re.search(r"已完成|已学完|学习完成|已学习|已学(?!时)|重新学习", text):
-        return True
-    # 旧版课页的完成态保留“必修/选修 + 类型 + 总时长”，没有剩余标记。
-    # 只接受已观察到的完整布局，标题或局部加载文本不能推导成功。
-    return bool(
-        re.search(
-            r"(?:必修|选修).*?(?:视频|文档|网页).*?\b\d{1,3}:\d{2}(?::\d{2})?\b",
-            text,
-            re.S,
-        )
-    )
 
 
 async def is_course_section_focused(box) -> bool:
@@ -374,15 +340,12 @@ def calculate_remaining_time(text) -> tuple[int, int]:
     return min(math.ceil(remaining_time / 60) * 60, total_time), total_time
 
 
-def calculate_video_sync_wait_time(remaining_time: int, total_time: int) -> int:
-    """统一使用五分钟确认上限；保留时长入参兼容现有调用。"""
-    return VIDEO_SYNC_EXTRA_WAIT
 
 
 def build_video_timing_plan(text: str) -> VideoTimingPlan:
     """根据剩余学习时长生成视频学习与同步确认的时序计划。"""
     learning_wait_time, total_time = calculate_remaining_time(text)
-    sync_wait_time = calculate_video_sync_wait_time(learning_wait_time, total_time)
+    sync_wait_time = VIDEO_SYNC_EXTRA_WAIT
     return VideoTimingPlan(
         learning_wait_time=learning_wait_time,
         sync_wait_time=sync_wait_time,

@@ -22,8 +22,6 @@ from core.learning.common import (
     build_video_timing_plan,
     get_course_url,
     is_course_section_focused,
-    is_learned,
-    read_section_progress_text,
     timer,
     wait_until_learned,
 )

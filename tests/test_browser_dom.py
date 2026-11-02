@@ -1,9 +1,8 @@
 """Offline browser integration using synthetic DOM; no credentials or platform traffic."""
-import os
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from playwright.async_api import async_playwright, Error
+from playwright.async_api import async_playwright
 from core.exam.actions import read_existing_answers, select_answers
 from core.exam.parsing import extract_multi_questions_data
 from core.runtime import close_safely, own_playwright_driver

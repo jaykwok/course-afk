@@ -170,10 +170,10 @@ async def exam(host, payload):
         _run_paper_ai_exam,
         _to_manual,
         _close_page_safely,
-        create_browser_context,
         EXAM_URLS_FILE,
     )
     from core.queues.exam import has_ai_failed_model_config
+    from core.browser.session import create_browser_context
     from core.runtime import close_safely
 
     task = _task(host, payload)

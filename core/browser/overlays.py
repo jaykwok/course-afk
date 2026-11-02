@@ -182,18 +182,3 @@ async def prepare_page_after_navigation_async(
 
 
 
-async def goto_and_prepare_async(
-    page,
-    url: str,
-    *,
-    wait_until: str = "load",
-    timeout: float | None = None,
-    **prepare_kwargs,
-) -> int:
-    """goto 后做进页弹窗清理。考试流程请用普通 goto，不要用本函数。"""
-
-    goto_kwargs: dict = {"wait_until": wait_until}
-    if timeout is not None:
-        goto_kwargs["timeout"] = timeout
-    await page.goto(url, **goto_kwargs)
-    return await prepare_page_after_navigation_async(page, **prepare_kwargs)

@@ -92,8 +92,6 @@ async def get_course_exam_outcome(page) -> str:
         return "unknown"
 
 
-async def check_exam_passed(page) -> bool:
-    return await get_course_exam_outcome(page) == "passed"
 
 
 async def handle_examination(page, learn_item=None, exam_passed: bool | None = None):

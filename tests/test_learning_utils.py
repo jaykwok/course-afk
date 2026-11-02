@@ -7,26 +7,6 @@ class LearningUtilityTests(unittest.TestCase):
     def setUp(self):
         self.enterContext(patch('core.learning.common.ensure_course_started', new=AsyncMock(return_value={})))
 
-    def test_is_learned_detects_pending_text(self):
-        from core.learning.common import is_learned
-
-        self.assertFalse(is_learned("第一节 需学 12:30"))
-        self.assertFalse(is_learned("第二节 需再学 03:00"))
-        self.assertFalse(is_learned("必修 视频 45:34\n需再学 36:00"))
-        # 文档节常见：需学 00:05 —— 绝不能当已学（曾误匹配「需学 00」前缀）
-        self.assertFalse(is_learned("必修 文档 05:00\n需学 00:05"))
-        self.assertFalse(is_learned("必修 文档 05:00\n需学 0:05"))
-        self.assertFalse(is_learned("需学 00:01"))
-        self.assertTrue(is_learned("第三节 已完成 12:30"))
-        self.assertTrue(is_learned("必修 视频 19:55"))
-        # 平台学完后常短暂残留「需再学 0:00」——应视为已同步
-        self.assertTrue(is_learned("必修 视频 19:55\n需再学 0:00"))
-        self.assertTrue(is_learned("必修 视频 19:55 需学 00:00"))
-        self.assertTrue(is_learned("需再学 0"))
-        self.assertTrue(is_learned("必修 文档 05:00\n需学 0:00"))
-        # 空文案不得视为已学（DOM 未渲染）
-        self.assertFalse(is_learned(""))
-        self.assertFalse(is_learned("   "))
 
     def test_wait_until_learned_accepts_zero_remaining_text(self):
         from core.learning.common import wait_until_learned
@@ -208,17 +188,7 @@ class LearningUtilityTests(unittest.TestCase):
         self.assertFalse(hasattr(config, "DOCUMENT_INITIAL_WAIT"))
         self.assertFalse(hasattr(config, "DOCUMENT_SYNC_EXTRA_WAIT"))
 
-    def test_calculate_video_sync_wait_time_always_allows_five_minutes(self):
-        from core.learning.common import calculate_video_sync_wait_time
 
-        self.assertEqual(calculate_video_sync_wait_time(240, 600), 300)
-        self.assertEqual(calculate_video_sync_wait_time(300, 600), 300)
-
-    def test_short_video_sync_wait_also_has_five_minute_cap(self):
-        from core.learning.common import calculate_video_sync_wait_time
-
-        self.assertEqual(calculate_video_sync_wait_time(240, 240), 300)
-        self.assertEqual(calculate_video_sync_wait_time(120, 180), 300)
 
     def test_timer_returns_immediately_when_duration_is_zero(self):
         from core.learning.common import timer

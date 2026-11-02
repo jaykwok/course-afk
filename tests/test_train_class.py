@@ -1,7 +1,4 @@
 import unittest
-import asyncio
-from contextlib import asynccontextmanager
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from urllib.parse import parse_qs, urlparse
 
@@ -9,7 +6,6 @@ from core.discovery.train_class import (
     ClassEnrollmentError,
     build_activity_list_url,
     collect_learning_links_from_class_page,
-    collect_learning_links_from_train_class_urls,
     ensure_class_enrolled,
     extract_class_id,
     extract_learning_links_from_activity_items,
@@ -380,139 +376,8 @@ class TrainClassCollectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(page.context.request.post_calls), 1)
         self.assertEqual(reads, 3)
 
-    async def test_enrollment_failure_preserves_entry_and_reason_and_closes_page(self):
-        page = FakeTrainClassPage()
-        page.context.request.registration_status = 1
-        url = "https://kc.zhixueyun.com/#/train-new/class-detail/6b5003f9-9163-4384-9240-8f3225ab373d"
-        with patch("core.discovery.train_class.enqueue_learning_links_with_subject_expand", new=AsyncMock()) as enqueue, patch("core.discovery.train_class.record_learning_failure") as failure, patch("core.discovery.train_class.remove_learning_failure") as remove:
-            self.assertEqual(await collect_learning_links_from_train_class_urls([url], context=FakeTrainClassContext(page)),0)
-        enqueue.assert_not_awaited()
-        remove.assert_not_called()
-        self.assertEqual(failure.call_args.args, (url,))
-        self.assertIn("待审核", failure.call_args.kwargs["reason_text"])
-        self.assertTrue(page.closed)
 
-    async def test_cancelled_registration_keeps_entry_and_disposes_response(self):
-        page = FakeTrainClassPage()
-        page.context.request.registration_status = 0
-        response = SimpleNamespace(ok=True, json=AsyncMock(side_effect=asyncio.CancelledError()), dispose=AsyncMock())
-        page.context.request.post = AsyncMock(return_value=response)
-        url = "https://kc.zhixueyun.com/#/train-new/class-detail/6b5003f9-9163-4384-9240-8f3225ab373d"
-        with patch("core.discovery.train_class.record_learning_failure") as failure, patch("core.discovery.train_class.enqueue_learning_links_with_subject_expand", new=AsyncMock()) as enqueue:
-            with self.assertRaises(asyncio.CancelledError):
-                await collect_learning_links_from_train_class_urls([url], context=FakeTrainClassContext(page))
-        response.dispose.assert_awaited_once()
-        failure.assert_called_once()
-        enqueue.assert_not_awaited()
-        self.assertTrue(page.closed)
 
-    async def test_collection_paginates_with_more_endpoint(self):
-        page = FakeTrainClassPage()
-        context = FakeTrainClassContext(page)
-        messages = []
-        lifecycle = {"exited": False, "callback": None}
-        captured_links: list[str] = []
-
-        @asynccontextmanager
-        async def fake_browser_context():
-            try:
-                yield object(), context
-            finally:
-                lifecycle["exited"] = True
-
-        enqueue_calls: list[list[str]] = []
-
-        async def fake_enqueue(
-            learning_links,
-            *,
-            page=None,
-            status_callback=None,
-            source_label: str = "来源",
-            parent_url=None,
-        ):
-            enqueue_calls.append(list(learning_links))
-            # 5+5+3=13 活动：12 课程 + 1 主题展开 1 条 → learning_added=13
-            course_n = sum(1 for u in learning_links if "/course/detail/" in u)
-            subject_n = sum(1 for u in learning_links if "/subject/detail/" in u)
-            captured_links.extend(
-                [u for u in learning_links if "/course/detail/" in u]
-            )
-            return {
-                "course_links": course_n,
-                "subject_links": subject_n,
-                "course_added": course_n,
-                "subject_learning_added": subject_n,
-                "learning_added": course_n + subject_n,
-                "exam_added": 0,
-            }
-
-        with (
-            patch(
-                "core.discovery.train_class.create_browser_context",
-                side_effect=fake_browser_context,
-            ),
-            patch(
-                "core.discovery.train_class.prepare_page_after_navigation_async",
-                new=AsyncMock(return_value=0),
-            ),
-            patch(
-                "core.discovery.train_class.wait_for_authorization_header",
-                new=AsyncMock(return_value="Bearer__test-token"),
-            ),
-            patch(
-                "core.discovery.train_class.enqueue_learning_links_with_subject_expand",
-                side_effect=fake_enqueue,
-            ),
-        ):
-            added = await collect_learning_links_from_train_class_urls(
-                [
-                    "https://kc.zhixueyun.com/#/train-new/class-detail/"
-                    "e8d1e9b6-f9cf-4960-bf0f-57cd34dc0ca9"
-                ],
-                status_callback=messages.append,
-                before_close_callback=lambda count: lifecycle.update(
-                    callback=(count, lifecycle["exited"])
-                ),
-            )
-
-        # 5 + 5 + 3 = 13 条活动：12 课程直接入队 + 1 主题走展开
-        self.assertEqual(added, 13)
-        self.assertEqual(len(captured_links), 12)
-        self.assertEqual(len(enqueue_calls), 1)
-        self.assertIn(
-            "https://kc.zhixueyun.com/#/study/subject/detail/"
-            "1d40d4e0-a622-4535-8f02-ad108a930656",
-            enqueue_calls[0],
-        )
-        self.assertTrue(page.closed)
-
-        activity_calls = [
-            url
-            for url, _ in page.context.request.calls
-            if "chapter-activity-list" in url
-        ]
-        self.assertEqual(len(activity_calls), 3)
-        self.assertIn("/paas?", activity_calls[0])
-        self.assertNotIn("/more", activity_calls[0])
-        self.assertIn("/paas/more?", activity_calls[1])
-        self.assertIn("page=2", activity_calls[1])
-        self.assertIn("/paas/more?", activity_calls[2])
-        self.assertIn("page=3", activity_calls[2])
-
-        # 不因错误的 recordCount=5 提前结束
-        self.assertTrue(
-            any("12 条课程、1 个主题" in item for item in messages)
-        )
-        self.assertTrue(
-            all(
-                link.startswith(
-                    "https://kc.zhixueyun.com/#/study/course/detail/"
-                )
-                for link in captured_links
-            )
-        )
-        self.assertEqual(lifecycle["callback"], (13, False))
-        self.assertTrue(lifecycle["exited"])
 
 
 if __name__ == "__main__":

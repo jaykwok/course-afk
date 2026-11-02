@@ -120,45 +120,8 @@ async def _recheck_noop(_context):
     return None
 
 
-class AfkBatchPreparationTests(unittest.TestCase):
-    def test_prepare_afk_batch_reads_pending_learning_json_queue(self):
-        from core.learning.afk_runner import prepare_afk_batch
 
-        with TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            learning_file = root / "learning.json"
-            _write_learning_queue_fixture(
-                learning_file,
-                ["https://a.example.com/1", "https://b.example.com/2"],
-            )
 
-            batch = prepare_afk_batch(
-                learning_file=learning_file,
-            )
-            self.assertEqual(
-                batch.urls,
-                ["https://a.example.com/1", "https://b.example.com/2"],
-            )
-
-    def test_prepare_afk_batch_deduplicates_normalized_urls(self):
-        from core.learning.afk_runner import prepare_afk_batch
-
-        with TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            learning_file = root / "learning.json"
-            course = (
-                "https://kc.zhixueyun.com/#/study/course/detail/"
-                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
-            )
-            _write_learning_queue_fixture(
-                learning_file,
-                [course, course + "?x=1", "  " + course + "  ", course],
-            )
-
-            batch = prepare_afk_batch(learning_file=learning_file)
-
-            self.assertEqual(batch.urls, [course])
-            self.assertEqual(_read_learning_queue_urls(learning_file), [course])
 
 
 class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
@@ -784,24 +747,6 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(await exam_runner._has_ready_answer_question(FakePage()))
 
-    async def test_locate_exam_button_ignores_hidden_matches(self):
-        from core.exam import runner as exam_runner
-
-        class HiddenLocator:
-            async def count(self):
-                return 1
-
-            def nth(self, _index):
-                return self
-
-            async def is_visible(self):
-                return False
-
-        class FakePage:
-            def locator(self, _selector):
-                return HiddenLocator()
-
-        self.assertIsNone(await exam_runner._locate_exam_button(FakePage()))
 
     async def test_wait_for_target_route_follows_auth_round_trip(self):
         from core.exam import runner as exam_runner
@@ -823,10 +768,7 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
                 return None
 
         page = FakePage()
-        with patch(
-            "core.exam.runner._is_paper_entry_ready",
-            new=AsyncMock(return_value=True),
-        ):
+        with patch("core.exam.runner._has_authorization_cookie", new=AsyncMock(return_value=False)):
             self.assertTrue(
                 await exam_runner._wait_for_target_route_after_auth(
                     page,
@@ -859,10 +801,6 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
                 "core.exam.runner._has_authorization_cookie",
                 new=AsyncMock(return_value=True),
             ),
-            patch(
-                "core.exam.runner._is_paper_entry_ready",
-                new=AsyncMock(return_value=True),
-            ),
         ):
             self.assertTrue(
                 await exam_runner._wait_for_target_route_after_auth(
@@ -893,10 +831,6 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
                 "core.exam.runner._has_authorization_cookie",
                 new=AsyncMock(return_value=False),
             ),
-            patch(
-                "core.exam.runner._is_paper_entry_ready",
-                new=AsyncMock(return_value=False),
-            ),
         ):
             completed = await exam_runner._wait_for_target_route_after_auth(
                 page,
@@ -925,15 +859,11 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
                 self.load_states.append(state)
 
         page = FakePage()
-        ready_states = iter((False, False, True))
+        
         with (
             patch(
                 "core.exam.runner._has_authorization_cookie",
-                new=AsyncMock(return_value=True),
-            ),
-            patch(
-                "core.exam.runner._is_paper_entry_ready",
-                new=AsyncMock(side_effect=lambda _page: next(ready_states)),
+                new=AsyncMock(return_value=False),
             ),
         ):
             completed = await exam_runner._wait_for_target_route_after_auth(
@@ -947,34 +877,6 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(page.wait_count, 1)
         self.assertEqual(page.load_states, [])
 
-    async def test_open_paper_answer_page_accepts_current_page_navigation(self):
-        from core.exam import runner as exam_runner
-
-        class FakePopupContext:
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, exc_type, exc, tb):
-                raise exam_runner.PlaywrightTimeoutError("no popup")
-
-        class FakePage:
-            def expect_popup(self, timeout):
-                self.popup_timeout = timeout
-                return FakePopupContext()
-
-        page = FakePage()
-        button = AsyncMock()
-        with patch(
-            "core.exam.runner._is_direct_answer_paper_page",
-            new=AsyncMock(return_value=True),
-        ):
-            answer_page = await exam_runner._open_paper_answer_page(
-                page, button, popup_timeout_ms=100
-            )
-
-        self.assertIs(answer_page, page)
-        self.assertEqual(page.popup_timeout, 100)
-        button.click.assert_awaited_once_with()
 
     async def test_api_auth_wait_does_not_require_button_or_question_dom(self):
         from core.exam import runner as exam_runner
@@ -986,12 +888,11 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
         )
         with (
             patch.object(exam_runner, "_has_authorization_cookie", new=AsyncMock(return_value=True)),
-            patch.object(exam_runner, "_is_paper_entry_ready", new=AsyncMock()) as dom_ready,
+            
         ):
             self.assertTrue(await exam_runner._wait_for_target_route_after_auth(
-                page, page.url, require_entry_dom=False,
+                page, page.url, 
             ))
-        dom_ready.assert_not_awaited()
 
 
 class RunAsyncInterruptionTests(unittest.TestCase):

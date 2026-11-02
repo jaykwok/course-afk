@@ -12,7 +12,6 @@ TUI 讲究扁平卡片 + 留白 + 分层底色，两套审美各自演化、互�
 
 from __future__ import annotations
 
-import math
 from datetime import datetime
 from typing import Any, Iterable
 

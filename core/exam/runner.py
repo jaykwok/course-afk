@@ -5,15 +5,12 @@ import logging
 from typing import Callable
 
 from openai import AsyncOpenAI
-from playwright.async_api import Locator
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
-from core.abort import UserAbortRequested, UserCancelRequested
+from core.abort import UserCancelRequested
 from core.browser.session import (
-    create_browser_context,
     get_page_context,
     is_target_closed_exception,
-    raise_for_certificate_error,
 )
 from core.config import (
     COURSE_EXAM_ATTEMPT_THRESHOLD,
@@ -24,8 +21,7 @@ from core.config import (
     ZHIXUEYUN_EXAM_PREFIXES,
     ZHIXUEYUN_SUBJECT_PREFIX,
 )
-from core.exam.flow import ExamQuestionExtractionError, ai_exam, wait_for_finish_test
-from core.exam.answers import ExamAiConfigurationError
+from core.exam.flow import ai_exam, wait_for_finish_test
 from core.workflow.contracts import TaskOutcome,Status
 from core.exam.settings import AiSettings
 from core.exam.entry_api import (
@@ -33,13 +29,11 @@ from core.exam.entry_api import (
 )
 from core.runtime import close_safely
 from core.exam.rules import extract_attempt_limit_message as _extract_attempt_limit_message, parse_remaining_attempts
-from core.exam.routing import allows_auto_submit, queue_exam_url_by_attempt_text, requeue_ai_exam_reviews
+from core.exam.routing import allows_auto_submit, requeue_ai_exam_reviews
 from core.file_ops import normalize_url
 from core.queues.exam import (
-    has_ai_failed_model_config,
     read_exam_urls,
     record_ai_failed_model_config,
-    remove_exam_url,
     requires_manual_submission,
 )
 from core.learning.exam_bridge import get_course_exam_outcome
@@ -54,17 +48,6 @@ from core.queues.manual_exam import (
 StatusCallback = Callable[[str], None]
 
 COURSE_EXAM_BUTTON = ".btn.new-radius"
-PAPER_EXAM_BUTTONS = [
-    ".banner-handler-btn.themeColor-border-color.themeColor-background-color",
-    "button:has-text('开始考试')",
-    "button:has-text('继续考试')",
-    "button:has-text('去考试')",
-    "a:has-text('开始考试')",
-    "a:has-text('继续考试')",
-    "a:has-text('去考试')",
-    ".btn.new-radius",
-]
-
 LOGIN_REDIRECT_TIMEOUT_MS = 120000
 LOGIN_REDIRECT_POLL_MS = 500
 
@@ -81,20 +64,6 @@ def classify_exam_entry_url(url: str) -> str:
     return "unknown"
 
 
-async def _locate_exam_button(page) -> Locator | None:
-    """按入口语义定位开考按钮，兼容不同试卷页布局。"""
-    for selector in PAPER_EXAM_BUTTONS:
-        try:
-            button = page.locator(selector)
-            count = await button.count()
-            if count > 0:
-                for i in range(min(count, 5)):
-                    candidate = button.nth(i)
-                    if await candidate.is_visible():
-                        return candidate
-        except Exception:
-            continue
-    return None
 
 
 async def _has_authorization_cookie(page) -> bool:
@@ -141,12 +110,6 @@ async def _has_ready_answer_question(page) -> bool:
     return False
 
 
-async def _is_paper_entry_ready(page) -> bool:
-    if await _has_ready_answer_question(page):
-        return True
-    if await _locate_exam_button(page) is not None:
-        return True
-    return await _get_paper_attempt_limit_message(page) is not None
 
 
 async def _wait_for_target_route_after_auth(
@@ -155,7 +118,6 @@ async def _wait_for_target_route_after_auth(
     *,
     timeout_ms: int = LOGIN_REDIRECT_TIMEOUT_MS,
     interval_ms: int = LOGIN_REDIRECT_POLL_MS,
-    require_entry_dom: bool = True,
 ) -> bool:
     """等待 OAuth 返回原考试路由；接口调用可跳过按钮/题目 DOM 等待。
 
@@ -184,7 +146,7 @@ async def _wait_for_target_route_after_auth(
             observed_external_route = True
             return False
         auth_completed = observed_external_route or await _has_authorization_cookie(page)
-        if not auth_completed or (require_entry_dom and not await _is_paper_entry_ready(page)):
+        if not auth_completed:
             return False
         logging.info("登录授权已完成，考试入口已就绪")
         return True
@@ -197,24 +159,13 @@ async def _wait_for_target_route_after_auth(
 
 
 async def _raise_if_login_required(page, target_url: str) -> None:
-    if not await _wait_for_target_route_after_auth(page, target_url, require_entry_dom=False):
+    if not await _wait_for_target_route_after_auth(page, target_url):
         raise UserCancelRequested(
             "考试链接进入登录页后未完成授权并加载考试内容；"
             "已保留当前及剩余考试链接，请先更新登录凭证后重试"
         )
 
 
-async def _open_paper_answer_page(page, exam_button, *, popup_timeout_ms: int = 5000):
-    """点击开考按钮，兼容新窗口和当前页两种答题页打开方式。"""
-    try:
-        async with page.expect_popup(timeout=popup_timeout_ms) as popup_info:
-            await exam_button.click()
-        return await popup_info.value
-    except PlaywrightTimeoutError:
-        if await _is_direct_answer_paper_page(page):
-            logging.info("开考后在当前页面进入答题页")
-            return page
-        raise
 
 
 def _build_exam_client() -> tuple[AsyncOpenAI, str]:
@@ -234,44 +185,10 @@ def _build_ai_exam_model_config(model: str, client=None) -> dict[str, object]:
     return {**settings.fingerprint(), "model": model, "account": _current_account()}
 
 
-async def _is_direct_answer_paper_page(page) -> bool:
-    elapsed = 0
-    while elapsed < 5000:
-        if await _has_ready_answer_question(page):
-            return True
-        await page.wait_for_timeout(250)
-        elapsed += 250
-    return False
 
 
-async def _get_paper_attempt_limit_message(page) -> str | None:
-    for selector in ("[data-region='modal:modal']", "body"):
-        try:
-            locator = page.locator(selector)
-            if await locator.count() <= 0:
-                continue
-            text = (await locator.first.inner_text()).strip()
-        except Exception:
-            continue
-        message = _extract_attempt_limit_message(text)
-        if message:
-            return message
-    return None
 
 
-async def _handle_attempt_limit_if_present(page, url: str) -> bool:
-    attempt_limit_message = await _get_paper_attempt_limit_message(page)
-    if not attempt_limit_message:
-        return False
-
-    queue_exam_url_by_attempt_text(
-        url,
-        attempt_limit_message,
-        threshold=PAPER_EXAM_ATTEMPT_THRESHOLD,
-        exam_file=EXAM_URLS_FILE,
-        manual_exam_file=MANUAL_EXAM_FILE,
-    )
-    return True
 
 
 

@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from core.learning.flows import _ensure_course_learning_view, course_learning
+from core.learning.flows import _ensure_course_learning_view
 
 
 class _FakeTab:
@@ -115,7 +115,7 @@ class CourseLearningViewTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch(
-                "core.learning.flows.handle_archive_continue_popup",
+                "core.learning.popups.handle_archive_continue_popup",
                 new=handle_archive,
             ),
             patch(

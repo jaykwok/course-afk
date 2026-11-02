@@ -6,9 +6,8 @@ from pathlib import Path
 
 from core.config import EXAM_URLS_FILE
 from core.tasks.identity import canonical_url
-from core.file_ops import del_file
 from core.links import unique_urls
-from core.storage import serialized, write_text_atomic
+from core.storage import serialized
 from core.queues.history import failed_configs, record_failures
 
 

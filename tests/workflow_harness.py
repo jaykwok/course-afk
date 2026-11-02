@@ -41,7 +41,7 @@ class ActivityHost:
 async def new_learning_batch(test, name):
     from tempfile import TemporaryDirectory
     from unittest.mock import patch
-    from core.learning.afk_runner import run_afk_once
+    from core.app.service import ApplicationService
     from core.workflow.contracts import TaskOutcome, Status
     from core.abort import UserCancelRequested, UserAbortRequested, WafBlockError
 
@@ -110,9 +110,9 @@ async def new_learning_batch(test, name):
                 with test.assertRaises(
                     (UserCancelRequested, UserAbortRequested, KeyboardInterrupt)
                 ):
-                    await run_afk_once()
+                    await ApplicationService(host).learn()
             else:
-                await run_afk_once()
+                await ApplicationService(host).learn()
         rows = host.repository.export()["queue_items"]
         if "heartbeat" in name:
             test.assertEqual(len(host.calls), 1)

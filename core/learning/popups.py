@@ -2,10 +2,8 @@ from __future__ import annotations
 
 from core.abort import raise_for_batch_stop
 
-import asyncio
 import logging
 
-from core.humanize import jitter
 
 
 async def handle_archive_continue_popup(page) -> bool:

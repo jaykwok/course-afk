@@ -57,7 +57,8 @@ class TransactionFixture(unittest.IsolatedAsyncioTestCase):
         self.stack.enter_context(patch.object(runner, "_build_exam_client", return_value=(self.client, "test")))
         self.stack.enter_context(patch.object(runner, "_build_ai_exam_model_config", return_value=MODEL))
         self.stack.enter_context(patch.object(runner, "_current_account", return_value=MODEL["account"]))
-        self.stack.enter_context(patch.object(runner, "create_browser_context", self.context.open))
+        self.stack.enter_context(patch("core.browser.session.create_browser_context", self.context.open))
+        self.stack.enter_context(patch("core.auth.access.require_task_account", return_value="account-a"))
 
     async def asyncSetUp(self):
         from tests.workflow_harness import ActivityHost
@@ -148,8 +149,7 @@ class TransactionTests(TransactionFixture):
         self.enqueue((url,))
         with self.host.repository.connect() as db:
             db.execute("CREATE TRIGGER reject_remove BEFORE DELETE ON queue_items BEGIN SELECT RAISE(ABORT, 'disk full'); END")
-        with patch.object(runner, "remove_exam_url") as unused_legacy_removal:
-            await runner.run_ai_exam_batch()
+        await runner.run_ai_exam_batch()
         self.assertEqual(read_exam_urls(self.exam_file), [url])
         self.assertEqual([item.url for item in self.manual()], [url])
 
@@ -173,7 +173,6 @@ class PaperReconciliationTests(TransactionFixture):
     def setUp(self):
         super().setUp()
         self.stack.enter_context(patch.object(runner, "_raise_if_login_required", new=AsyncMock()))
-        self.stack.enter_context(patch.object(runner, "_handle_attempt_limit_if_present", new=AsyncMock(return_value=False)))
         self.stack.enter_context(patch.object(runner, "_has_ready_answer_question", new=AsyncMock(return_value=True)))
         self.answer = self.stack.enter_context(patch.object(runner, "ai_exam", new=AsyncMock()))
 
@@ -307,7 +306,7 @@ class PaperReconciliationTests(TransactionFixture):
         page.url = PAPER
         async def slow(_page):
             await asyncio.sleep(10)
-        with patch.object(runner, "_has_authorization_cookie", new=AsyncMock(return_value=True)), patch.object(runner, "_is_paper_entry_ready", new=slow):
+        with patch.object(runner, "_has_authorization_cookie", new=slow):
             result = await asyncio.wait_for(runner._wait_for_target_route_after_auth(page, PAPER, timeout_ms=20), timeout=0.5)
         self.assertFalse(result)
 
@@ -324,7 +323,6 @@ class PaperApiEntryTests(TransactionFixture):
         self.validate = self.stack.enter_context(patch.object(runner, "validate_exam_entry", new=AsyncMock()))
         self.stack.enter_context(patch.object(runner, "_paper_state", new=AsyncMock(return_value=replace(NEW, passed=True))))
         self.answer = self.stack.enter_context(patch.object(runner, "ai_exam", new=AsyncMock()))
-        self.button = self.stack.enter_context(patch.object(runner, "_locate_exam_button", new=AsyncMock(side_effect=AssertionError("API entry must not inspect buttons"))))
 
     async def test_api_entry_records_intent_before_navigation_and_ignores_buttons(self):
         async def navigate(*_args, **_kwargs):
@@ -336,7 +334,6 @@ class PaperApiEntryTests(TransactionFixture):
         self.page.goto.assert_awaited_once_with(PAPER, timeout=30000)
         self.answer.assert_awaited_once()
         self.assertFalse(self.answer.call_args.kwargs["resume"])
-        self.button.assert_not_awaited()
         self.page.locator.assert_not_called()
         self.assertIsNone(self.pending(self.url))
 
@@ -345,7 +342,6 @@ class PaperApiEntryTests(TransactionFixture):
         await runner._run_paper_ai_exam(self.page, self.url, self.client, "test", auto_submit=True)
         self.assertTrue(self.answer.call_args.kwargs["resume"])
         self.assertFalse(self.answer.call_args.kwargs["auto_submit"])
-        self.button.assert_not_awaited()
 
     async def test_api_denial_never_opens_paper_or_records_a_new_attempt(self):
         self.validate.side_effect = ExamEntryUnavailable("attempt_limit", "次数已用完")
@@ -360,7 +356,6 @@ class PaperApiEntryTests(TransactionFixture):
         await runner._run_paper_ai_exam(self.page, self.url, self.client, "test")
         self.validate.assert_not_awaited()
         self.page.goto.assert_not_awaited()
-        self.button.assert_not_awaited()
         self.assertEqual(self.manual()[0].reason, "state_unknown")
 
 

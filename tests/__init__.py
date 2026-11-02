@@ -25,8 +25,6 @@ os.environ["MODEL_NAME"] = "test-model"
 for _name in (
     "SECTION_GAP_MIN",
     "SECTION_GAP_MAX",
-    "COURSE_GAP_MIN",
-    "COURSE_GAP_MAX",
     "EXAM_OPTION_GAP_MIN",
     "EXAM_OPTION_GAP_MAX",
     "EXAM_SUBMIT_GAP_MIN",

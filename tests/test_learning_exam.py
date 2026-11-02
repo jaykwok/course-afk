@@ -172,65 +172,7 @@ class FakeSubjectExamItem:
 
 
 class LearningExamTests(unittest.IsolatedAsyncioTestCase):
-    async def test_check_exam_passed_treats_go_exam_row_as_pending_without_error(self):
-        from core.learning.exam_bridge import check_exam_passed
 
-        page = FakePage(
-            {
-                ".neer-status": FakeLocator(count=0),
-                "div.tab-container table.table": FakeLocator(count=1),
-                "div.tab-container table.table tbody tr:first-child": FakeLocator(
-                    count=1,
-                    text="第1次  去考试",
-                    children={
-                        "td:nth-child(4)": FakeLocator(
-                            count=0,
-                            wait_error=RuntimeError(
-                                "Locator.wait_for: Timeout 1500ms exceeded."
-                            ),
-                        )
-                    },
-                ),
-            }
-        )
-
-        with patch("core.learning.exam_bridge.logging.error") as mock_error:
-            result = await check_exam_passed(page)
-
-        self.assertFalse(result)
-        mock_error.assert_not_called()
-
-    async def test_check_exam_passed_treats_no_exam_record_row_as_pending_without_error(self):
-        from core.learning.exam_bridge import check_exam_passed
-
-        page = FakePage(
-            {
-                ".neer-status": FakeLocator(count=0),
-                "div.tab-container table.table": FakeLocator(count=1),
-                "div.tab-container table.table tbody tr:first-child": FakeLocator(
-                    count=1,
-                    text="暂无考试记录",
-                    children={
-                        "td:nth-child(4)": FakeLocator(
-                            count=1,
-                            wait_error=RuntimeError(
-                                "Locator.wait_for: Timeout 1500ms exceeded."
-                            ),
-                        )
-                    },
-                ),
-            }
-        )
-
-        with (
-            patch("core.learning.exam_bridge.logging.info") as mock_info,
-            patch("core.learning.exam_bridge.logging.error") as mock_error,
-        ):
-            result = await check_exam_passed(page)
-
-        self.assertFalse(result)
-        mock_error.assert_not_called()
-        mock_info.assert_any_call("考试状态: 暂无考试记录")
 
     async def test_course_learning_checks_exam_status_only_once_for_exam_section(self):
         from core.learning.flows import course_learning
@@ -253,7 +195,6 @@ class LearningExamTests(unittest.IsolatedAsyncioTestCase):
                 new=AsyncMock(return_value=None),
             ),
             patch("core.learning.flows.get_course_exam_outcome", new=mock_check),
-            patch("core.learning.exam_bridge.check_exam_passed", new=mock_check),
             patch(
                 "core.learning.flows.queue_course_exams_from_api",
                 new=AsyncMock(return_value=None),

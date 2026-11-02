@@ -110,10 +110,9 @@ class CourseSession:
     async def maintain(self):
         from core.learning.flows import (
             handle_rating_popup,
-            handle_archive_continue_popup,
         )
         from core.browser.overlays import dismiss_topmost_overlays_async
-        from core.learning.popups import check_and_handle_rating_popup
+        from core.learning.popups import check_and_handle_rating_popup, handle_archive_continue_popup
 
         await handle_rating_popup(self.page)
         await handle_archive_continue_popup(self.page)

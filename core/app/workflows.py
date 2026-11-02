@@ -17,7 +17,6 @@ from core.auth.credential import AccountProfile
 from core.exam.runner import run_ai_exam_batch
 from core.exam.routing import requeue_ai_exam_reviews
 from core.queues.exam import append_exam_url, append_exam_urls, read_exam_urls
-from core.learning.zone import collect_learning_links_from_learning_zone_urls
 from core.links import extract_urls_from_text, split_manual_selection_urls
 from core.browser.overlays import prepare_page_after_navigation_async
 from core.file_ops import (
@@ -25,13 +24,11 @@ from core.file_ops import (
     is_exam_url,
     normalize_url,
 )
-from core.discovery.train_class import collect_learning_links_from_train_class_urls
 from core.queues.learning import append_learning_urls, read_learning_urls
 from core.auth.login import login_and_save_credential
 from core.state import collect_project_state
 from core.config import summarize_exception_message
 from core.discovery.subject_parse import (
-    expand_and_append_subject_urls,
     partition_course_and_subject_urls,
 )
 
@@ -258,7 +255,6 @@ async def run_manual_course_selection(input_text, learning_zone_mode='manual', s
     discoveries = subjects + zones + classes + entries
     remember_discovery_entries(discoveries)
     before_learning = len(read_learning_urls(LEARNING_URLS_FILE))
-    before_exams = len(read_exam_urls(EXAM_URLS_FILE))
     outcomes = await ApplicationService().batch(discoveries,'discover',options={'zone_mode': learning_zone_mode},status_callback=status_callback) if discoveries else []
     result = {
         'input_url_count': len(urls), 'direct_learning_count': len(added_learning),

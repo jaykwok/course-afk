@@ -3,9 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import traceback
-from dataclasses import dataclass
-from pathlib import Path
 from typing import Awaitable, Callable
 
 from core.abort import (
@@ -16,37 +13,22 @@ from core.abort import (
     WafBlockError,
 )
 from core.browser.session import (
-    create_browser_context,
     ensure_controller_page,
     get_context_browser,
-    get_controller_page,
     is_browser_connected,
     is_controller_window_closed,
     is_target_closed_exception,
 )
 from core.config import (
-    COURSE_GAP_MAX,
-    COURSE_GAP_MIN,
     LEARNING_FAILURES_FILE,
-    LEARNING_URLS_FILE,
-    sample_afk_slow_mo,
 )
-from core.humanize import sample_between
 from core.file_ops import (
-    is_compliant_url_regex,
     is_course_detail_url,
-    is_subject_detail_url,
 )
-from core.links import normalize_urls
-from core.learning.exam_bridge import is_subject_url_completed
-from core.learning.flows import course_learning, subject_learning
 from core.learning.common import ensure_course_page_ready
 from core.queues.learning import (
     read_learning_failures,
-    read_learning_urls,
     record_learning_failure,
-    remove_learning_failure,
-    write_learning_urls,
 )
 
 
@@ -84,25 +66,8 @@ async def browser_still_usable(context) -> bool:
     return any(_is_page_open(page) for page in pages)
 
 
-async def _pause_between_courses(status_callback=None) -> float:
-    """两门课之间随机歇一会。
-
-    整批链接无缝连做（上一门结束的同一秒就开下一门）在后台是一条很直的线，
-    真人总要挑下一门、切页面。用 ``asyncio.sleep`` 以便 Ctrl+C / 取消能立刻打断。
-    """
-    pause_seconds = sample_between(COURSE_GAP_MIN, COURSE_GAP_MAX)
-    if pause_seconds <= 0:
-        return 0.0
-    logging.info(f"课程间隔休息 {pause_seconds:.0f} 秒")
-    if status_callback:
-        status_callback(f"课程间隔休息 {pause_seconds:.0f} 秒")
-    await asyncio.sleep(pause_seconds)
-    return pause_seconds
 
 
-@dataclass
-class AfkBatch:
-    urls: list[str]
 
 
 class _CourseInfoMonitor:
@@ -221,13 +186,6 @@ async def _wait_for_course_bootstrap(page, monitor: _CourseInfoMonitor | None) -
             pass
 
 
-def _write_learning_queue(
-    urls: list[str], *, learning_file: Path | None = None
-) -> None:
-    if learning_file is None:
-        learning_file = LEARNING_URLS_FILE
-    if urls or learning_file.exists():
-        write_learning_urls(urls, file_path=learning_file)
 
 
 def _is_page_open(page) -> bool:
@@ -252,15 +210,6 @@ async def _close_page_quiet(page) -> None:
         pass
 
 
-def prepare_afk_batch(
-    *,
-    learning_file: Path | None = None,
-) -> AfkBatch:
-    if learning_file is None:
-        learning_file = LEARNING_URLS_FILE
-    learning_urls = normalize_urls(read_learning_urls(file_path=learning_file))
-    _write_learning_queue(learning_urls, learning_file=learning_file)
-    return AfkBatch(urls=learning_urls)
 
 
 async def _open_course_page(context):

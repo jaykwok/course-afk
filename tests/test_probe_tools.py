@@ -119,7 +119,7 @@ class ExamPageProbeTests(unittest.IsolatedAsyncioTestCase):
                 browser_context.context.page,
                 "https://kc.zhixueyun.com/#/exam/exam/answer-paper/test",
                 timeout_ms=120000,
-                require_entry_dom=False,
+                
             )
             browser_context.context.page.locator.assert_not_called()
             self.assertFalse(result_file.exists())

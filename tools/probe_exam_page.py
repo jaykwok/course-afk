@@ -114,7 +114,7 @@ async def main(target_url: Optional[str] = None, *, validate_entry: bool = False
         )
         await page.goto(target_url, wait_until="load")
         ready = await _wait_for_target_route_after_auth(
-            page, target_url, timeout_ms=120000, require_entry_dom=False,
+            page, target_url, timeout_ms=120000, 
         )
         if not ready:
             raise RuntimeError("考试入口认证超时，已停止探针")

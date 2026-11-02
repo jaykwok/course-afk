@@ -550,8 +550,6 @@ SECTION_GAP_MIN = _env_int("SECTION_GAP_MIN", 2)
 SECTION_GAP_MAX = _env_int("SECTION_GAP_MAX", 7)
 
 # 课程之间的随机停顿（秒）：整批链接无缝连做同理
-COURSE_GAP_MIN = _env_int("COURSE_GAP_MIN", 8)
-COURSE_GAP_MAX = _env_int("COURSE_GAP_MAX", 40)
 
 # ============================================================
 # 考试配置

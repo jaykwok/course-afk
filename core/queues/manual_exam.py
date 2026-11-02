@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 
 from core.config import MANUAL_EXAM_FILE
 from core.queues.exam import normalize_model_config, unique_model_configs
 from core.tasks.identity import canonical_url
-from core.file_ops import del_file, normalize_optional_text
-from core.storage import serialized, write_text_atomic
+from core.file_ops import normalize_optional_text
+from core.storage import serialized
 from core.queues.history import record_failures
 
 

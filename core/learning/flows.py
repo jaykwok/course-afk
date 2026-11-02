@@ -31,7 +31,6 @@ from core.humanize import jitter, pause_between
 from core.learning.common import (
     ensure_course_page_ready,
     get_course_url,
-    is_learned,
     timer,
     wait_for_course_section_focus,
 )
@@ -51,7 +50,7 @@ from core.learning.progress import (
 from core.learning.playback import ensure_course_started
 from core.learning.contracts import LearningResult
 from core.queues.learning import record_learning_failure, remove_learning_failure
-from core.learning.popups import handle_archive_continue_popup, handle_rating_popup
+from core.learning.popups import handle_rating_popup
 
 
 async def _open_subject_item_popup(page, learn_item, *, attempts: int = 3):

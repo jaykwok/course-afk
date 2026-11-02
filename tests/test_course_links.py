@@ -66,13 +66,12 @@ class CourseLinkTests(unittest.TestCase):
 
     def test_queue_round_trip_retry_and_failure_removal_keep_context(self):
         from core.queues.learning import append_learning_urls, read_learning_urls, record_learning_failure, requeue_retryable_learning_failures, remove_learning_failure, read_learning_failures, write_learning_urls
-        from core.learning.afk_runner import prepare_afk_batch
         with TemporaryDirectory() as tmp:
             queue, failures = Path(tmp)/'queue.json', Path(tmp)/'failures.json'
             other = build_subject_course_url(COURSE, OTHER_SUBJECT, 1)
             self.assertEqual(append_learning_urls([QUERY, FULL, other], file_path=queue), [FULL, other])
             self.assertEqual([x['url'] for x in json.loads(queue.read_text(encoding='utf-8'))], [FULL, other])
-            self.assertEqual(prepare_afk_batch(learning_file=queue).urls, [FULL, other])
+            self.assertEqual(read_learning_urls(queue), [FULL, other])
             write_learning_urls([], file_path=queue)
             record_learning_failure(QUERY, reason='course_info_api_error', reason_text='retry', file_path=failures)
             self.assertEqual(requeue_retryable_learning_failures(learning_file=queue, failures_file=failures), [FULL])

@@ -64,7 +64,7 @@ class VisibleCourseTests(unittest.IsolatedAsyncioTestCase):
                     new=AsyncMock(return_value=False),
                 ),
                 patch(
-                    "core.learning.flows.handle_archive_continue_popup",
+                    "core.learning.popups.handle_archive_continue_popup",
                     new=AsyncMock(return_value=False),
                 ),
             ):
