@@ -26,8 +26,14 @@ _lock = threading.Lock()
 
 
 def run_operation(awaitable, *, exception_handler_factory=None):
-    from core.workflow.host import get_host
-    host = get_host()
+    try:
+        from core.workflow.host import get_host
+        host = get_host()
+    except BaseException:
+        close = getattr(awaitable, "close", None)
+        if callable(close):
+            close()
+        raise
     thread_id = threading.get_ident()
     operation = _Operation(host.loop)
     with _lock:

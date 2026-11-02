@@ -42,7 +42,7 @@ class DistributionFilesTests(unittest.TestCase):
         self.assertIn("Python was not found", content)
         self.assertIn("Starting launcher.py", content)
         self.assertIn("Launcher exited with code", content)
-        self.assertIn("data\\logs\\app-error.log", content)
+        self.assertIn("absolute log path", content)
         self.assertNotIn("WindowsPowerShell", content)
         self.assertNotIn("GetConsoleMode", content)
         self.assertNotIn("SetConsoleMode", content)

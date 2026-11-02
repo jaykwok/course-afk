@@ -17,6 +17,7 @@ from core.browser.session import (
 )
 from core.auth.credential import (
     AccountProfile,
+    AccountIdentityUnavailableError,
     extract_account_profile_from_context,
     load_credential_metadata,
     save_credential_bundle,
@@ -176,8 +177,8 @@ async def login_and_save_credential(*, confirm_same_account=None) -> AccountProf
             await page.wait_for_url(MYLEARNING_HOME, timeout=0)
             await prepare_page_after_navigation_async(page)
             profile = await extract_account_profile_from_context(context)
-            if not (profile.full_name or profile.account_name):
-                raise LoginNotCompletedError("未取得账号信息，登录凭证未更新")
+            if not profile.account_name.strip():
+                raise LoginNotCompletedError("账号资料未返回稳定账号标识，登录凭证未更新；请确认中心站账号资料后重试")
             _validate_pending_account(profile, confirm_same_account)
             cookies = await context.cookies()
             if COOKIES_FILE.exists():
@@ -188,6 +189,8 @@ async def login_and_save_credential(*, confirm_same_account=None) -> AccountProf
         except Exception as exc:
             if isinstance(exc, LoginNotCompletedError):
                 raise
+            if isinstance(exc, AccountIdentityUnavailableError):
+                raise LoginNotCompletedError(str(exc)) from exc
             if is_target_closed_exception(exc):
                 raise LoginNotCompletedError(
                     "已手动关闭浏览器，未完成登录，登录凭证未更新"

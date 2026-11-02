@@ -1013,6 +1013,7 @@ class CourseTuiApp(App):
         self._launcher_thread: threading.Thread | None = None
         self._shutting_down = False
         self._exit_status = 0
+        self.fatal_error: Exception | None = None
         # 当前「可被 Esc / Ctrl+C 取消」的模态提示队列（是/否、多行、回车、子菜单）。
         # 主菜单不在此列——在主菜单返回即退出。仅 app 线程读写，无需锁。
         self._cancellable_prompt_queue: Queue | None = None
@@ -1209,6 +1210,7 @@ class CourseTuiApp(App):
                 import logging
                 self._exit_status = 1
                 logging.exception("主工作流出现未处理错误")
+                self.fatal_error = exc
                 self._safe_emit_error(f"运行出错：{exc}")
             finally:
                 self._safe_exit()

@@ -77,7 +77,7 @@ def has_valid_credential() -> tuple[bool, bool]:
         return False, True
     metadata = load_credential_metadata()
     saved_at = parse_saved_at(metadata)
-    if not metadata or saved_at is None:
+    if not metadata or not metadata.account_name.strip() or saved_at is None:
         return False, True
     expires_at = parse_expires_at(metadata)
     if expires_at is not None:

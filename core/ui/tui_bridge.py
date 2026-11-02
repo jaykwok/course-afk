@@ -81,20 +81,23 @@ class TextualLogHandler(logging.Handler):
             pass
 
 
-def _install_log_handler(app: CourseTuiApp) -> None:
+def _install_log_handler(app: CourseTuiApp):
     """移除抢终端的控制台 StreamHandler，换成镜像到 TUI 的 handler。"""
     root = logging.getLogger()
+    previous = []
     for handler in list(root.handlers):
         # FileHandler 是 StreamHandler 的子类，要先放行文件 handler
         if isinstance(handler, logging.FileHandler):
             continue
         if isinstance(handler, logging.StreamHandler):
             root.removeHandler(handler)
+            previous.append(handler)
 
     handler = TextualLogHandler(app)
     handler.setLevel(_get_console_log_level())
     handler.setFormatter(_RedactingFormatter(LOG_FORMAT))
     root.addHandler(handler)
+    return handler, previous
 
 
 # ------------------------------------------------------------------
@@ -448,7 +451,7 @@ def launch_tui() -> int:
     setup_logging()
 
     app = CourseTuiApp()
-    _install_log_handler(app)
+    log_handler, previous_handlers = _install_log_handler(app)
 
     frontend = TuiFrontend(app)
     frontend.install()
@@ -463,9 +466,20 @@ def launch_tui() -> int:
                 logging.critical("工作线程未在退出期限内停止，终止进程；已提交的数据可在下次恢复")
                 logging.shutdown()
                 os._exit(1)
+        if app.fatal_error is not None:
+            from core.startup import report_fatal_error
+
+            report_fatal_error(app.fatal_error)
         return int(app._exit_status or result or 0)
     finally:
-        from core.workflow.host import shutdown_host
-        shutdown_host()
-        signal.signal(signal.SIGTERM, previous_term)
-        frontend.restore()
+        from core.startup import shutdown_workflows
+        try:
+            shutdown_workflows()
+        finally:
+            signal.signal(signal.SIGTERM, previous_term)
+            frontend.restore()
+            root = logging.getLogger()
+            root.removeHandler(log_handler)
+            log_handler.close()
+            for handler in previous_handlers:
+                root.addHandler(handler)

@@ -27,7 +27,7 @@ if not exist "%PYTHON_EXE%" (
     if errorlevel 1 (
         color 0C
         echo %PAD%Python was not found or is the Windows Store stub.
-        echo %PAD%Create .venv with: uv venv ^&^& uv pip install -r requirements.txt
+        echo %PAD%Create .venv with: uv sync
         echo %PAD%Or install real Python from https://python.org and add it to PATH.
         echo.
         pause
@@ -42,7 +42,7 @@ if not "%EXIT_CODE%"=="0" (
     color 0C
     echo.
     echo %PAD%Launcher exited with code %EXIT_CODE%.
-    echo %PAD%Check data\logs\app-error.log for details.
+    echo %PAD%See the error and absolute log path above.
     echo.
     pause
 )

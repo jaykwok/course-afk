@@ -1,12 +1,2 @@
-# Python >= 3.14. Install the latest compatible dependency releases.
-# Upgrade Playwright together with browser flags and lifecycle tests.
-playwright
-beautifulsoup4
-python-dotenv
-openai
-httpx
-rich
-textual
-# Workflow history compatibility: upgrade only with interrupted-history tests.
-dbos==3.4.0
-psutil>=7.2,<8
+# Dependencies are maintained only in pyproject.toml.
+.

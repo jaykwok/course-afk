@@ -17,22 +17,8 @@ from core.browser.overlays import prepare_page_after_navigation_async
 from core.storage import serialized, write_json_atomic
 
 
-CENTER_ACCOUNT_PROFILE_SCRIPT = """
-() => {
-  const selectors = [
-    ".user-nav .user-info .user-name",
-    ".common-card.user-info .user-name",
-    ".user-nav .user-name",
-  ];
-  for (const selector of selectors) {
-    for (const element of document.querySelectorAll(selector)) {
-      const fullName = String(element.textContent || "").trim();
-      if (fullName) return { fullName, name: "" };
-    }
-  }
-  return null;
-}
-"""
+class AccountIdentityUnavailableError(ValueError):
+    pass
 
 
 @dataclass
@@ -85,6 +71,18 @@ def extract_account_profile(user_data: dict[str, Any] | None) -> AccountProfile:
     )
 
 
+def extract_center_account_profile(data) -> AccountProfile:
+    if not isinstance(data, dict):
+        return AccountProfile()
+    user_id = data.get("id")
+    if not isinstance(user_id, (str, int)) or isinstance(user_id, bool) or not str(user_id).strip():
+        return AccountProfile()
+    return AccountProfile(
+        full_name=str(data.get("name") or "").strip(),
+        account_name="center:" + str(user_id).strip(),
+    )
+
+
 async def extract_account_profile_from_context(context, navigation_timeout: int = 30000) -> AccountProfile:
     from core.runtime import close_safely
     page = await context.new_page()
@@ -92,14 +90,27 @@ async def extract_account_profile_from_context(context, navigation_timeout: int 
         await page.goto(MYLEARNING_CENTER_HOME, timeout=navigation_timeout)
         await page.wait_for_url(re.compile(MYLEARNING_CENTER_HOME_PATTERN), timeout=navigation_timeout)
         await prepare_page_after_navigation_async(page)
-        await page.wait_for_function(CENTER_ACCOUNT_PROFILE_SCRIPT, timeout=navigation_timeout)
-        return extract_account_profile(await page.evaluate(CENTER_ACCOUNT_PROFILE_SCRIPT))
+        await page.wait_for_function("() => !!localStorage.getItem('token')", timeout=navigation_timeout)
+        profile = await page.evaluate("""async () => {
+            const token = localStorage.getItem('token');
+            if (!token) return null;
+            const response = await fetch('/api/personal/user/info', {
+                headers: {'x-token': token}, redirect: 'error', signal: AbortSignal.timeout(15000)
+            });
+            if (!response.ok) return null;
+            const body = await response.json();
+            return body.code === 0 ? body.data : null;
+        }""")
+        result = extract_center_account_profile(profile)
+        if not result.account_name:
+            raise AccountIdentityUnavailableError("账号资料接口未返回稳定账号标识，登录凭证未更新；请确认中心站账号资料与登录状态")
+        return result
     finally:
         await close_safely(page.close(), label="account profile page")
 
 
 def save_credential_bundle(saved_at: datetime, profile: AccountProfile, cookies: list, *, cookies_path=COOKIES_FILE) -> CredentialMetadata:
-    if not (profile.full_name or profile.account_name) or not cookies:
+    if not profile.account_name.strip() or not cookies:
         raise ValueError("账号信息或 cookie 不完整，凭证未更新")
     metadata = CredentialMetadata(saved_at=saved_at.isoformat(timespec="seconds"), expires_at=(saved_at + timedelta(days=CREDENTIAL_VALID_DAYS)).isoformat(timespec="seconds"), account_display_name=profile.full_name, account_name=profile.account_name, account_label=profile.label)
     # Cookie and account metadata share one atomic commit.

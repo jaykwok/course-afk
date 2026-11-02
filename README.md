@@ -7,10 +7,9 @@
 项目最低要求 64 位 Python 3.14。DBOS 固定为 3.4.0，升级需验证旧执行历史恢复；其他依赖安装兼容版本。
 
 ```powershell
-uv venv --python 3.14
-uv pip install --upgrade -r requirements.txt
+uv sync --locked
 Copy-Item .env.example .env
-.\.venv\Scripts\python.exe launcher.py
+uv run launcher.py
 ```
 
 Windows 可双击 `run.bat`，macOS 可运行 `sh run.command`，或在已激活虚拟环境中运行 `python launcher.py`。Windows 默认使用系统 Edge；macOS 优先已安装 Chrome，再选 Edge。使用 Playwright 自带浏览器时，在 `.env` 设置 `BROWSER_CHANNEL=""`，并执行 `python -m playwright install chromium`。支持 Windows x64、macOS 15 arm64 和 Intel x64，CI 在这三个环境运行验证。

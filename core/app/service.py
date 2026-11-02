@@ -27,8 +27,10 @@ _STATUS_LABELS = {
 class ApplicationService:
     def __init__(self, host=None):
         if host is None:
+            from core.auth.access import require_task_account
             from core.workflow.host import get_host
 
+            require_task_account()
             host = get_host()
         self.host = host
 
@@ -47,7 +49,8 @@ class ApplicationService:
         selected = list(dict.fromkeys(canonical_url(u) for u in urls))
         account = self.host.identity_provider()
         if account == "unbound":
-            raise ValueError("缺少可验证的账号标识，请先更新登录凭证")
+            from core.auth.access import CredentialUnavailableError
+            raise CredentialUnavailableError("缺少可验证的账号标识，请先更新登录凭证")
         # Retain every selected task before the first browser can fail. Planned
         # runs without an engine row are dispatched with the same ID on retry.
         for url in selected:

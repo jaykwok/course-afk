@@ -1,0 +1,25 @@
+[project]
+name = "course-afk"
+version = "0.1.0"
+requires-python = ">=3.14"
+dependencies = [
+    "playwright",
+    "beautifulsoup4",
+    "python-dotenv",
+    "openai",
+    "httpx",
+    "rich",
+    "textual",
+    "dbos==3.4.0",
+    "psutil>=7.2,<8",
+]
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["core*"]
+
+[tool.uv]
+package = false

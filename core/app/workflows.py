@@ -247,7 +247,9 @@ async def collect_learning_links_from_entry_urls(
 
 
 async def run_manual_course_selection(input_text, learning_zone_mode='manual', status_callback=None, result_ready_callback=None):
+    from core.auth.access import require_task_account
     from core.app.service import ApplicationService
+    require_task_account()
     urls = parse_manual_selection_input(input_text)
     learning, exams, zones, classes, entries = split_manual_selection_urls(urls)
     courses, subjects = partition_course_and_subject_urls(learning)

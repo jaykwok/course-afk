@@ -61,6 +61,7 @@ MANUAL_SELECTION_PROMPTS = [
 def main() -> int:
     _check_python_version()
     from core.abort import BrowserCertificateError, UserAbortRequested, UserCancelRequested
+    from core.auth.access import CredentialUnavailableError
     from core.config import setup_logging
     from core.config import (
         EXAM_URLS_FILE,
@@ -118,6 +119,10 @@ def main() -> int:
                 ui.show_error(str(exc))
                 ui.pause()
                 continue
+            except CredentialUnavailableError as exc:
+                ui.show_warning(str(exc))
+                ui.pause()
+                continue
     except UserAbortRequested as exc:
         ui.show_warning(str(exc))
         return 0
@@ -126,9 +131,22 @@ def main() -> int:
         return 0
 
 
-if __name__ == "__main__":
-    _check_python_version()
-    # 默认入口走 Textual TUI；main() 仍可作为后台控制流被复用/被测试。
-    from core.ui.tui_bridge import launch_tui
+def entrypoint():
+    from core.startup import check_dependencies, report_fatal_error
 
-    raise SystemExit(launch_tui())
+    try:
+        _check_python_version()
+        check_dependencies()
+        if "--check-startup" in sys.argv:
+            print("启动依赖检查通过")
+            return 0
+        from core.ui.tui_bridge import launch_tui
+
+        return launch_tui()
+    except Exception as exc:
+        report_fatal_error(exc)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(entrypoint())

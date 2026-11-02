@@ -40,6 +40,8 @@ def _begin_operation(ui, title: str, message: str) -> None:
 
 
 def _ensure_exam_urls_for_ai_exam(ui) -> bool:
+    from core.auth.access import require_task_account
+    require_task_account()
     from core.config import EXAM_URLS_FILE, MANUAL_EXAM_FILE
     from core.exam.routing import requeue_ai_exam_reviews
     from core.queues.exam import append_exam_url, read_exam_urls
