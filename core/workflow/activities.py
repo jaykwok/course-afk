@@ -12,7 +12,7 @@ def _task(host, payload):
 
 async def learn(host, payload):
     from core.browser.session import create_browser_context, is_controller_window_closed
-    from core.learning.afk_runner import _process_url
+    from core.learning.afk_runner import execute_learning
     from core.learning.flows import course_learning, subject_learning
     from core.file_ops import is_subject_detail_url
 
@@ -29,7 +29,7 @@ async def learn(host, payload):
         )
         return TaskOutcome(task["task_id"], Status.NEEDS_REVIEW, ["non_compliant_url"])
     async with create_browser_context() as (_, context):
-        result = await _process_url(
+        result = await execute_learning(
             context,
             task["url"],
             subject_learning if is_subject_detail_url(task["url"]) else course_learning,
@@ -51,7 +51,7 @@ async def discover(host, payload):
         enqueue_learning_links_with_subject_expand,
     )
     from core.learning.zone import collect_learning_links_from_learning_zone_urls
-    from core.app.workflows import collect_learning_links_from_entry_urls
+    from core.discovery.manual import collect_learning_links_from_entry_urls
     from core.queues.learning import (
         read_learning_failures,
         remove_learning_failure,
@@ -162,50 +162,14 @@ async def discover(host, payload):
 
 
 async def exam(host, payload):
-    from core.exam.runner import (
-        _build_exam_client,
-        _build_ai_exam_model_config,
-        classify_exam_entry_url,
-        _run_course_ai_exam,
-        _run_paper_ai_exam,
-        _to_manual,
-        _close_page_safely,
-        EXAM_URLS_FILE,
-    )
-    from core.queues.exam import has_ai_failed_model_config
-    from core.browser.session import create_browser_context
-    from core.runtime import close_safely
+    from core.exam.runner import execute_exam
 
     task = _task(host, payload)
-    kind = classify_exam_entry_url(task["url"])
-    if kind not in {"course", "exam"}:
-        _to_manual(task["url"], "unknown_url_type", "此入口需要人工展开或核对")
-        return TaskOutcome(task["task_id"], Status.NEEDS_REVIEW, ["unknown_url_type"])
-    client, model = _build_exam_client()
-    page = None
-    try:
-        config = _build_ai_exam_model_config(model, client)
-        allow_submit = payload["options"].get(
-            "auto_submit", False
-        ) and not has_ai_failed_model_config(
-            task["url"], config, file_path=EXAM_URLS_FILE
-        )
-        async with create_browser_context() as (_, context):
-            try:
-                page = await context.new_page()
-                await page.goto(task["url"], timeout=30000)
-                result = await (
-                    _run_course_ai_exam if kind == "course" else _run_paper_ai_exam
-                )(page, task["url"], client, model, auto_submit=allow_submit)
-            finally:
-                await _close_page_safely(page)
-        if isinstance(result, TaskOutcome):
-            result.task_id = task["task_id"]
-        else:
-            raise TypeError("考试活动必须返回 TaskOutcome")
-        return result
-    finally:
-        await close_safely(client.close(), label="AI client")
+    result = await execute_exam(
+        task["url"], auto_submit=payload["options"].get("auto_submit", False)
+    )
+    result.task_id = task["task_id"]
+    return result
 
 
 async def references(host, payload):

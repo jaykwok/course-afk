@@ -174,6 +174,9 @@ async def new_selection(test, name):
 
     with ExitStack() as stack:
         stack.enter_context(
+            patch("core.auth.access.require_task_account", return_value="test-account")
+        )
+        stack.enter_context(
             patch("core.tasks.store.account_id", return_value="test-account")
         )
         write_learning_urls([])
@@ -205,7 +208,7 @@ async def new_selection(test, name):
         )
         manual_call = stack.enter_context(
             patch(
-                "core.app.workflows.collect_learning_links_from_entry_urls",
+                "core.discovery.manual.collect_learning_links_from_entry_urls",
                 new=AsyncMock(return_value=(0, 0, 0)),
             )
         )

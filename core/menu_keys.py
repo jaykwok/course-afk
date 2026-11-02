@@ -44,7 +44,6 @@ def parse_menu_key(raw: str, total: int, *, zero_for_last: bool = False) -> int 
 
     - 「0」在恰好 10 项时表示第 10 项
     - 「1」…「9」对应前 9 项
-    - CLI 仍兼容输入「10」表示第 10 项
     """
     ensure_menu_option_count(total)
     text = (raw or "").strip()

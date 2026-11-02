@@ -104,7 +104,7 @@ AI_MAX_RETRIES=2
 | `data/logs/app-warn.log` | WARNING 日志 |
 | `data/logs/app-error.log` | ERROR / CRITICAL 与异常堆栈 |
 
-登录必须取得账号信息和 Cookie 才替换凭证；失败保留原文件。还有其他账号的待办时拒绝切换到另一稳定账号；只有显示名可用时要求确认待办归属。登录仅使用单一凭证包。
+登录必须取得账号信息和 Cookie 才替换凭证；失败保留原文件。还有其他账号的待办时拒绝切换到另一稳定账号；账号资料必须包含稳定身份，只有显示名时不会保存为可用凭证。登录仅使用单一凭证包。
 
 使用 `python tools/workflow_state.py status` 查看任务数量与未确认写入，或使用 `python tools/workflow_state.py export --output <文件路径>` 导出当前业务状态。
 
@@ -118,7 +118,7 @@ AI_MAX_RETRIES=2
 
 探针结果位于被 Git 忽略的 `tools/capture/`。`--run-flow` 会执行真实学习流程，应只在准备操作该课程时使用。业务源码按 `auth`、`browser`、`learning`、`exam`、`discovery`、`queues`、`app`、`ui` 分包；`runtime.py`、`storage.py`、`diagnostics.py` 统一生命周期、持久化和脱敏。
 
-内部同步登录/浏览器辅助 API 已移除，统一使用异步接口；CLI 渲染接口保留为 TUI 桥接边界。升级时请同步更新调用方。Playwright 版本与浏览器启动参数、driver 所有权适配器关联，升级后需重跑生命周期与浏览器验证。
+正式界面统一使用 TUI，操作错误可确认后返回菜单；致命错误退出全屏后会在终端显示摘要、日志绝对路径和非零退出码。依赖以 `pyproject.toml` 为唯一声明，`uv.lock` 固定版本；`requirements.txt` 仅引用该项目。Playwright 版本与浏览器启动参数、driver 所有权适配器关联，升级后需重跑生命周期与浏览器验证。
 
 ## 验证
 

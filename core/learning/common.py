@@ -340,8 +340,6 @@ def calculate_remaining_time(text) -> tuple[int, int]:
     return min(math.ceil(remaining_time / 60) * 60, total_time), total_time
 
 
-
-
 def build_video_timing_plan(text: str) -> VideoTimingPlan:
     """根据剩余学习时长生成视频学习与同步确认的时序计划。"""
     learning_wait_time, total_time = calculate_remaining_time(text)
@@ -360,7 +358,7 @@ async def timer(duration: int, description: str = "学习进度"):
     if duration <= 0:
         return
     logging.info(f"开始时间: {time.ctime()}")
-    from core.ui import wait_with_progress
+    from core.ui.frontend import wait_with_progress
 
     await wait_with_progress(duration, description=description)
     logging.info(f"结束时间: {time.ctime()}")

@@ -93,7 +93,7 @@ class TargetClosedError(Exception):
 
 
 class _AfkCoursePage:
-    """挂课一门一页：is_closed / close / goto 供 _process_url 使用。"""
+    """挂课一门一页：is_closed / close / goto 供 execute_learning 使用。"""
 
     def __init__(self):
         self.closed = False
@@ -120,18 +120,20 @@ async def _recheck_noop(_context):
     return None
 
 
-
-
-
-
 class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
     async def test_run_afk_once_keeps_empty_learning_queue_file_after_processing(self):
         from tests.workflow_harness import new_learning_batch
-        await new_learning_batch(self,'test_run_afk_once_keeps_empty_learning_queue_file_after_processing')
+
+        await new_learning_batch(
+            self, "test_run_afk_once_keeps_empty_learning_queue_file_after_processing"
+        )
 
     async def test_run_afk_once_keeps_failed_url_in_learning_queue(self):
         from tests.workflow_harness import new_learning_batch
-        await new_learning_batch(self,'test_run_afk_once_keeps_failed_url_in_learning_queue')
+
+        await new_learning_batch(
+            self, "test_run_afk_once_keeps_failed_url_in_learning_queue"
+        )
 
     async def test_open_course_page_cancels_when_heartbeat_closed(self):
         """心跳页（mylearning 主控页）被关 = 整窗被关：即使浏览器进程仍存活
@@ -160,11 +162,11 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(UserCancelRequested):
                 await _open_course_page(FakeContext())
 
-    async def test_process_url_propagates_cancel_without_recording_failure(self):
+    async def testexecute_learning_propagates_cancel_without_recording_failure(self):
         """_open_course_page 抛出的 UserCancelRequested 必须原样上抛——
         落进通用 except 会被记成「可重试失败」并继续下一门（关不掉的根源）。"""
         from core.abort import UserCancelRequested
-        from core.learning.afk_runner import _process_url
+        from core.learning.afk_runner import execute_learning
 
         class FakeContext:
             async def new_page(self):
@@ -177,14 +179,16 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
             failures_file = Path(tmp) / "failures.json"
             with (
                 patch("core.learning.afk_runner.LEARNING_FAILURES_FILE", failures_file),
-                patch("core.learning.afk_runner.ensure_controller_page", new=AsyncMock()),
+                patch(
+                    "core.learning.afk_runner.ensure_controller_page", new=AsyncMock()
+                ),
                 patch(
                     "core.learning.afk_runner.browser_still_usable",
                     new=AsyncMock(return_value=False),
                 ),
             ):
                 with self.assertRaises(UserCancelRequested):
-                    await _process_url(
+                    await execute_learning(
                         FakeContext(),
                         "https://kc.zhixueyun.com/#/study/course/detail/a",
                         never_called,
@@ -214,16 +218,18 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                 self.browser = FakeBrowser()
                 self.pages = pages
 
-        with patch(
-            "core.learning.afk_runner._WINDOW_CLOSE_SETTLE_SECONDS", 0
-        ):
+        with patch("core.learning.afk_runner._WINDOW_CLOSE_SETTLE_SECONDS", 0):
             # 全部页面已关（含心跳页）→ 整窗关闭
             self.assertFalse(
-                await browser_still_usable(FakeContext([FakePage(True), FakePage(True)]))
+                await browser_still_usable(
+                    FakeContext([FakePage(True), FakePage(True)])
+                )
             )
             # 心跳页仍在 → 只是关了课程标签/窗口，继续
             self.assertTrue(
-                await browser_still_usable(FakeContext([FakePage(True), FakePage(False)]))
+                await browser_still_usable(
+                    FakeContext([FakePage(True), FakePage(False)])
+                )
             )
 
         class DisconnectedContext:
@@ -242,11 +248,11 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(await browser_still_usable(BareContext()))
 
-    async def test_process_url_cancels_when_window_closed_with_alive_process(self):
+    async def testexecute_learning_cancels_when_window_closed_with_alive_process(self):
         """端到端：课程操作抛 target-closed，连接仍显示存活（Edge 后台），
         但页面全关 → 必须取消而不是「保留链接继续下一门」。"""
         from core.abort import UserCancelRequested
-        from core.learning.afk_runner import _process_url
+        from core.learning.afk_runner import execute_learning
 
         class FakePage:
             def is_closed(self):
@@ -272,7 +278,9 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
             failures_file = Path(tmp) / "failures.json"
             with (
                 patch("core.learning.afk_runner.LEARNING_FAILURES_FILE", failures_file),
-                patch("core.learning.afk_runner.ensure_controller_page", new=AsyncMock()),
+                patch(
+                    "core.learning.afk_runner.ensure_controller_page", new=AsyncMock()
+                ),
                 # 开课时可用；课程操作抛 target-closed 后（整窗关闭事件落定）不可用
                 patch(
                     "core.learning.afk_runner.browser_still_usable",
@@ -280,7 +288,7 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                 ),
             ):
                 with self.assertRaises(UserCancelRequested):
-                    await _process_url(
+                    await execute_learning(
                         FakeContext(),
                         "https://kc.zhixueyun.com/#/study/course/detail/a",
                         dead_handler,
@@ -290,11 +298,11 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                 "整窗关闭不得被记成挂课失败",
             )
 
-    async def test_process_url_cancels_on_zombie_playwright_internal_error(self):
+    async def testexecute_learning_cancels_on_zombie_playwright_internal_error(self):
         """整窗关闭的僵尸连接可能抛 Playwright 内部 AttributeError，而非
         TargetClosedError；确认浏览器不可用后应按取消处理且不记录失败。"""
         from core.abort import UserCancelRequested
-        from core.learning.afk_runner import _process_url
+        from core.learning.afk_runner import execute_learning
 
         class FakePage:
             def __init__(self):
@@ -333,7 +341,7 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                 ),
             ):
                 with self.assertRaises(UserCancelRequested):
-                    await _process_url(
+                    await execute_learning(
                         FakeContext(),
                         "https://kc.zhixueyun.com/#/study/course/detail/a",
                         never_called,
@@ -347,10 +355,13 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_heartbeat_close_finishes_current_course_then_stops(self):
         from tests.workflow_harness import new_learning_batch
-        await new_learning_batch(self,'test_heartbeat_close_finishes_current_course_then_stops')
 
-    async def test_process_url_records_retryable_failure_to_learning_failures(self):
-        from core.learning.afk_runner import _process_url
+        await new_learning_batch(
+            self, "test_heartbeat_close_finishes_current_course_then_stops"
+        )
+
+    async def testexecute_learning_records_retryable_failure_to_learning_failures(self):
+        from core.learning.afk_runner import execute_learning
 
         class FakePage:
             def __init__(self):
@@ -385,15 +396,19 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
 
             with (
                 patch("core.learning.afk_runner.LEARNING_FAILURES_FILE", failures_file),
-                patch("core.learning.afk_runner.ensure_controller_page", new=AsyncMock()),
+                patch(
+                    "core.learning.afk_runner.ensure_controller_page", new=AsyncMock()
+                ),
             ):
-                keep_pending = await _process_url(
+                keep_pending = await execute_learning(
                     FakeContext(),
                     "https://kc.zhixueyun.com/#/study/course/detail/a",
                     failing_handler,
                 )
 
-            self.assertIn(keep_pending.status, ("FAILED","INTERRUPTED","WAITING_SYNC"))
+            self.assertIn(
+                keep_pending.status, ("FAILED", "INTERRUPTED", "WAITING_SYNC")
+            )
             self.assertTrue(page.closed)
             self.assertEqual(
                 _read_learning_failures(failures_file),
@@ -407,8 +422,10 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                 ],
             )
 
-    async def test_process_url_capture_hook_uses_formal_lifecycle_and_probe_failure_file(self):
-        from core.learning.afk_runner import _process_url
+    async def testexecute_learning_capture_hook_uses_formal_lifecycle_and_probe_failure_file(
+        self,
+    ):
+        from core.learning.afk_runner import execute_learning
 
         page = _AfkCoursePage()
 
@@ -433,7 +450,7 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                     new=AsyncMock(),
                 ),
             ):
-                keep_pending = await _process_url(
+                keep_pending = await execute_learning(
                     FakeContext(),
                     "https://kc.zhixueyun.com/#/study/course/detail/probe",
                     failing_handler,
@@ -441,7 +458,9 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                     failure_file=probe_failures,
                 )
 
-            self.assertIn(keep_pending.status, ("FAILED","INTERRUPTED","WAITING_SYNC"))
+            self.assertIn(
+                keep_pending.status, ("FAILED", "INTERRUPTED", "WAITING_SYNC")
+            )
             self.assertTrue(page.closed)
             self.assertFalse(normal_failures.exists())
             self.assertEqual(
@@ -453,9 +472,9 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                 "retryable_error",
             )
 
-    async def test_process_url_records_and_reraises_waf_block(self):
+    async def testexecute_learning_records_and_reraises_waf_block(self):
         from core.abort import WafBlockError
-        from core.learning.afk_runner import _process_url
+        from core.learning.afk_runner import execute_learning
 
         page = _AfkCoursePage()
 
@@ -473,7 +492,7 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                 new=AsyncMock(),
             ):
                 with self.assertRaises(WafBlockError):
-                    await _process_url(
+                    await execute_learning(
                         FakeContext(),
                         "https://kc.zhixueyun.com/#/study/course/detail/waf",
                         blocked_handler,
@@ -486,8 +505,8 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                 "waf_blocked",
             )
 
-    async def test_process_url_classifies_invalid_course_resource_id_from_api(self):
-        from core.learning.afk_runner import _process_url
+    async def testexecute_learning_classifies_invalid_course_resource_id_from_api(self):
+        from core.learning.afk_runner import execute_learning
 
         class FakeResponse:
             url = (
@@ -497,9 +516,7 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
             status = 422
 
             async def text(self):
-                return json.dumps(
-                    {"errorCode": 40121, "message": "Invalid input."}
-                )
+                return json.dumps({"errorCode": 40121, "message": "Invalid input."})
 
         class FakeLocator:
             async def count(self):
@@ -536,7 +553,7 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                 "core.learning.afk_runner.ensure_controller_page",
                 new=AsyncMock(),
             ):
-                keep_pending = await _process_url(
+                keep_pending = await execute_learning(
                     FakeContext(),
                     (
                         "https://kc.zhixueyun.com/#/study/course/detail/"
@@ -546,7 +563,9 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                     failure_file=failures_file,
                 )
 
-            self.assertIn(keep_pending.status, ("BLOCKED","COMPLETED","WAITING_CHILDREN"))
+            self.assertIn(
+                keep_pending.status, ("BLOCKED", "COMPLETED", "WAITING_CHILDREN")
+            )
             self.assertTrue(page.closed)
             handler.assert_not_awaited()
             failure = _read_learning_failures(failures_file)[0]
@@ -555,12 +574,15 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_run_afk_once_stops_batch_after_first_waf_block(self):
         from tests.workflow_harness import new_learning_batch
-        await new_learning_batch(self,'test_run_afk_once_stops_batch_after_first_waf_block')
 
-    async def test_process_url_clears_no_permission_and_records_reason(self):
+        await new_learning_batch(
+            self, "test_run_afk_once_stops_batch_after_first_waf_block"
+        )
+
+    async def testexecute_learning_clears_no_permission_and_records_reason(self):
         """无权限/资源不存在：移出课程链接，失败文档写明原因。"""
         from core.abort import NoPermissionError
-        from core.learning.afk_runner import _process_url
+        from core.learning.afk_runner import execute_learning
 
         class FakePage:
             def __init__(self):
@@ -573,7 +595,7 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                 self.closed = True
 
         page = FakePage()
-        page.goto=AsyncMock()
+        page.goto = AsyncMock()
 
         class FakeContext:
             async def new_page(self):
@@ -591,19 +613,23 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
 
             with (
                 patch("core.learning.afk_runner.LEARNING_FAILURES_FILE", failures_file),
-                patch("core.learning.afk_runner.ensure_controller_page", new=AsyncMock()),
+                patch(
+                    "core.learning.afk_runner.ensure_controller_page", new=AsyncMock()
+                ),
                 patch(
                     "core.learning.afk_runner.ensure_course_page_ready",
                     new=AsyncMock(),
                 ),
             ):
-                keep_pending = await _process_url(
+                keep_pending = await execute_learning(
                     FakeContext(),
                     "https://kc.zhixueyun.com/#/study/course/detail/gone",
                     denied_handler,
                 )
 
-            self.assertIn(keep_pending.status, ("BLOCKED","COMPLETED","WAITING_CHILDREN"))
+            self.assertIn(
+                keep_pending.status, ("BLOCKED", "COMPLETED", "WAITING_CHILDREN")
+            )
             self.assertTrue(page.closed)
             self.assertEqual(
                 _read_learning_failures(failures_file),
@@ -619,25 +645,51 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_run_afk_once_opens_new_page_per_url_and_closes(self):
         from tests.workflow_harness import new_learning_batch
-        await new_learning_batch(self,'test_run_afk_once_opens_new_page_per_url_and_closes')
 
-    async def test_run_afk_once_saves_current_and_remaining_urls_on_keyboard_interrupt(self):
-        from tests.workflow_harness import new_learning_batch
-        await new_learning_batch(self,'test_run_afk_once_saves_current_and_remaining_urls_on_keyboard_interrupt')
+        await new_learning_batch(
+            self, "test_run_afk_once_opens_new_page_per_url_and_closes"
+        )
 
-    async def test_run_afk_once_updates_learning_queue_to_remaining_urls_on_abort_with_save(self):
+    async def test_run_afk_once_saves_current_and_remaining_urls_on_keyboard_interrupt(
+        self,
+    ):
         from tests.workflow_harness import new_learning_batch
-        await new_learning_batch(self,'test_run_afk_once_updates_learning_queue_to_remaining_urls_on_abort_with_save')
+
+        await new_learning_batch(
+            self,
+            "test_run_afk_once_saves_current_and_remaining_urls_on_keyboard_interrupt",
+        )
+
+    async def test_run_afk_once_updates_learning_queue_to_remaining_urls_on_abort_with_save(
+        self,
+    ):
+        from tests.workflow_harness import new_learning_batch
+
+        await new_learning_batch(
+            self,
+            "test_run_afk_once_updates_learning_queue_to_remaining_urls_on_abort_with_save",
+        )
 
     async def test_run_afk_once_keeps_current_url_when_only_course_tab_is_closed(self):
         from tests.workflow_harness import new_learning_batch
-        await new_learning_batch(self,'test_run_afk_once_keeps_current_url_when_only_course_tab_is_closed')
 
-    async def test_run_afk_once_returns_to_menu_and_preserves_urls_when_browser_window_is_closed(self):
+        await new_learning_batch(
+            self, "test_run_afk_once_keeps_current_url_when_only_course_tab_is_closed"
+        )
+
+    async def test_run_afk_once_returns_to_menu_and_preserves_urls_when_browser_window_is_closed(
+        self,
+    ):
         from tests.workflow_harness import new_learning_batch
-        await new_learning_batch(self,'test_run_afk_once_returns_to_menu_and_preserves_urls_when_browser_window_is_closed')
 
-    async def test_open_course_page_returns_to_menu_when_browser_closed_before_new_page(self):
+        await new_learning_batch(
+            self,
+            "test_run_afk_once_returns_to_menu_and_preserves_urls_when_browser_window_is_closed",
+        )
+
+    async def test_open_course_page_returns_to_menu_when_browser_closed_before_new_page(
+        self,
+    ):
         """浏览器在 new_page 阶段被关闭时，应返回主菜单而非裸异常退出。"""
         from core.abort import UserCancelRequested
         from core.learning.afk_runner import _open_course_page
@@ -663,11 +715,17 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_run_afk_once_returns_to_menu_when_browser_closed_during_setup(self):
         from tests.workflow_harness import new_learning_batch
-        await new_learning_batch(self,'test_run_afk_once_returns_to_menu_when_browser_closed_during_setup')
+
+        await new_learning_batch(
+            self, "test_run_afk_once_returns_to_menu_when_browser_closed_during_setup"
+        )
 
     async def test_run_afk_once_returns_to_menu_on_cancelled_error(self):
         from tests.workflow_harness import new_learning_batch
-        await new_learning_batch(self,'test_run_afk_once_returns_to_menu_on_cancelled_error')
+
+        await new_learning_batch(
+            self, "test_run_afk_once_returns_to_menu_on_cancelled_error"
+        )
 
 
 class ExamAttemptRoutingTests(unittest.TestCase):
@@ -714,6 +772,7 @@ class ExamAttemptRoutingTests(unittest.TestCase):
 
         self.assertIsNone(parse_remaining_attempts("开始考试"))
 
+
 class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
     async def test_ready_answer_question_accepts_single_mode_without_item_wrapper(self):
         from core.exam import runner as exam_runner
@@ -745,8 +804,7 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
                     ".single-title .rich-text-style": FakeLocator(1, "测试题干"),
                 }[selector]
 
-        self.assertTrue(await exam_runner._has_ready_answer_question(FakePage()))
-
+        self.assertTrue(await exam_runner.has_ready_answer_question(FakePage()))
 
     async def test_wait_for_target_route_follows_auth_round_trip(self):
         from core.exam import runner as exam_runner
@@ -768,9 +826,12 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
                 return None
 
         page = FakePage()
-        with patch("core.exam.runner._has_authorization_cookie", new=AsyncMock(return_value=False)):
+        with patch(
+            "core.exam.runner.has_authorization_cookie",
+            new=AsyncMock(return_value=False),
+        ):
             self.assertTrue(
-                await exam_runner._wait_for_target_route_after_auth(
+                await exam_runner.wait_for_exam_authorization(
                     page,
                     "https://kc.zhixueyun.com/#/exam/exam/answer-paper/a",
                     timeout_ms=1000,
@@ -798,12 +859,12 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
         page = FakePage()
         with (
             patch(
-                "core.exam.runner._has_authorization_cookie",
+                "core.exam.runner.has_authorization_cookie",
                 new=AsyncMock(return_value=True),
             ),
         ):
             self.assertTrue(
-                await exam_runner._wait_for_target_route_after_auth(
+                await exam_runner.wait_for_exam_authorization(
                     page,
                     page.url,
                     timeout_ms=1000,
@@ -813,7 +874,9 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(page.load_count, 0)
         self.assertEqual(page.wait_count, 0)
 
-    async def test_wait_for_target_route_does_not_accept_target_url_without_auth_or_dom(self):
+    async def test_wait_for_target_route_does_not_accept_target_url_without_auth_or_dom(
+        self,
+    ):
         from core.exam import runner as exam_runner
 
         class FakePage:
@@ -828,11 +891,11 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
         page = FakePage()
         with (
             patch(
-                "core.exam.runner._has_authorization_cookie",
+                "core.exam.runner.has_authorization_cookie",
                 new=AsyncMock(return_value=False),
             ),
         ):
-            completed = await exam_runner._wait_for_target_route_after_auth(
+            completed = await exam_runner.wait_for_exam_authorization(
                 page,
                 page.url,
                 timeout_ms=300,
@@ -859,14 +922,14 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
                 self.load_states.append(state)
 
         page = FakePage()
-        
+
         with (
             patch(
-                "core.exam.runner._has_authorization_cookie",
+                "core.exam.runner.has_authorization_cookie",
                 new=AsyncMock(return_value=False),
             ),
         ):
-            completed = await exam_runner._wait_for_target_route_after_auth(
+            completed = await exam_runner.wait_for_exam_authorization(
                 page,
                 page.url,
                 timeout_ms=0,
@@ -877,7 +940,6 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(page.wait_count, 1)
         self.assertEqual(page.load_states, [])
 
-
     async def test_api_auth_wait_does_not_require_button_or_question_dom(self):
         from core.exam import runner as exam_runner
 
@@ -887,12 +949,18 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
             "9ace2356-f9a1-4ad1-a0c2-5c4a1d4e6a92"
         )
         with (
-            patch.object(exam_runner, "_has_authorization_cookie", new=AsyncMock(return_value=True)),
-            
+            patch.object(
+                exam_runner,
+                "has_authorization_cookie",
+                new=AsyncMock(return_value=True),
+            ),
         ):
-            self.assertTrue(await exam_runner._wait_for_target_route_after_auth(
-                page, page.url, 
-            ))
+            self.assertTrue(
+                await exam_runner.wait_for_exam_authorization(
+                    page,
+                    page.url,
+                )
+            )
 
 
 class RunAsyncInterruptionTests(unittest.TestCase):

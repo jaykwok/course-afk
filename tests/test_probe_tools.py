@@ -28,18 +28,50 @@ class ExamPageProbeTests(unittest.IsolatedAsyncioTestCase):
                 manager.__aenter__.return_value = (None, context)
                 with (
                     patch.object(probe_exam_page, "load_cookies", return_value=[]),
-                    patch.object(probe_exam_page, "create_browser_context", return_value=manager),
-                    patch.object(probe_exam_page, "_wait_for_target_route_after_auth", new=AsyncMock(return_value=True)),
-                    patch.object(probe_exam_page, "read_exam_entry", new=AsyncMock(return_value=entry)),
-                    patch.object(probe_exam_page, "validate_exam_entry", new=AsyncMock()) as validate,
-                    patch.object(probe_exam_page, "_inspect_selector", new=AsyncMock(return_value={"count": 0, "visible_count": 0})),
-                    patch.object(probe_exam_page, "_has_ready_answer_question", new=AsyncMock(return_value=False)),
-                    patch.object(probe_exam_page, "_has_authorization_cookie", new=AsyncMock(return_value=True)),
-                    patch.object(probe_exam_page, "_save_classified_result", return_value=(Path("result.json"), Path("page.html"))) as save,
+                    patch.object(
+                        probe_exam_page, "create_browser_context", return_value=manager
+                    ),
+                    patch.object(
+                        probe_exam_page,
+                        "wait_for_exam_authorization",
+                        new=AsyncMock(return_value=True),
+                    ),
+                    patch.object(
+                        probe_exam_page,
+                        "read_exam_entry",
+                        new=AsyncMock(return_value=entry),
+                    ),
+                    patch.object(
+                        probe_exam_page, "validate_exam_entry", new=AsyncMock()
+                    ) as validate,
+                    patch.object(
+                        probe_exam_page,
+                        "_inspect_selector",
+                        new=AsyncMock(return_value={"count": 0, "visible_count": 0}),
+                    ),
+                    patch.object(
+                        probe_exam_page,
+                        "has_ready_answer_question",
+                        new=AsyncMock(return_value=False),
+                    ),
+                    patch.object(
+                        probe_exam_page,
+                        "has_authorization_cookie",
+                        new=AsyncMock(return_value=True),
+                    ),
+                    patch.object(
+                        probe_exam_page,
+                        "_save_classified_result",
+                        return_value=(Path("result.json"), Path("page.html")),
+                    ) as save,
                 ):
-                    await probe_exam_page.main(DETAIL_URL, validate_entry=validate_entry)
+                    await probe_exam_page.main(
+                        DETAIL_URL, validate_entry=validate_entry
+                    )
                 self.assertEqual(save.call_args.kwargs["page_state"], "exam_entry")
-                self.assertEqual(save.call_args.args[0]["entry_api"]["answer_url"], entry.answer_url)
+                self.assertEqual(
+                    save.call_args.args[0]["entry_api"]["answer_url"], entry.answer_url
+                )
                 self.assertEqual(validate.await_count, int(validate_entry))
                 page.goto.assert_awaited_once_with(DETAIL_URL, wait_until="load")
 
@@ -102,7 +134,7 @@ class ExamPageProbeTests(unittest.IsolatedAsyncioTestCase):
                 ) as mock_create_context,
                 patch.object(
                     probe_exam_page,
-                    "_wait_for_target_route_after_auth",
+                    "wait_for_exam_authorization",
                     new=AsyncMock(side_effect=RuntimeError("browser closed")),
                 ) as mock_wait_for_auth,
             ):
@@ -119,7 +151,6 @@ class ExamPageProbeTests(unittest.IsolatedAsyncioTestCase):
                 browser_context.context.page,
                 "https://kc.zhixueyun.com/#/exam/exam/answer-paper/test",
                 timeout_ms=120000,
-                
             )
             browser_context.context.page.locator.assert_not_called()
             self.assertFalse(result_file.exists())
@@ -167,8 +198,9 @@ class CoursePageProbeTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("course_page", str(failure_file))
             await capture_callback(FakePage(), "page_created")
             await capture_callback(FakePage(), "after_navigation")
-            from core.workflow.contracts import TaskOutcome,Status
-            return TaskOutcome('probe',Status.COMPLETED)
+            from core.workflow.contracts import TaskOutcome, Status
+
+            return TaskOutcome("probe", Status.COMPLETED)
 
         with TemporaryDirectory() as tmp:
             capture_dir = Path(tmp) / "course_page"
@@ -189,7 +221,7 @@ class CoursePageProbeTests(unittest.IsolatedAsyncioTestCase):
                 ) as create_context,
                 patch.object(
                     probe_course_page,
-                    "_process_url",
+                    "execute_learning",
                     new=AsyncMock(side_effect=fake_process),
                 ),
                 patch.object(

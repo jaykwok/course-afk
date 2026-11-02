@@ -1,13 +1,4 @@
-"""TUI 冒烟测试：用 Textual 的 Pilot(headless) 驱动真实的 launcher.main() 循环。
-
-覆盖端到端桥接链路：
-  工作线程 launcher.main() -> patched show_title/render_dashboard/show_menu
-  -> call_from_thread 挂载 OptionScreen -> Pilot 选择「退出」
-  -> resolve_prompt(10) -> Queue.get 放行 -> main() 返回 -> app.exit()
-
-安全措施：patch core.config.run_async 为空操作，确保即便导航落点不对，
-也绝不会触发真实 Playwright 浏览器自动化。
-"""
+"""Drive the explicit TUI frontend and the real launcher menu through Textual Pilot."""
 
 from __future__ import annotations
 
@@ -18,7 +9,6 @@ from unittest.mock import AsyncMock, patch
 
 from textual.widgets import Button, OptionList, Static, TextArea
 
-import core.ui as cli_ui
 from core.abort import UserCancelRequested
 from core.ui.tui_app import (
     CourseTuiApp,
@@ -38,7 +28,7 @@ class _CapturingApp(CourseTuiApp):
 
         def target() -> None:
             try:
-                launcher.main()
+                launcher.main(self.frontend)
                 self._worker_result = "ok"
             except BaseException as exc:  # noqa: BLE001
                 self._worker_result = f"error:{exc!r}"
@@ -78,6 +68,11 @@ class _PromptApp(CourseTuiApp):
 
 
 class TuiSmokeTests(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(
+            patch("core.auth.access.require_task_account", return_value="test-ui")
+        )
+
     def test_reference_download_goes_directly_to_result(self):
         from core.app.launcher_controller import handle_reference_collection
         from textual.widgets import RichLog
@@ -98,7 +93,7 @@ class TuiSmokeTests(unittest.TestCase):
 
             def caller() -> None:
                 try:
-                    handle_reference_collection(cli_ui)
+                    handle_reference_collection(frontend)
                     outcome["done"] = True
                 except BaseException as exc:
                     outcome["error"] = repr(exc)
@@ -112,35 +107,52 @@ class TuiSmokeTests(unittest.TestCase):
             ):
                 app = _PromptApp()
                 frontend = TuiFrontend(app)
-                frontend.install()
+                app.frontend = frontend
                 worker = threading.Thread(target=caller, daemon=True)
                 try:
                     async with app.run_test(size=(100, 30)) as pilot:
                         worker.start()
-                        self.assertTrue(await _wait_for(
-                            lambda: isinstance(app.screen, MultilineScreen), pilot,
-                        ))
+                        self.assertTrue(
+                            await _wait_for(
+                                lambda: isinstance(app.screen, MultilineScreen),
+                                pilot,
+                            )
+                        )
                         app.screen.query_one("#ml-text", TextArea).text = url
                         await pilot.press("ctrl+j")
-                        self.assertTrue(await _wait_for(
-                            lambda: isinstance(app.screen, PauseScreen), pilot,
-                        ), outcome)
+                        self.assertTrue(
+                            await _wait_for(
+                                lambda: isinstance(app.screen, PauseScreen),
+                                pilot,
+                            ),
+                            outcome,
+                        )
                         log = app.query_one("#log", RichLog)
-                        self.assertTrue(await _wait_for(
-                            lambda: any("课程资料保存结果" in line.text for line in log.lines),
-                            pilot,
-                        ))
+                        self.assertTrue(
+                            await _wait_for(
+                                lambda: any(
+                                    "课程资料保存结果" in line.text
+                                    for line in log.lines
+                                ),
+                                pilot,
+                            )
+                        )
                         summary = "\n".join(line.text for line in log.lines)
                         self.assertIn("文档保存成功", summary)
                         self.assertIn("其中 PDF", summary)
                         self.assertIn("有AI导学内容的视频", summary)
                         await pilot.click("#continue")
-                        self.assertTrue(await _wait_for(
-                            lambda: not worker.is_alive(), pilot,
-                        ))
+                        self.assertTrue(
+                            await _wait_for(
+                                lambda: not worker.is_alive(),
+                                pilot,
+                            )
+                        )
                 finally:
-                    frontend.restore()
-                collect.assert_awaited_once_with([url], status_callback=frontend._bridge_show_info)
+                    frontend.close()
+                collect.assert_awaited_once_with(
+                    [url], status_callback=frontend.show_info
+                )
                 self.assertTrue(outcome.get("done"), outcome)
 
         asyncio.run(asyncio.wait_for(scenario(), timeout=30))
@@ -156,13 +168,13 @@ class TuiSmokeTests(unittest.TestCase):
 
             def caller() -> None:
                 try:
-                    cli_ui.begin_operation("课程学习", "正在打开浏览器")
+                    frontend.begin_operation("课程学习", "正在打开浏览器")
                     outcome["status_set"] = True
                     gate1.wait(timeout=8.0)
-                    cli_ui.show_info("正在汇总处理结果")
+                    frontend.show_info("正在汇总处理结果")
                     outcome["info_sent"] = True
                     gate2.wait(timeout=8.0)
-                    cli_ui.pause("处理完成")
+                    frontend.pause("处理完成")
                     outcome["done"] = True
                 except BaseException as exc:  # noqa: BLE001
                     outcome["error"] = repr(exc)
@@ -171,16 +183,14 @@ class TuiSmokeTests(unittest.TestCase):
             with patch("core.config.setup_logging"):
                 app = _PromptApp()
                 frontend = TuiFrontend(app)
-                frontend.install()
+                app.frontend = frontend
                 try:
                     async with app.run_test(size=(90, 22)) as pilot:
                         worker.start()
 
                         # begin_operation 点亮状态条；#main 平铺可见（无遮挡模态）。
                         self.assertTrue(
-                            await _wait_for(
-                                lambda: outcome.get("status_set"), pilot
-                            )
+                            await _wait_for(lambda: outcome.get("status_set"), pilot)
                         )
                         status_bar = app.query_one("#status-bar")
                         self.assertIn("active", status_bar.classes)
@@ -195,9 +205,7 @@ class TuiSmokeTests(unittest.TestCase):
 
                         # show_info 刷新状态条文本。
                         self.assertTrue(
-                            await _wait_for(
-                                lambda: outcome.get("info_sent"), pilot
-                            )
+                            await _wait_for(lambda: outcome.get("info_sent"), pilot)
                         )
                         self.assertIn(
                             "正在汇总处理结果",
@@ -220,7 +228,7 @@ class TuiSmokeTests(unittest.TestCase):
                 finally:
                     gate1.set()
                     gate2.set()
-                    frontend.restore()
+                    frontend.close()
 
             self.assertTrue(outcome.get("done"), outcome)
 
@@ -237,7 +245,7 @@ class TuiSmokeTests(unittest.TestCase):
 
             def caller() -> None:
                 try:
-                    cli_ui.show_info("开始挂课")
+                    frontend.show_info("开始挂课")
                     outcome["sent"] = True
                 except BaseException as exc:  # noqa: BLE001
                     outcome["error"] = repr(exc)
@@ -245,7 +253,7 @@ class TuiSmokeTests(unittest.TestCase):
             with patch("core.config.setup_logging"):
                 app = _PromptApp()
                 frontend = TuiFrontend(app)
-                frontend.install()
+                app.frontend = frontend
                 try:
                     async with app.run_test(size=(90, 22)) as pilot:
                         log = app.query_one("#log", RichLog)
@@ -265,7 +273,9 @@ class TuiSmokeTests(unittest.TestCase):
                         self.assertNotIn("error", outcome, outcome)
                         self.assertTrue(
                             await _wait_for(
-                                lambda: any("开始挂课" in line.text for line in log.lines),
+                                lambda: any(
+                                    "开始挂课" in line.text for line in log.lines
+                                ),
                                 pilot,
                             )
                         )
@@ -273,7 +283,7 @@ class TuiSmokeTests(unittest.TestCase):
                         self.assertNotIn("上一轮挂课日志", rendered)
                         self.assertIn("开始挂课", rendered)
                 finally:
-                    frontend.restore()
+                    frontend.close()
 
         asyncio.run(asyncio.wait_for(scenario(), timeout=20.0))
 
@@ -289,11 +299,11 @@ class TuiSmokeTests(unittest.TestCase):
 
             def caller() -> None:
                 try:
-                    outcome["choice"] = cli_ui.show_menu(["仅挂课", "退出"])
-                    cli_ui.begin_operation("课程学习", "正在打开浏览器")
+                    outcome["choice"] = frontend.show_menu(["仅挂课", "退出"])
+                    frontend.begin_operation("课程学习", "正在打开浏览器")
                     outcome["began"] = True
                     gate.wait(timeout=8.0)
-                    cli_ui.pause("完成")
+                    frontend.pause("完成")
                     outcome["done"] = True
                 except BaseException as exc:  # noqa: BLE001
                     outcome["error"] = repr(exc)
@@ -302,7 +312,7 @@ class TuiSmokeTests(unittest.TestCase):
             with patch("core.config.setup_logging"):
                 app = _PromptApp()
                 frontend = TuiFrontend(app)
-                frontend.install()
+                app.frontend = frontend
                 try:
                     async with app.run_test(size=(100, 28)) as pilot:
                         worker.start()
@@ -334,7 +344,7 @@ class TuiSmokeTests(unittest.TestCase):
                         )
                 finally:
                     gate.set()
-                    frontend.restore()
+                    frontend.close()
 
             self.assertEqual(outcome.get("choice"), 1)
             self.assertTrue(outcome.get("done"), outcome)
@@ -352,14 +362,16 @@ class TuiSmokeTests(unittest.TestCase):
 
             def caller() -> None:
                 try:
-                    cli_ui.begin_operation("AI 考试", "正在检查考试队列")
+                    frontend.begin_operation("AI 考试", "正在检查考试队列")
                     outcome["began"] = True
                     gate1.wait(timeout=8.0)
-                    outcome["answered"] = cli_ui.prompt_yes_no("自动交卷？", default="N")
-                    cli_ui.show_info("继续处理考试队列")
+                    outcome["answered"] = frontend.prompt_yes_no(
+                        "自动交卷？", default="N"
+                    )
+                    frontend.show_info("继续处理考试队列")
                     outcome["resumed"] = True
                     gate2.wait(timeout=8.0)
-                    cli_ui.pause("完成")
+                    frontend.pause("完成")
                     outcome["done"] = True
                 except BaseException as exc:  # noqa: BLE001
                     outcome["error"] = repr(exc)
@@ -368,7 +380,7 @@ class TuiSmokeTests(unittest.TestCase):
             with patch("core.config.setup_logging"):
                 app = _PromptApp()
                 frontend = TuiFrontend(app)
-                frontend.install()
+                app.frontend = frontend
                 try:
                     async with app.run_test(size=(100, 28)) as pilot:
                         worker.start()
@@ -411,7 +423,7 @@ class TuiSmokeTests(unittest.TestCase):
                 finally:
                     gate1.set()
                     gate2.set()
-                    frontend.restore()
+                    frontend.close()
 
             self.assertFalse(outcome.get("answered"))  # 选了「否」
             self.assertTrue(outcome.get("done"), outcome)
@@ -437,14 +449,14 @@ class TuiSmokeTests(unittest.TestCase):
                         "core.state.collect_project_state",
                         return_value=ProjectState(True, False, 24, 0, 0, 0),
                     ):
-                        cli_ui.show_info("挂课 1/24: https://x.cn/c/1")
+                        frontend.show_info("挂课 1/24: https://x.cn/c/1")
                     outcome["first"] = True
                     gate1.wait(timeout=8.0)
                     with patch(
                         "core.state.collect_project_state",
                         return_value=ProjectState(True, False, 23, 0, 0, 0),
                     ):
-                        cli_ui.show_info("挂课 2/24: https://x.cn/c/2")
+                        frontend.show_info("挂课 2/24: https://x.cn/c/2")
                     outcome["second"] = True
                     gate2.wait(timeout=8.0)
                 except BaseException as exc:  # noqa: BLE001
@@ -454,9 +466,9 @@ class TuiSmokeTests(unittest.TestCase):
             with patch("core.config.setup_logging"):
                 app = _PromptApp()
                 frontend = TuiFrontend(app)
-                frontend.install()
+                app.frontend = frontend
                 # 跳过 mtime 短路：本测试不落盘真实队列文件
-                frontend._queue_files_changed = lambda: True
+                frontend._state_changed = lambda: True
                 try:
                     async with app.run_test(size=(100, 28)) as pilot:
                         worker.start()
@@ -476,7 +488,7 @@ class TuiSmokeTests(unittest.TestCase):
                 finally:
                     gate1.set()
                     gate2.set()
-                    frontend.restore()
+                    frontend.close()
 
         asyncio.run(asyncio.wait_for(scenario(), timeout=20.0))
 
@@ -495,10 +507,10 @@ class TuiSmokeTests(unittest.TestCase):
                         "core.state.collect_project_state",
                         return_value=ProjectState(True, False, 24, 0, 0, 0),
                     ) as collect:
-                        cli_ui.show_info("挂课 1/24")
+                        frontend.show_info("挂课 1/24")
                         outcome["first_count"] = collect.call_count
                         # 文件未变动 -> 第二条消息不应触发重读
-                        cli_ui.show_info("挂课 2/24")
+                        frontend.show_info("挂课 2/24")
                         outcome["second_count"] = collect.call_count
                         outcome["latest"] = frontend._latest_state.learning_count
                 except BaseException as exc:  # noqa: BLE001
@@ -508,7 +520,7 @@ class TuiSmokeTests(unittest.TestCase):
             with patch("core.config.setup_logging"):
                 app = _PromptApp()
                 frontend = TuiFrontend(app)
-                frontend.install()
+                app.frontend = frontend
                 try:
                     async with app.run_test(size=(100, 28)) as pilot:
                         worker.start()
@@ -519,7 +531,7 @@ class TuiSmokeTests(unittest.TestCase):
                             )
                         )
                 finally:
-                    frontend.restore()
+                    frontend.close()
 
             self.assertNotIn("error", outcome, outcome)
             self.assertEqual(outcome.get("first_count"), 1)
@@ -551,9 +563,7 @@ class TuiSmokeTests(unittest.TestCase):
                         str(app.query_one("#status-text", Static).render()),
                         "50 条状态应合并为 latest-value",
                     )
-                    self.assertIn(
-                        "active", app.query_one("#status-bar").classes
-                    )
+                    self.assertIn("active", app.query_one("#status-bar").classes)
                     # 事件(begin) 先于最终 status 应用：bar 显示且文本是最终值
 
         asyncio.run(asyncio.wait_for(scenario(), timeout=20.0))
@@ -634,9 +644,7 @@ class TuiSmokeTests(unittest.TestCase):
                         app.enqueue_log(Text(f"log {index}"))
                     app._drain_log_buffer()
 
-                    self.assertEqual(
-                        len(write_calls), 1, "整批应合并为一次 write"
-                    )
+                    self.assertEqual(len(write_calls), 1, "整批应合并为一次 write")
                     self.assertEqual(app._log_dropped, 0, "丢弃计数应已消费")
                     self.assertEqual(len(app._log_buffer), 0)
 
@@ -660,19 +668,19 @@ class TuiSmokeTests(unittest.TestCase):
 
             def caller() -> None:
                 try:
-                    outcome["confirmed"] = cli_ui.prompt_summary_confirmation(
+                    outcome["confirmed"] = frontend.prompt_summary_confirmation(
                         "链接解析确认",
                         rows,
                         "确认继续处理？",
                         default="Y",
                     )
-                    handle = cli_ui.prepare_pause_with_summary(
+                    handle = frontend.prepare_pause_with_summary(
                         "链接解析完成",
                         rows,
                         "解析完成，请确认结果",
                     )
                     outcome["result_mounted"] = True
-                    cli_ui.wait_prepared_prompt(handle)
+                    frontend.wait_prepared_prompt(handle)
                     outcome["result_ok"] = True
                 except BaseException as exc:  # noqa: BLE001
                     outcome["error"] = repr(exc)
@@ -681,7 +689,7 @@ class TuiSmokeTests(unittest.TestCase):
             with patch("core.config.setup_logging"):
                 app = _PromptApp()
                 frontend = TuiFrontend(app)
-                frontend.install()
+                app.frontend = frontend
                 try:
                     async with app.run_test(size=(90, 22)) as pilot:
                         worker.start()
@@ -731,7 +739,7 @@ class TuiSmokeTests(unittest.TestCase):
                             )
                         )
                 finally:
-                    frontend.restore()
+                    frontend.close()
 
             self.assertEqual(outcome.get("confirmed"), False)
             self.assertEqual(outcome.get("result_ok"), True)
@@ -749,7 +757,7 @@ class TuiSmokeTests(unittest.TestCase):
 
             def caller() -> None:
                 try:
-                    outcome["choice"] = cli_ui.show_menu(options)
+                    outcome["choice"] = frontend.show_menu(options)
                 except BaseException as exc:  # noqa: BLE001
                     outcome["error"] = repr(exc)
 
@@ -757,7 +765,7 @@ class TuiSmokeTests(unittest.TestCase):
             with patch("core.config.setup_logging"):
                 app = _PromptApp()
                 frontend = TuiFrontend(app)
-                frontend.install()
+                app.frontend = frontend
                 try:
                     async with app.run_test(size=(60, 20)) as pilot:
                         worker.start()
@@ -787,7 +795,7 @@ class TuiSmokeTests(unittest.TestCase):
                             )
                         )
                 finally:
-                    frontend.restore()
+                    frontend.close()
 
             self.assertEqual(outcome.get("choice"), 10)
             self.assertNotIn("error", outcome)
@@ -809,7 +817,7 @@ class TuiSmokeTests(unittest.TestCase):
 
             def caller() -> None:
                 try:
-                    cli_ui.prompt_multiline_input(messages)
+                    frontend.prompt_multiline_input(messages)
                     outcome["result"] = "submitted"
                 except UserCancelRequested:
                     outcome["result"] = "cancelled"
@@ -820,7 +828,7 @@ class TuiSmokeTests(unittest.TestCase):
             with patch("core.config.setup_logging"):
                 app = _PromptApp()
                 frontend = TuiFrontend(app)
-                frontend.install()
+                app.frontend = frontend
                 try:
                     async with app.run_test(size=(60, 20)) as pilot:
                         worker.start()
@@ -850,7 +858,8 @@ class TuiSmokeTests(unittest.TestCase):
                         # 用户实际看不到也编辑不了输入内容
                         self.assertGreaterEqual(text_area.region.height, 3)
                         self.assertGreaterEqual(
-                            text_area.content_region.height, 1,
+                            text_area.content_region.height,
+                            1,
                             "60x20 下输入框没有可编辑显示行",
                         )
                         await pilot.press("escape")
@@ -860,7 +869,7 @@ class TuiSmokeTests(unittest.TestCase):
                             )
                         )
                 finally:
-                    frontend.restore()
+                    frontend.close()
 
             self.assertEqual(outcome.get("result"), "cancelled")
             self.assertNotIn("error", outcome)
@@ -871,7 +880,9 @@ class TuiSmokeTests(unittest.TestCase):
         """无弹窗时，Esc 优先中断任务；空闲主菜单则退出。"""
         app = _PromptApp()
         with (
-            patch("core.config.interrupt_running_async", return_value=True) as interrupt,
+            patch(
+                "core.config.interrupt_running_async", return_value=True
+            ) as interrupt,
             patch.object(app, "exit") as exit_app,
         ):
             app.action_go_back()
@@ -893,7 +904,7 @@ class TuiSmokeTests(unittest.TestCase):
 
             def caller() -> None:
                 try:
-                    outcome["value"] = cli_ui.prompt_multiline_input(
+                    outcome["value"] = frontend.prompt_multiline_input(
                         [f"操作说明 {index}" for index in range(1, 6)]
                     )
                 except BaseException as exc:  # noqa: BLE001
@@ -904,7 +915,7 @@ class TuiSmokeTests(unittest.TestCase):
             with patch("core.config.setup_logging"):
                 app = _PromptApp()
                 frontend = TuiFrontend(app)
-                frontend.install()
+                app.frontend = frontend
                 try:
                     async with app.run_test(size=(90, 22)) as pilot:
                         worker.start()
@@ -948,7 +959,7 @@ class TuiSmokeTests(unittest.TestCase):
                             "Ctrl+Enter 未提交多行输入",
                         )
                 finally:
-                    frontend.restore()
+                    frontend.close()
 
             self.assertEqual(
                 outcome.get("value"),
@@ -966,18 +977,20 @@ class TuiSmokeTests(unittest.TestCase):
 
             def caller() -> None:
                 try:
-                    outcomes["yesno"] = cli_ui.prompt_yes_no("自动交卷？", default="N")
+                    outcomes["yesno"] = frontend.prompt_yes_no(
+                        "自动交卷？", default="N"
+                    )
                 except BaseException as exc:  # noqa: BLE001
                     outcomes["yesno_err"] = repr(exc)
                 try:
-                    cli_ui.prompt_multiline_input(["请粘贴链接"])
+                    frontend.prompt_multiline_input(["请粘贴链接"])
                     outcomes["multiline"] = "submitted"
                 except UserCancelRequested:
                     outcomes["multiline"] = "cancelled"
                 except BaseException as exc:  # noqa: BLE001
                     outcomes["multiline_err"] = repr(exc)
                 try:
-                    cli_ui.pause("完成")
+                    frontend.pause("完成")
                     outcomes["pause"] = "ok"
                 except BaseException as exc:  # noqa: BLE001
                     outcomes["pause_err"] = repr(exc)
@@ -987,7 +1000,7 @@ class TuiSmokeTests(unittest.TestCase):
             with patch("core.config.setup_logging"):
                 app = _PromptApp()
                 frontend = TuiFrontend(app)
-                frontend.install()
+                app.frontend = frontend
                 try:
                     async with app.run_test(size=(120, 40)) as pilot:
                         worker.start()
@@ -1030,15 +1043,15 @@ class TuiSmokeTests(unittest.TestCase):
                             "提示驱动线程未结束",
                         )
                 finally:
-                    frontend.restore()
+                    frontend.close()
 
             self.assertTrue(outcomes.get("yesno"), f"yes/no 结果异常: {outcomes}")
             self.assertEqual(
-                outcomes.get("multiline"), "cancelled", f"multiline 结果异常: {outcomes}"
+                outcomes.get("multiline"),
+                "cancelled",
+                f"multiline 结果异常: {outcomes}",
             )
-            self.assertEqual(
-                outcomes.get("pause"), "ok", f"pause 结果异常: {outcomes}"
-            )
+            self.assertEqual(outcomes.get("pause"), "ok", f"pause 结果异常: {outcomes}")
 
         asyncio.run(asyncio.wait_for(scenario(), timeout=30.0))
 
@@ -1058,20 +1071,20 @@ class TuiSmokeTests(unittest.TestCase):
                     outcomes[name] = f"error:{exc!r}"
 
             def caller() -> None:
-                run_prompt("choice", lambda: cli_ui.prompt_choice("选择", ["A"]))
-                run_prompt("yesno", lambda: cli_ui.prompt_yes_no("确认？"))
+                run_prompt("choice", lambda: frontend.prompt_choice("选择", ["A"]))
+                run_prompt("yesno", lambda: frontend.prompt_yes_no("确认？"))
                 run_prompt(
                     "multiline",
-                    lambda: cli_ui.prompt_multiline_input(["请粘贴链接"]),
+                    lambda: frontend.prompt_multiline_input(["请粘贴链接"]),
                 )
-                run_prompt("pause", lambda: cli_ui.pause("完成"))
+                run_prompt("pause", lambda: frontend.pause("完成"))
 
             worker = threading.Thread(target=caller, daemon=True)
 
             with patch("core.config.setup_logging"):
                 app = _PromptApp()
                 frontend = TuiFrontend(app)
-                frontend.install()
+                app.frontend = frontend
                 try:
                     async with app.run_test(size=(100, 30)) as pilot:
                         worker.start()
@@ -1099,7 +1112,7 @@ class TuiSmokeTests(unittest.TestCase):
                             "Esc 依次返回后工作线程未结束",
                         )
                 finally:
-                    frontend.restore()
+                    frontend.close()
 
             self.assertEqual(
                 outcomes,
@@ -1121,7 +1134,9 @@ class TuiSmokeTests(unittest.TestCase):
 
             def caller() -> None:
                 try:
-                    outcomes["yesno"] = cli_ui.prompt_yes_no("自动交卷？", default="N")
+                    outcomes["yesno"] = frontend.prompt_yes_no(
+                        "自动交卷？", default="N"
+                    )
                 except UserCancelRequested:
                     outcomes["yesno"] = "cancelled"
                 except BaseException as exc:  # noqa: BLE001
@@ -1132,7 +1147,7 @@ class TuiSmokeTests(unittest.TestCase):
             with patch("core.config.setup_logging"):
                 app = _PromptApp()
                 frontend = TuiFrontend(app)
-                frontend.install()
+                app.frontend = frontend
                 try:
                     async with app.run_test(size=(100, 30)) as pilot:
                         worker.start()
@@ -1152,7 +1167,7 @@ class TuiSmokeTests(unittest.TestCase):
                             "Ctrl+C 取消提示后工作线程未结束",
                         )
                 finally:
-                    frontend.restore()
+                    frontend.close()
 
             self.assertEqual(
                 outcomes.get("yesno"), "cancelled", f"yes/no 结果异常: {outcomes}"
@@ -1170,9 +1185,7 @@ class TuiSmokeTests(unittest.TestCase):
 
             def worker_target() -> None:
                 try:
-                    asyncio.run(
-                        cli_ui.wait_with_progress(2, description="进度测试")
-                    )
+                    asyncio.run(frontend.wait_with_progress(2, description="进度测试"))
                     finished["ok"] = True
                 except BaseException as exc:  # noqa: BLE001
                     finished["err"] = repr(exc)
@@ -1192,7 +1205,7 @@ class TuiSmokeTests(unittest.TestCase):
                     _r(*a),
                 )[1]
                 frontend = TuiFrontend(app)
-                frontend.install()
+                app.frontend = frontend
                 try:
                     async with app.run_test(size=(100, 30)) as pilot:
                         worker.start()
@@ -1203,7 +1216,7 @@ class TuiSmokeTests(unittest.TestCase):
                             if finished:
                                 break
                 finally:
-                    frontend.restore()
+                    frontend.close()
 
             self.assertTrue(
                 finished.get("ok"), f"wait_with_progress 未正常结束: {finished}"
@@ -1227,7 +1240,7 @@ class TuiSmokeTests(unittest.TestCase):
             ):
                 app = _CapturingApp()
                 frontend = TuiFrontend(app)
-                frontend.install()
+                app.frontend = frontend
                 try:
                     async with app.run_test(size=(120, 40)) as pilot:
                         # 1. 仪表盘 / 日志组件就位
@@ -1238,9 +1251,7 @@ class TuiSmokeTests(unittest.TestCase):
                         appeared = await _wait_for(
                             lambda: isinstance(app.screen, OptionScreen), pilot
                         )
-                        self.assertTrue(
-                            appeared, "主菜单模态屏未在预期时间内出现"
-                        )
+                        self.assertTrue(appeared, "主菜单模态屏未在预期时间内出现")
 
                         # 3. 确定性高亮到最后一项（退出）并确认
                         menu_screen = app.screen
@@ -1262,12 +1273,18 @@ class TuiSmokeTests(unittest.TestCase):
                         screen_width = menu_screen.size.width
                         screen_height = menu_screen.size.height
                         self.assertLessEqual(
-                            abs((dialog.region.x * 2 + dialog.region.width) - screen_width),
+                            abs(
+                                (dialog.region.x * 2 + dialog.region.width)
+                                - screen_width
+                            ),
                             2,
                             "主菜单没有水平居中",
                         )
                         self.assertLessEqual(
-                            abs((dialog.region.y * 2 + dialog.region.height) - screen_height),
+                            abs(
+                                (dialog.region.y * 2 + dialog.region.height)
+                                - screen_height
+                            ),
                             2,
                             "主菜单没有垂直居中",
                         )
@@ -1285,14 +1302,12 @@ class TuiSmokeTests(unittest.TestCase):
                         terminated = await _wait_for(
                             lambda: not worker.is_alive(), pilot, timeout=10.0
                         )
-                        self.assertTrue(
-                            terminated, "选择退出后工作线程未结束"
-                        )
+                        self.assertTrue(terminated, "选择退出后工作线程未结束")
                 finally:
-                    frontend.restore()
+                    frontend.close()
 
             self.assertEqual(
-                app._worker_result, "ok", "launcher.main() 未能正常返回"
+                app._worker_result, "ok", "launcher.main(self.frontend) 未能正常返回"
             )
 
         asyncio.run(asyncio.wait_for(scenario(), timeout=30.0))

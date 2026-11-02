@@ -5,8 +5,12 @@ from unittest.mock import AsyncMock, patch
 
 class LearningUtilityTests(unittest.TestCase):
     def setUp(self):
-        self.enterContext(patch('core.learning.common.ensure_course_started', new=AsyncMock(return_value={})))
-
+        self.enterContext(
+            patch(
+                "core.learning.common.ensure_course_started",
+                new=AsyncMock(return_value={}),
+            )
+        )
 
     def test_wait_until_learned_accepts_zero_remaining_text(self):
         from core.learning.common import wait_until_learned
@@ -33,15 +37,18 @@ class LearningUtilityTests(unittest.TestCase):
             async def wait_for_timeout(self, _ms):
                 return None
 
-        with patch("core.learning.common.read_server_section_state",new=AsyncMock(return_value={"finish_status":2})):
+        with patch(
+            "core.learning.common.read_server_section_state",
+            new=AsyncMock(return_value={"finish_status": 2}),
+        ):
             asyncio.run(
                 wait_until_learned(
-                Box("必修 视频 10:00\n需再学 0:00"),
-                FakePage(),
-                max_wait=30,
-                poll_interval=5,
+                    Box("必修 视频 10:00\n需再学 0:00"),
+                    FakePage(),
+                    max_wait=30,
+                    poll_interval=5,
+                )
             )
-        )
 
     def test_wait_until_learned_final_recheck_before_timeout(self):
         from core.learning.common import wait_until_learned
@@ -71,7 +78,19 @@ class LearningUtilityTests(unittest.TestCase):
             async def wait_for_timeout(self, _ms):
                 return None
 
-        with patch("core.learning.common.jitter", return_value=1), patch("core.learning.common.read_server_section_state",new=AsyncMock(side_effect=[{"finish_status":1},{"finish_status":1},{"finish_status":2}])):
+        with (
+            patch("core.learning.common.jitter", return_value=1),
+            patch(
+                "core.learning.common.read_server_section_state",
+                new=AsyncMock(
+                    side_effect=[
+                        {"finish_status": 1},
+                        {"finish_status": 1},
+                        {"finish_status": 2},
+                    ]
+                ),
+            ),
+        ):
             asyncio.run(
                 wait_until_learned(Box(), FakePage(), max_wait=5, poll_interval=5)
             )
@@ -188,12 +207,12 @@ class LearningUtilityTests(unittest.TestCase):
         self.assertFalse(hasattr(config, "DOCUMENT_INITIAL_WAIT"))
         self.assertFalse(hasattr(config, "DOCUMENT_SYNC_EXTRA_WAIT"))
 
-
-
     def test_timer_returns_immediately_when_duration_is_zero(self):
         from core.learning.common import timer
 
-        with patch("core.ui.wait_with_progress", new_callable=AsyncMock) as wait_with_progress:
+        with patch(
+            "core.ui.frontend.wait_with_progress", new_callable=AsyncMock
+        ) as wait_with_progress:
             asyncio.run(timer(0, description="视频学习进度"))
 
         wait_with_progress.assert_not_awaited()

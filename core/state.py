@@ -27,6 +27,51 @@ from core.queues.manual_exam import count_manual_exam_urls
 from core.file_ops import load_cookies
 
 
+class StateRevision:
+    """A cheap committed-SQLite revision check, independent of JSON exports."""
+
+    def __init__(self):
+        import threading
+
+        self._lock = threading.Lock()
+        self._connection = None
+        self._path = None
+
+    def signature(self):
+        import sqlite3
+        from core import config
+
+        path = config.DATA_DIR / "workflows" / "state.sqlite"
+        with self._lock:
+            if path != self._path:
+                self._close()
+                self._path = path
+            if self._connection is None and path.exists():
+                self._connection = sqlite3.connect(
+                    path, check_same_thread=False, isolation_level=None
+                )
+            version = (
+                self._connection.execute("PRAGMA data_version").fetchone()[0]
+                if self._connection
+                else None
+            )
+            try:
+                stat = config.COOKIES_FILE.stat()
+                credential = stat.st_mtime_ns, stat.st_size
+            except FileNotFoundError:
+                credential = None
+            return str(path), version, credential
+
+    def _close(self):
+        if self._connection is not None:
+            self._connection.close()
+            self._connection = None
+
+    def close(self):
+        with self._lock:
+            self._close()
+
+
 @dataclass
 class ProjectState:
     has_credential: bool
@@ -73,7 +118,7 @@ def has_valid_credential() -> tuple[bool, bool]:
             isinstance(cookie, dict) and cookie.get("value") for cookie in cookies
         ):
             return False, True
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return False, True
     metadata = load_credential_metadata()
     saved_at = parse_saved_at(metadata)

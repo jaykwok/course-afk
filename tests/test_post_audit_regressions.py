@@ -508,7 +508,7 @@ class ActivityRegressions(unittest.IsolatedAsyncioTestCase):
             patch.object(afk_runner, "_wait_for_course_bootstrap", new=AsyncMock()),
             patch.object(afk_runner, "ensure_course_page_ready", new=AsyncMock()),
         ):
-            result = await afk_runner._process_url(
+            result = await afk_runner.execute_learning(
                 object(), COURSE, AsyncMock(return_value=True), failure_file=path
             )
             self.assertEqual(result.status, "COMPLETED")
@@ -519,7 +519,7 @@ class ActivityRegressions(unittest.IsolatedAsyncioTestCase):
                 reason_text="independent",
                 file_path=path,
             )
-            result = await afk_runner._process_url(
+            result = await afk_runner.execute_learning(
                 object(), COURSE, AsyncMock(return_value=True), failure_file=path
             )
             self.assertEqual(result.status, "WAITING_CHILDREN")

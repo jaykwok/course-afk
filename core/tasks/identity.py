@@ -11,9 +11,12 @@ from urllib.parse import parse_qs, urlsplit
 
 
 def account_id() -> str:
-    from core.auth.credential import load_credential_metadata
+    from core.auth.credential import (
+        load_credential_metadata,
+        load_pending_owner_metadata,
+    )
 
-    metadata = load_credential_metadata()
+    metadata = load_credential_metadata() or load_pending_owner_metadata()
     # Display labels and cookie bytes are deliberately not identities.
     name = metadata.account_name.strip() if metadata else ""
     return hashlib.sha256(name.encode()).hexdigest()[:16] if name else "unbound"

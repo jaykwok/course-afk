@@ -7,6 +7,7 @@
 
 结果保存到 ``tools/capture/exam_page/``。
 """
+
 import argparse
 import asyncio
 import json
@@ -22,9 +23,9 @@ if str(ROOT) not in sys.path:
 from core.browser.session import create_browser_context
 from core.config import COOKIES_FILE, PROJECT_ROOT
 from core.exam.runner import (
-    _has_authorization_cookie,
-    _has_ready_answer_question,
-    _wait_for_target_route_after_auth,
+    has_authorization_cookie,
+    has_ready_answer_question,
+    wait_for_exam_authorization,
 )
 from core.file_ops import load_cookies, normalize_url
 from core.exam.entry_api import read_exam_entry, validate_exam_entry
@@ -45,7 +46,11 @@ SELECTORS = [
 ]
 
 
-from core.diagnostics import redact_url as _sanitize_url, structural_html, redact_snapshot
+from core.diagnostics import (
+    redact_url as _sanitize_url,
+    structural_html,
+    redact_snapshot,
+)
 
 
 async def _inspect_selector(page, selector: str) -> dict[str, object]:
@@ -103,18 +108,25 @@ async def main(target_url: Optional[str] = None, *, validate_entry: bool = False
 
     cookies = load_cookies(COOKIES_FILE)
 
-    async with create_browser_context(cookies_path=COOKIES_FILE, headless=False) as (_, context):
+    async with create_browser_context(cookies_path=COOKIES_FILE, headless=False) as (
+        _,
+        context,
+    ):
         page = await context.new_page()
         navigation_history: list[str] = []
         page.on(
             "framenavigated",
-            lambda frame: navigation_history.append(frame.url)
-            if frame == page.main_frame
-            else None,
+            lambda frame: (
+                navigation_history.append(frame.url)
+                if frame == page.main_frame
+                else None
+            ),
         )
         await page.goto(target_url, wait_until="load")
-        ready = await _wait_for_target_route_after_auth(
-            page, target_url, timeout_ms=120000, 
+        ready = await wait_for_exam_authorization(
+            page,
+            target_url,
+            timeout_ms=120000,
         )
         if not ready:
             raise RuntimeError("考试入口认证超时，已停止探针")
@@ -122,8 +134,7 @@ async def main(target_url: Optional[str] = None, *, validate_entry: bool = False
         final_url = page.url
         if normalize_url(final_url) != normalize_url(target_url):
             raise RuntimeError(
-                "授权等待完成后页面再次离开目标考试链接；"
-                "已停止解析，且未保存当前页面"
+                "授权等待完成后页面再次离开目标考试链接；已停止解析，且未保存当前页面"
             )
         context_cookies = await context.cookies()
         entry = await read_exam_entry(page, target_url)
@@ -137,18 +148,22 @@ async def main(target_url: Optional[str] = None, *, validate_entry: bool = False
             result = await _inspect_selector(page, selector)
             selector_results.append(result)
             print(
-                f"{selector}: count={result['count']} "
-                f"visible={result['visible_count']}"
+                f"{selector}: count={result['count']} visible={result['visible_count']}"
             )
 
         page_title = await page.title()
         body_text = (await page.locator("body").inner_text()).strip()
         html = await page.content()
         page_state = (
-            "answer_page" if await _has_ready_answer_question(page)
-            else "entry_blocked" if entry.blocked_reason else "exam_entry"
+            "answer_page"
+            if await has_ready_answer_question(page)
+            else "entry_blocked"
+            if entry.blocked_reason
+            else "exam_entry"
         )
-        attempt_limit_message = entry.blocked_message if entry.blocked_reason == "attempt_limit" else None
+        attempt_limit_message = (
+            entry.blocked_message if entry.blocked_reason == "attempt_limit" else None
+        )
         captured_at = datetime.now()
         result_data = {
             "page_state": page_state,
@@ -156,7 +171,7 @@ async def main(target_url: Optional[str] = None, *, validate_entry: bool = False
             "final_url": _sanitize_url(final_url),
             "navigation_history": [_sanitize_url(url) for url in navigation_history],
             "title": page_title,
-            "authorization_cookie_present": await _has_authorization_cookie(page),
+            "authorization_cookie_present": await has_authorization_cookie(page),
             "attempt_limit_message": attempt_limit_message,
             "entry_api": {
                 "exam_id": entry.exam_id,
@@ -201,9 +216,14 @@ async def main(target_url: Optional[str] = None, *, validate_entry: bool = False
 
 if __name__ == "__main__":
     from core.runtime import protect_application_children
+
     protect_application_children()
     parser = argparse.ArgumentParser(description="探测知学云考试页面 DOM 与授权跳转")
     parser.add_argument("url", nargs="?", help="直达考试页面 URL")
-    parser.add_argument("--validate-entry", action="store_true", help="额外执行平台资格校验，不打开答题页")
+    parser.add_argument(
+        "--validate-entry",
+        action="store_true",
+        help="额外执行平台资格校验，不打开答题页",
+    )
     args = parser.parse_args()
     asyncio.run(main(args.url, validate_entry=args.validate_entry))

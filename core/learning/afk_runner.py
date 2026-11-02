@@ -66,10 +66,6 @@ async def browser_still_usable(context) -> bool:
     return any(_is_page_open(page) for page in pages)
 
 
-
-
-
-
 class _CourseInfoMonitor:
     """导航前监听课程详情接口，只保留状态码与业务错误，不保存鉴权数据。"""
 
@@ -186,8 +182,6 @@ async def _wait_for_course_bootstrap(page, monitor: _CourseInfoMonitor | None) -
             pass
 
 
-
-
 def _is_page_open(page) -> bool:
     """工作页是否仍可用（未 close）。"""
     if page is None:
@@ -208,8 +202,6 @@ async def _close_page_quiet(page) -> None:
         await page.close()
     except Exception:
         pass
-
-
 
 
 async def _open_course_page(context):
@@ -240,7 +232,7 @@ async def _open_course_page(context):
         raise
 
 
-async def _process_url(
+async def execute_learning(
     context, url, handler, *, capture_callback=None, failure_file=None
 ):
     """One fresh page activity. A typed outcome never implies queue deletion."""
@@ -311,7 +303,7 @@ async def _process_url(
             url, reason=exc.reason, reason_text=exc.reason_text, file_path=failure_path
         )
         raise
-    except (UserCancelRequested, UserAbortRequested):
+    except UserCancelRequested, UserAbortRequested:
         raise
     except Exception as exc:
         await capture("error")
@@ -351,9 +343,3 @@ async def _process_url(
                 *tuple(getattr(monitor, "tasks", ())), return_exceptions=True
             )
         await _close_page_quiet(page)
-
-
-async def run_afk_once(status_callback=None):
-    from core.app.service import ApplicationService
-
-    return await ApplicationService().learn(status_callback=status_callback)

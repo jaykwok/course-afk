@@ -1,19 +1,4 @@
-"""把 core.ui 的同步接口桥接到 Textual TUI。
-
-核心思路：launcher.main() 及其下游 controller/workflow 一行都不改。
-本模块在 TUI 启动时把 core.ui 模块上的公开函数替换成桥接方法，于是
-launcher 解析到的 ui.show_menu / controller 传入的 status_callback=ui.show_info
-等都自动走到 TUI。唯一一处直接 import 的 core.ui 函数
-(core.learning.common 的 wait_with_progress) 是懒导入，patch 后同样生效。
-
-- 输出类 (show_info / show_success / ...)：控制类更新经 app.post_ui_update
-  写入合并缓冲（latest-value / 保序、至多一条在途信号消息），日志经
-  app.enqueue_log 入有界缓冲由界面定时批量落盘——工作线程全程不阻塞。
-- 阻塞提示类 (show_menu / prompt_* / pause)：先 call_from_thread 挂载模态屏，
-  再在 Queue.get 上等待用户选择结果，从而复用现有阻塞式控制流。
-- 日志：接管 setup_logging 默认装的控制台 StreamHandler，改成镜像到活动日志，
-  避免它和 Textual 全屏界面抢终端。
-"""
+"""Explicit synchronous frontend for the Textual application and its worker."""
 
 from __future__ import annotations
 
@@ -23,10 +8,14 @@ from typing import Any
 
 from rich.text import Text
 
-import core.ui as cli_ui
 from core.abort import UserCancelRequested
 from core.diagnostics import redact_text
-from core.config import LOG_FORMAT, _get_console_log_level, setup_logging, _RedactingFormatter
+from core.config import (
+    LOG_FORMAT,
+    _get_console_log_level,
+    setup_logging,
+    _RedactingFormatter,
+)
 from core.palette import GREEN, ERROR, SUCCESS, WARNING
 from core.ui import tui_render
 from core.ui.terminal_compat import ui_glyphs
@@ -106,37 +95,18 @@ def _install_log_handler(app: CourseTuiApp):
 class TuiFrontend:
     """实现 core.ui 公开接口，把调用桥接到 Textual 应用。"""
 
-    # core.ui 上需要替换的公开符号 -> 桥接方法名
-    _PATCH_MAP = {
-        "show_title": "_bridge_show_title",
-        "show_info": "_bridge_show_info",
-        "show_success": "_bridge_show_success",
-        "show_warning": "_bridge_show_warning",
-        "show_error": "_bridge_show_error",
-        "begin_operation": "_bridge_begin_operation",
-        "render_dashboard": "_bridge_render_dashboard",
-        "show_summary": "_bridge_show_summary",
-        "show_menu": "_bridge_show_menu",
-        "prompt_choice": "_bridge_prompt_choice",
-        "prompt_yes_no": "_bridge_prompt_yes_no",
-        "prompt_summary_confirmation": "_bridge_prompt_summary_confirmation",
-        "prompt_multiline_input": "_bridge_prompt_multiline_input",
-        "pause": "_bridge_pause",
-        "prepare_menu_loading": "_bridge_prepare_menu_loading",
-        "prepare_pause_with_summary": "_bridge_prepare_pause_with_summary",
-        "wait_prepared_prompt": "_bridge_wait_prepared_prompt",
-        "wait_with_progress": "_bridge_wait_with_progress",
-    }
-
     def __init__(self, app: CourseTuiApp) -> None:
         self.app = app
-        self._originals: dict[str, Any] = {}
+        self.app.frontend = self
+        from core.state import StateRevision
+
+        self._revision = StateRevision()
         self._latest_state: Any | None = None
         # 仪表盘去重签名：计数/账号不变就跳过重建与投递（挂课期间每条状态
         # 消息都会触发 _refresh_dashboard，但计数一门课才变一次）。
         self._last_dashboard_signature: tuple | None = None
-        # 队列/凭证文件的最近 mtime 快照：_refresh_dashboard 的读盘短路依据
-        self._last_queue_file_stats: tuple | None = None
+        # SQLite 提交版本与凭证修改标记，避免日志风暴反复扫描计数
+        self._last_revision_signature: tuple | None = None
 
     def _post(self, **fields: Any) -> None:
         """把控制类 UI 更新写入合并缓冲并投递信号（fire-and-forget，带背压）。
@@ -148,7 +118,10 @@ class TuiFrontend:
             if isinstance(value, str):
                 fields[key] = redact_text(value)
             elif isinstance(value, tuple):
-                fields[key] = tuple(redact_text(item) if isinstance(item, str) else item for item in value)
+                fields[key] = tuple(
+                    redact_text(item) if isinstance(item, str) else item
+                    for item in value
+                )
         event: tuple[str, Any] | None = None
         if "begin_operation" in fields:
             event = ("begin_operation", fields.pop("begin_operation"))
@@ -159,22 +132,14 @@ class TuiFrontend:
         except Exception:  # noqa: BLE001 - app 未运行 / 已退出时安静丢弃
             pass
 
-    def install(self) -> None:
-        for attr_name, method_name in self._PATCH_MAP.items():
-            self._originals[attr_name] = getattr(cli_ui, attr_name, None)
-            setattr(cli_ui, attr_name, getattr(self, method_name))
-
-    def restore(self) -> None:
-        for attr_name, original in self._originals.items():
-            if original is not None:
-                setattr(cli_ui, attr_name, original)
-        self._originals.clear()
+    def close(self):
+        self._revision.close()
 
     # ---------------- 输出类（合并缓冲投递 + 有界日志队列，不阻塞业务流程）----------------
-    def _bridge_show_title(self, title: str, subtitle: str | None = None) -> None:
+    def show_title(self, title: str, subtitle: str | None = None) -> None:
         self._post(title=(title, subtitle))
 
-    def _bridge_show_info(self, message: str) -> None:
+    def show_info(self, message: str) -> None:
         if message == _AFK_START_STATUS:
             # 每轮挂课从干净的活动日志开始；同步屏障保证旧缓冲也先清掉，
             # 随后入队的「开始挂课」会成为本轮第一条可见日志。
@@ -184,44 +149,40 @@ class TuiFrontend:
                 pass
         self._refresh_dashboard()
         self._post(status=message)
-        self.app.enqueue_log(
-            _icon_text(ui_glyphs().icon_info, message, style=GREEN)
-        )
+        self.app.enqueue_log(_icon_text(ui_glyphs().icon_info, message, style=GREEN))
 
-    def _bridge_show_success(self, message: str) -> None:
+    def show_success(self, message: str) -> None:
         self._refresh_dashboard()
         self._post(status=message)
         self.app.enqueue_log(
             _icon_text(ui_glyphs().icon_success, message, style=SUCCESS)
         )
 
-    def _bridge_show_warning(self, message: str) -> None:
+    def show_warning(self, message: str) -> None:
         self._refresh_dashboard()
         self._post(status=message)
         self.app.enqueue_log(
             _icon_text(ui_glyphs().icon_warning, message, style=WARNING)
         )
 
-    def _bridge_show_error(self, message: str) -> None:
+    def show_error(self, message: str) -> None:
         self._refresh_dashboard()
         self._post(status=message)
-        self.app.enqueue_log(
-            _icon_text(ui_glyphs().icon_failure, message, style=ERROR)
-        )
+        self.app.enqueue_log(_icon_text(ui_glyphs().icon_failure, message, style=ERROR))
 
-    def _bridge_begin_operation(self, title: str, message: str) -> None:
+    def begin_operation(self, title: str, message: str) -> None:
         # 不再弹居中模态：点亮顶部状态条（布局里的一行），让仪表盘/进度条/日志平铺不遮挡。
         self._post(begin_operation=(title, message))
 
-    def _bridge_prepare_menu_loading(self) -> None:
+    def prepare_menu_loading(self) -> None:
         # 返回主菜单：长任务结束，收起状态条并清除「操作中」标记。
         # 结果页 held-screen 会保留到主菜单挂载，无空档。
         self._post(end_operation=True)
 
-    def _bridge_show_summary(self, title: str, rows: list[tuple[str, str]]) -> None:
+    def show_summary(self, title: str, rows: list[tuple[str, str]]) -> None:
         self.app.enqueue_log(tui_render.build_summary(title, rows))
 
-    def _bridge_render_dashboard(self, state: Any) -> None:
+    def render_dashboard(self, state: Any) -> None:
         self._latest_state = state
         self._push_dashboard(state)
 
@@ -271,37 +232,16 @@ class TuiFrontend:
             )
         )
 
-    def _queue_files_changed(self) -> bool:
-        """用 5 个 stat（~0.05ms）判断队列/凭证文件是否有变动，避免每条状态
-        消息都做 ~1.2ms 的 JSON 重读——挂课期间计数一门课完成才变一次。"""
-        from core.config import (
-            COOKIES_FILE,
-            EXAM_URLS_FILE,
-            LEARNING_FAILURES_FILE,
-            LEARNING_URLS_FILE,
-            MANUAL_EXAM_FILE,
-        )
-
-        stats = tuple(
-            path.stat().st_mtime_ns if path.exists() else None
-            for path in (
-                LEARNING_URLS_FILE,
-                LEARNING_FAILURES_FILE,
-                EXAM_URLS_FILE,
-                MANUAL_EXAM_FILE,
-                COOKIES_FILE,
-            )
-        )
-        if stats == self._last_queue_file_stats:
+    def _state_changed(self) -> bool:
+        signature = self._revision.signature()
+        if signature == self._last_revision_signature:
             return False
-        self._last_queue_file_stats = stats
+        self._last_revision_signature = signature
         return True
 
     def _refresh_dashboard(self) -> None:
-        """重读队列文件刷新仪表盘数字。挂课/考试期间每条状态消息后调用一次：
-        队列文件随每门课完成而更新，于是「课程 N」会跟着实时递减（24→23→…→0）。
-        先用 mtime 短路：文件没动就跳过 JSON 重读与后续重建/投递。"""
-        if not self._queue_files_changed():
+        """Refresh counters only after a committed DB or credential change."""
+        if not self._state_changed():
             return
         from core.state import collect_project_state
 
@@ -311,12 +251,15 @@ class TuiFrontend:
     # ---------------- 阻塞提示类（工作线程在 Queue.get 上等待结果）----------------
     def _prompt(self, screen: Any, *, cancellable: bool = False) -> Any:
         from core.abort import UserAbortRequested
+
         if self.app._shutting_down:
             raise UserAbortRequested("应用已退出")
         # call_from_thread 阻塞工作线程直到模态屏挂载完成并返回 Queue；
         # 随后 Queue.get 阻塞直到用户操作把结果写入队列。
         try:
-            queue = self.app.call_from_thread(self.app.push_prompt, screen, cancellable=cancellable)
+            queue = self.app.call_from_thread(
+                self.app.push_prompt, screen, cancellable=cancellable
+            )
         except RuntimeError as exc:
             raise UserAbortRequested("应用已退出") from exc
         result = queue.get()
@@ -327,7 +270,7 @@ class TuiFrontend:
             raise UserCancelRequested("已取消当前操作，返回主菜单")
         return result
 
-    def _bridge_show_menu(self, options: list[str]) -> int:
+    def show_menu(self, options: list[str]) -> int:
         # 主菜单不可取消：在主菜单按 Ctrl+C 直接退出应用
         status_renderable = None
         compact_status_renderable = None
@@ -350,15 +293,15 @@ class TuiFrontend:
             )
         )
 
-    def _bridge_prompt_choice(
+    def prompt_choice(
         self, title: str, options: list[str], prompt: str = "请选择"
     ) -> int:
         return self._prompt(OptionScreen(title, options, prompt), cancellable=True)
 
-    def _bridge_prompt_yes_no(self, message: str, default: str = "N") -> bool:
+    def prompt_yes_no(self, message: str, default: str = "N") -> bool:
         return self._prompt(YesNoScreen(message, default), cancellable=True)
 
-    def _bridge_prompt_summary_confirmation(
+    def prompt_summary_confirmation(
         self,
         title: str,
         rows: list[tuple[str, str]],
@@ -371,10 +314,10 @@ class TuiFrontend:
             cancellable=True,
         )
 
-    def _bridge_pause(self, message: str = "按回车返回主菜单") -> None:
+    def pause(self, message: str = "按回车返回主菜单") -> None:
         self._prompt(PauseScreen(message), cancellable=True)
 
-    def _bridge_prepare_pause_with_summary(
+    def prepare_pause_with_summary(
         self,
         title: str,
         rows: list[tuple[str, str]],
@@ -391,39 +334,37 @@ class TuiFrontend:
             cancellable=True,
         )
 
-    def _bridge_wait_prepared_prompt(self, handle) -> None:
+    def wait_prepared_prompt(self, handle) -> None:
         result = handle.get()
         if self.app._shutting_down:
             from core.abort import UserAbortRequested
+
             raise UserAbortRequested("应用已退出")
         if result is _PROMPT_CANCELLED:
             raise UserCancelRequested("已取消当前操作，返回主菜单")
 
-    def _bridge_prompt_multiline_input(
+    def prompt_multiline_input(
         self,
         messages: list[str],
         *,
         title: str = "手动选择课程 / 录入链接",
         cancel_message: str = "已取消手动选择课程 / 录入链接",
     ) -> str:
-        result = self._prompt(
-            MultilineScreen(messages, title), cancellable=True
-        )
+        result = self._prompt(MultilineScreen(messages, title), cancellable=True)
         kind, value = result
         if kind == "cancel":
             raise UserCancelRequested(cancel_message)
         return value
 
-    async def _bridge_wait_with_progress(
+    async def wait_with_progress(
         self, duration: int, description: str = "处理中"
     ) -> None:
-        """按秒推进进度数字，约 10Hz 刷新 UI，让转圈与 CLI Rich 一样顺滑。
+        """按秒推进进度数字，约 10Hz 刷新 UI，进度与转圈使用独立刻度。
 
         每个 tick 走合并缓冲投递：不同步等界面一个往返，风暴下自动合并。"""
         duration = int(duration)
         if duration <= 0:
             return
-        # 与 CLI wait_with_progress(refresh_per_second=10) 对齐
         ticks_per_sec = 10
         total_ticks = duration * ticks_per_sec
         self._post(progress=(description, 0, duration, 0))
@@ -438,48 +379,52 @@ class TuiFrontend:
 # 入口
 # ------------------------------------------------------------------
 def launch_tui() -> int:
-    """启动 Textual TUI，复用 launcher.main() 作为后台控制流。"""
+    """Own the frontend, worker, engine, signals and temporary log handler."""
     import launcher
     import os
+    import signal
+    import sys
     from core.config import DATA_DIR
     from core.runtime import application_lock, protect_application_children
+    from core.startup import report_fatal_error, shutdown_workflows
 
     launcher._check_python_version()
-    # 直接从 tui_bridge 启动时，也要在 Textual 接管控制台前关闭 Quick Edit。
     launcher._disable_windows_console_input_modes_early()
-
     setup_logging()
-
     app = CourseTuiApp()
     log_handler, previous_handlers = _install_log_handler(app)
-
-    frontend = TuiFrontend(app)
-    frontend.install()
-    import signal
+    frontend = None
     previous_term = signal.getsignal(signal.SIGTERM)
-    signal.signal(signal.SIGTERM, lambda *_: app.exit(143))
     try:
+        frontend = TuiFrontend(app)
+        signal.signal(signal.SIGTERM, lambda *_: app.exit(143))
         with application_lock(DATA_DIR / "application.lock"):
             protect_application_children()
             result = app.run()
             if app._launcher_thread is not None and app._launcher_thread.is_alive():
-                logging.critical("工作线程未在退出期限内停止，终止进程；已提交的数据可在下次恢复")
+                report_fatal_error(
+                    RuntimeError("工作线程未在退出期限内停止；已提交的数据可在下次恢复")
+                )
                 logging.shutdown()
                 os._exit(1)
-        if app.fatal_error is not None:
-            from core.startup import report_fatal_error
-
-            report_fatal_error(app.fatal_error)
-        return int(app._exit_status or result or 0)
     finally:
-        from core.startup import shutdown_workflows
+        primary_failure = sys.exc_info()[0] is not None or app.fatal_error is not None
         try:
-            shutdown_workflows()
+            try:
+                shutdown_workflows()
+            except Exception:
+                if not primary_failure:
+                    raise
+                logging.exception("工作流关闭失败，保留原始错误")
         finally:
             signal.signal(signal.SIGTERM, previous_term)
-            frontend.restore()
+            if frontend is not None:
+                frontend.close()
             root = logging.getLogger()
             root.removeHandler(log_handler)
             log_handler.close()
             for handler in previous_handlers:
                 root.addHandler(handler)
+    if app.fatal_error is not None:
+        report_fatal_error(app.fatal_error)
+    return int(app._exit_status or result or 0)

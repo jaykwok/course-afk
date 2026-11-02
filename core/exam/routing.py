@@ -4,9 +4,17 @@ import logging
 from pathlib import Path
 
 from core.config import EXAM_URLS_FILE, MANUAL_EXAM_FILE
-from core.exam.rules import extract_attempt_limit_message, parse_remaining_attempts, explicitly_unlimited
+from core.exam.rules import (
+    extract_attempt_limit_message,
+    parse_remaining_attempts,
+    explicitly_unlimited,
+)
 from core.queues.exam import append_exam_urls, remove_exam_url
-from core.queues.manual_exam import append_manual_exam_entry, read_manual_exam_queue, write_manual_exam_queue
+from core.queues.manual_exam import (
+    append_manual_exam_entry,
+    read_manual_exam_queue,
+    write_manual_exam_queue,
+)
 from core.storage import serialized
 
 
@@ -21,17 +29,37 @@ def allows_auto_submit(attempt_text: str, threshold: int) -> bool:
 
 
 @serialized
-def requeue_ai_exam_reviews(*, exam_file: Path | None = None, manual_exam_file: Path | None = None) -> int:
-    """旧待办统一恢复至考试入口，目标落盘成功后才移除源记录。"""
+def requeue_ai_exam_reviews(
+    *, exam_file: Path | None = None, manual_exam_file: Path | None = None
+) -> int:
+    """现行复查待办重入 AI 答题，目标落盘成功后才移除源记录。"""
     exam_file = exam_file or EXAM_URLS_FILE
     manual_exam_file = manual_exam_file or MANUAL_EXAM_FILE
     entries = read_manual_exam_queue(manual_exam_file)
-    retry_reasons = {"attempt_threshold", "attempt_unknown", "ai_no_answer", "fill_blank", "question_parse_error", "submission_unverified", "ai_exam_error", "state_unknown", "ai_failed", "pending_grading", "attempt_limit"}
+    retry_reasons = {
+        "attempt_threshold",
+        "attempt_unknown",
+        "ai_no_answer",
+        "fill_blank",
+        "question_parse_error",
+        "submission_unverified",
+        "ai_exam_error",
+        "state_unknown",
+        "ai_failed",
+        "pending_grading",
+        "attempt_limit",
+    }
     retry = [entry for entry in entries if entry.reason in retry_reasons]
     if not retry:
         return 0
-    append_exam_urls([entry.url for entry in retry], file_path=exam_file, requires_manual_submit=True)
-    write_manual_exam_queue([entry for entry in entries if entry not in retry], file_path=manual_exam_file, keep_file=True)
+    append_exam_urls(
+        [entry.url for entry in retry], file_path=exam_file, requires_manual_submit=True
+    )
+    write_manual_exam_queue(
+        [entry for entry in entries if entry not in retry],
+        file_path=manual_exam_file,
+        keep_file=True,
+    )
     return len(retry)
 
 
@@ -70,6 +98,12 @@ def queue_exam_url_by_attempt_text(
         return "manual"
 
     manual_submit = not allows_auto_submit(normalized_text, threshold)
-    append_exam_urls([normalized_url], file_path=exam_file, requires_manual_submit=manual_submit)
-    logging.info("已加入 AI 考试队列%s: %s", "（仅人工交卷）" if manual_submit else "", normalized_url)
+    append_exam_urls(
+        [normalized_url], file_path=exam_file, requires_manual_submit=manual_submit
+    )
+    logging.info(
+        "已加入 AI 考试队列%s: %s",
+        "（仅人工交卷）" if manual_submit else "",
+        normalized_url,
+    )
     return "ai"

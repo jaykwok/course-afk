@@ -7,6 +7,11 @@ from core.tasks.store import write_queue
 
 
 class LauncherControllerTests(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(
+            patch("core.auth.access.require_task_account", return_value="test-account")
+        )
+
     def test_handle_show_output_state_groups_failures_and_can_requeue(self):
         from core.app.launcher_controller import handle_show_output_state
         from core.queues.learning import (
@@ -116,93 +121,6 @@ class LauncherControllerTests(unittest.TestCase):
             ),
             "manual",
         )
-
-    def test_maybe_delete_empty_exam_queue_file_deletes_without_prompt(self):
-        from core.app.launcher_controller import _maybe_delete_empty_exam_queue_file
-
-        class FakeUi:
-            def __init__(self):
-                self.messages = []
-
-            def show_success(self, message):
-                self.messages.append(message)
-
-        with TemporaryDirectory() as tmp:
-            exam_file = Path(tmp) / "考试链接.json"
-            exam_file.write_text("[]", encoding="utf-8")
-            ui = FakeUi()
-
-            with patch("core.config.EXAM_URLS_FILE", exam_file):
-                _maybe_delete_empty_exam_queue_file(ui)
-
-            self.assertFalse(exam_file.exists())
-            self.assertIn("已删除空的考试链接.json", ui.messages)
-
-    def test_maybe_delete_empty_exam_queue_file_keeps_non_empty_file(self):
-        from core.app.launcher_controller import _maybe_delete_empty_exam_queue_file
-
-        class FakeUi:
-            def __init__(self):
-                self.messages = []
-
-            def show_success(self, message):
-                self.messages.append(message)
-
-        with TemporaryDirectory() as tmp:
-            exam_file = Path(tmp) / "考试链接.json"
-            write_queue(
-                exam_file,
-                [{"url": "https://example.com/exam/1", "ai_failed_model_configs": []}],
-            )
-            ui = FakeUi()
-
-            with patch("core.config.EXAM_URLS_FILE", exam_file):
-                _maybe_delete_empty_exam_queue_file(ui)
-
-            self.assertTrue(exam_file.exists())
-            self.assertEqual(ui.messages, [])
-
-    def test_maybe_delete_empty_learning_queue_file_deletes_without_prompt(self):
-        from core.app.launcher_controller import _maybe_delete_empty_learning_queue_file
-
-        class FakeUi:
-            def __init__(self):
-                self.messages = []
-
-            def show_success(self, message):
-                self.messages.append(message)
-
-        with TemporaryDirectory() as tmp:
-            learning_file = Path(tmp) / "课程链接.json"
-            learning_file.write_text("[]", encoding="utf-8")
-            ui = FakeUi()
-
-            with patch("core.config.LEARNING_URLS_FILE", learning_file):
-                _maybe_delete_empty_learning_queue_file(ui)
-
-            self.assertFalse(learning_file.exists())
-            self.assertIn("已删除空的课程链接.json", ui.messages)
-
-    def test_maybe_delete_empty_learning_queue_file_keeps_non_empty_file(self):
-        from core.app.launcher_controller import _maybe_delete_empty_learning_queue_file
-
-        class FakeUi:
-            def __init__(self):
-                self.messages = []
-
-            def show_success(self, message):
-                self.messages.append(message)
-
-        with TemporaryDirectory() as tmp:
-            learning_file = Path(tmp) / "课程链接.json"
-            write_queue(learning_file, [{"url": "https://example.com/course/1"}])
-            ui = FakeUi()
-
-            with patch("core.config.LEARNING_URLS_FILE", learning_file):
-                _maybe_delete_empty_learning_queue_file(ui)
-
-            self.assertTrue(learning_file.exists())
-            self.assertEqual(ui.messages, [])
 
     def test_handle_ai_exam_prompts_for_auto_submission_defaulting_to_no(self):
         from core.app.launcher_controller import handle_ai_exam

@@ -5,7 +5,7 @@
 
 线程模型：
 - Textual 事件循环跑在主线程。
-- launcher.main() 整个阻塞循环跑在一条受管理的工作线程上
+- launcher.main(self.frontend) 整个阻塞循环跑在一条受管理的工作线程上
   (_spawn_launcher_thread)，浏览器自动化在它内部各自的 run_async 里阻塞，
   不会卡住界面。
 - 桥接层与界面的通信分两类：输出类（状态/日志/仪表盘/进度）走合并写缓冲
@@ -255,13 +255,17 @@ class OptionScreen(ModalScreen[int]):
         )
 
     def _option_label(self, index: int, label: str) -> Text:
-        key = menu_key_for_index(index, len(self._options), zero_for_last=self._zero_for_last)
+        key = menu_key_for_index(
+            index, len(self._options), zero_for_last=self._zero_for_last
+        )
         g = ui_glyphs()
         icon = _MENU_ICONS.get(label, "") if g.name == "unicode" else ""
         icon_prefix = f"  {icon} " if icon else "  "
         text = Text.assemble((key, "bold"), (".", "dim"), (f"{icon_prefix}{label}", ""))
         spacious = self.app.size.width >= 80 and self.app.size.height >= 28
-        description = MAIN_MENU_DESCRIPTIONS.get(label) if self._main_menu and spacious else None
+        description = (
+            MAIN_MENU_DESCRIPTIONS.get(label) if self._main_menu and spacious else None
+        )
         if description:
             text.append("\n      " + description, style="dim")
         elif index == len(self._options) and self._zero_for_last:
@@ -271,26 +275,42 @@ class OptionScreen(ModalScreen[int]):
     def on_resize(self, event: events.Resize) -> None:
         for options in self.query(OptionList):
             for index, label in enumerate(self._options):
-                options.replace_option_prompt_at_index(index, self._option_label(index + 1, label))
+                options.replace_option_prompt_at_index(
+                    index, self._option_label(index + 1, label)
+                )
         self._layout_menu()
 
     def _layout_menu(self) -> None:
         compact = self.app.size.width < 70 or self.app.size.height < 24
         self.set_class(compact, "compact-menu")
-        status = self._compact_status_renderable if compact and self._compact_status_renderable is not None else self._status_renderable
-        for widget in self.query('#opt-status'):
+        status = (
+            self._compact_status_renderable
+            if compact and self._compact_status_renderable is not None
+            else self._status_renderable
+        )
+        for widget in self.query("#opt-status"):
             widget.update(status)
-        content_width = max(20, min(84, int(self.app.size.width * .94)) - (4 if compact else 6))
+        content_width = max(
+            20, min(84, int(self.app.size.width * 0.94)) - (4 if compact else 6)
+        )
+
         def rows(text):
             value = text.plain if isinstance(text, Text) else str(text)
-            return sum(max(1, (cell_len(line) + content_width - 1) // content_width) for line in value.splitlines())
-        option_rows = sum(rows(self._option_label(i, label)) for i, label in enumerate(self._options, 1))
+            return sum(
+                max(1, (cell_len(line) + content_width - 1) // content_width)
+                for line in value.splitlines()
+            )
+
+        option_rows = sum(
+            rows(self._option_label(i, label))
+            for i, label in enumerate(self._options, 1)
+        )
         height = 2 + max(3, option_rows) + rows(self._hint_text) + (2 if compact else 8)
         if not self._main_menu and self._zero_for_last:
             height += 1
         if status is not None:
             height += rows(status) + (0 if compact else 1)
-        for dialog in self.query('#opt-dialog'):
+        for dialog in self.query("#opt-dialog"):
             dialog.styles.height = min(max(5, self.app.size.height - 2), height)
 
     def on_mount(self) -> None:
@@ -299,7 +319,9 @@ class OptionScreen(ModalScreen[int]):
         self._layout_menu()
 
     def _pick_digit(self, digit: str) -> None:
-        choice = parse_menu_key(digit, len(self._options), zero_for_last=self._zero_for_last)
+        choice = parse_menu_key(
+            digit, len(self._options), zero_for_last=self._zero_for_last
+        )
         if choice is not None:
             self.app.resolve_prompt(self, choice)
 
@@ -337,15 +359,15 @@ class OptionScreen(ModalScreen[int]):
         # 兜底：部分终端把数字键送到 on_key 而非 Binding。
         char = event.character or ""
         if char in "0123456789":
-            choice = parse_menu_key(char, len(self._options), zero_for_last=self._zero_for_last)
+            choice = parse_menu_key(
+                char, len(self._options), zero_for_last=self._zero_for_last
+            )
             if choice is not None:
                 event.stop()
                 event.prevent_default()
                 self.app.resolve_prompt(self, choice)
 
-    def on_option_list_option_selected(
-        self, event: OptionList.OptionSelected
-    ) -> None:
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         self.app.resolve_prompt(self, event.option_index + 1)
 
 
@@ -409,11 +431,16 @@ class YesNoScreen(ModalScreen[bool]):
     def _layout_confirmation(self) -> None:
         if not isinstance(self._details_renderable, Text):
             return
-        width = max(20, min(84, int(self.app.size.width * .94)) - 8)
+        width = max(20, min(84, int(self.app.size.width * 0.94)) - 8)
+
         def rows(value):
-            return sum(max(1, (cell_len(line) + width - 1) // width) for line in value.splitlines())
+            return sum(
+                max(1, (cell_len(line) + width - 1) // width)
+                for line in value.splitlines()
+            )
+
         height = 12 + rows(self._message) + rows(self._details_renderable.plain)
-        for dialog in self.query('#yn-dialog'):
+        for dialog in self.query("#yn-dialog"):
             dialog.styles.height = min(max(10, self.app.size.height - 2), height, 34)
 
     def action_yes(self) -> None:
@@ -437,7 +464,7 @@ def _g_sep() -> str:
 class MultilineScreen(ModalScreen[tuple[str, Any]]):
     """多行文本输入。提交值为 ("ok", text) 或 ("cancel", None)。
 
-    回车换行、Ctrl+Enter 提交、ESC 取消（与原 CLI 行为一致）。
+    回车换行、Ctrl+Enter 提交、ESC 取消。
     """
 
     AUTO_FOCUS = "#ml-text"
@@ -463,7 +490,6 @@ class MultilineScreen(ModalScreen[tuple[str, Any]]):
         self._title = title
 
     def compose(self) -> ComposeResult:
-        g = ui_glyphs()
         instruction = Text()
         for index, message in enumerate(self._messages, start=1):
             instruction.append(f" {index}. ", style=f"bold {GREEN}")
@@ -545,9 +571,7 @@ class PauseScreen(ModalScreen[None]):
             (
                 Static(self._message, id="pause-msg"),
                 Static(
-                    build_hint_line(
-                        [("Enter", hint_action), ("ESC", "返回")]
-                    ),
+                    build_hint_line([("Enter", hint_action), ("ESC", "返回")]),
                     id="pause-hint",
                 ),
                 Horizontal(
@@ -575,16 +599,16 @@ class PauseScreen(ModalScreen[None]):
 # ---------------------------------------------------------------------------
 COURSE_THEME = Theme(
     name="course-green",
-    primary=GREEN,          # 主色：选中高亮 / 焦点边框 / 主按钮
-    secondary=GREEN_DEEP,   # 深绿：次级层次
-    accent=GREEN_BRIGHT,    # 亮绿：品牌标记 / 进度 / 键帽
+    primary=GREEN,  # 主色：选中高亮 / 焦点边框 / 主按钮
+    secondary=GREEN_DEEP,  # 深绿：次级层次
+    accent=GREEN_BRIGHT,  # 亮绿：品牌标记 / 进度 / 键帽
     warning=WARNING,
     error=ERROR,
     success=SUCCESS,
     foreground=TEXT_PRIMARY,
-    background=BG_CANVAS,   # 画布：全局最深
-    surface=BG_CANVAS,      # 控件默认底 = 画布，卡片再自己提亮
-    panel=BG_PANEL,         # 模态 / 内嵌面板
+    background=BG_CANVAS,  # 画布：全局最深
+    surface=BG_CANVAS,  # 控件默认底 = 画布，卡片再自己提亮
+    panel=BG_PANEL,  # 模态 / 内嵌面板
     dark=True,
     variables={
         # 亮绿底配深色字，保证选中项 / 主按钮 / 输入光标文字的对比度
@@ -1014,6 +1038,7 @@ class CourseTuiApp(App):
         self._shutting_down = False
         self._exit_status = 0
         self.fatal_error: Exception | None = None
+        self.frontend = None
         # 当前「可被 Esc / Ctrl+C 取消」的模态提示队列（是/否、多行、回车、子菜单）。
         # 主菜单不在此列——在主菜单返回即退出。仅 app 线程读写，无需锁。
         self._cancellable_prompt_queue: Queue | None = None
@@ -1065,7 +1090,12 @@ class CourseTuiApp(App):
                 id="dashboard",
             ),
             Static(id="progress"),
-            Static("📋 活动日志 / Execution Log" if g.name == "unicode" else f"{g.bullet} 活动日志", id="log-caption"),
+            Static(
+                "📋 活动日志 / Execution Log"
+                if g.name == "unicode"
+                else f"{g.bullet} 活动日志",
+                id="log-caption",
+            ),
             RichLog(id="log", markup=True, auto_scroll=True, max_lines=1500),
             id="main",
         )
@@ -1201,13 +1231,16 @@ class CourseTuiApp(App):
 
         def target() -> None:
             try:
-                self._exit_status = int(launcher.main() or 0)
+                self._exit_status = int(launcher.main(self.frontend) or 0)
             except SystemExit as exc:
-                self._exit_status = exc.code if isinstance(exc.code, int) else (1 if exc.code else 0)
+                self._exit_status = (
+                    exc.code if isinstance(exc.code, int) else (1 if exc.code else 0)
+                )
             except KeyboardInterrupt:
                 self._exit_status = 130
             except Exception as exc:  # 未预期错误记录堆栈并以非零退出码结束
                 import logging
+
                 self._exit_status = 1
                 logging.exception("主工作流出现未处理错误")
                 self.fatal_error = exc
@@ -1215,11 +1248,14 @@ class CourseTuiApp(App):
             finally:
                 self._safe_exit()
 
-        self._launcher_thread = threading.Thread(target=target, name="course-launcher", daemon=False)
+        self._launcher_thread = threading.Thread(
+            target=target, name="course-launcher", daemon=False
+        )
         self._launcher_thread.start()
 
     async def on_unmount(self) -> None:
         from core.config import interrupt_running_async
+
         self._shutting_down = True
         if self._active_prompt_queue is not None:
             self._active_prompt_queue.put(_PROMPT_CANCELLED)

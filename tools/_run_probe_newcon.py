@@ -1,4 +1,5 @@
 """在 CREATE_NEW_CONSOLE 新会话里跑探测，模拟双击 bat。"""
+
 from __future__ import annotations
 
 import os
@@ -9,6 +10,8 @@ CREATE_NEW_CONSOLE = 0x00000010
 
 
 def main() -> int:
+    if os.name != "nt":
+        raise SystemExit("This diagnostic requires Windows.")
     root = Path(__file__).resolve().parents[1]
     py = root / ".venv" / "Scripts" / "python.exe"
     out = root / "tools" / "capture" / "terminal" / "new_console.json"
@@ -17,11 +20,14 @@ def main() -> int:
         out.unlink()
 
     # 内联探测，减少路径/import 问题
-    code = r"""
+    code = (
+        r"""
 import json, os, sys, ctypes
 from ctypes import wintypes
 from pathlib import Path
-root = Path(r""" + repr(str(root)) + r""")
+root = Path(r"""
+        + repr(str(root))
+        + r""")
 sys.path.insert(0, str(root))
 os.chdir(root)
 
@@ -80,10 +86,13 @@ def cb(h, lparam):
 u.EnumWindows(WNDENUMPROC(cb), 0)
 info["enum_console_windows"] = found[:30]
 
-out = Path(r""" + repr(str(out)) + r""")
+out = Path(r"""
+        + repr(str(out))
+        + r""")
 out.write_text(json.dumps(info, ensure_ascii=False, indent=2), encoding="utf-8")
 print("wrote", out)
 """
+    )
     env = os.environ.copy()
     env.pop("WT_SESSION", None)
     env.pop("WT_PROFILE_ID", None)

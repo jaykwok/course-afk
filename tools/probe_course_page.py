@@ -35,7 +35,7 @@ from core.config import (
 )
 from core.discovery.subject_parse import expand_subject_from_page
 from core.file_ops import is_subject_detail_url, load_cookies
-from core.learning.afk_runner import _process_url
+from core.learning.afk_runner import execute_learning
 from core.learning.common import ensure_course_page_ready
 from core.learning.flows import (
     _activate_course_section,
@@ -178,7 +178,13 @@ _DOM_PROBE_SCRIPT = r"""
 """
 
 
-from core.diagnostics import redact_url as _sanitize_url, redact as _redact_json_value, redact_text as _redact_text, structural_html, redact_snapshot
+from core.diagnostics import (
+    redact_url as _sanitize_url,
+    redact as _redact_json_value,
+    redact_text as _redact_text,
+    structural_html,
+    redact_snapshot,
+)
 from core.runtime import close_safely
 
 
@@ -191,7 +197,7 @@ def _redact_response_body(
     if "json" in content_type.lower():
         try:
             parsed = json.loads(text)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             pass
         else:
             return json.dumps(
@@ -271,7 +277,9 @@ def _save_result(result: dict[str, object], *, run_dir: Path) -> Path:
     return result_path
 
 
-def _append_bounded(items: list[dict[str, object]], item: dict[str, object], limit: int) -> None:
+def _append_bounded(
+    items: list[dict[str, object]], item: dict[str, object], limit: int
+) -> None:
     if len(items) < limit:
         items.append(item)
 
@@ -311,9 +319,7 @@ async def _capture_response_event(
         body = await response.text()
         if body:
             body_limit = (
-                250000
-                if "/subject/chapter-progress" in str(event["url"])
-                else 20000
+                250000 if "/subject/chapter-progress" in str(event["url"]) else 20000
             )
             event["body_preview"] = _redact_response_body(
                 body,
@@ -345,12 +351,16 @@ def _attach_page_listeners(
     def track_response(response) -> None:
         if len(response_tasks) >= 100:
             return
+
         async def capture():
             try:
                 async with asyncio.timeout(10):
-                    await _capture_response_event(response, network_events=network_events)
+                    await _capture_response_event(
+                        response, network_events=network_events
+                    )
             except asyncio.TimeoutError:
                 pass
+
         task = asyncio.create_task(capture())
         response_tasks.add(task)
         task.add_done_callback(response_tasks.discard)
@@ -364,9 +374,7 @@ def _attach_page_listeners(
                 "captured_at": datetime.now().astimezone().isoformat(),
                 "url": _sanitize_url(str(_event_value(request, "url", "") or "")),
                 "method": str(_event_value(request, "method", "") or ""),
-                "resource_type": str(
-                    _event_value(request, "resource_type", "") or ""
-                ),
+                "resource_type": str(_event_value(request, "resource_type", "") or ""),
                 "failure": _redact_text(str(failure)),
             },
             500,
@@ -380,9 +388,9 @@ def _attach_page_listeners(
                 "event": "console",
                 "captured_at": datetime.now().astimezone().isoformat(),
                 "type": str(_event_value(message, "type", "") or ""),
-                "text": _redact_text(
-                    str(_event_value(message, "text", "") or "")
-                )[:5000],
+                "text": _redact_text(str(_event_value(message, "text", "") or ""))[
+                    :5000
+                ],
                 "location": {
                     "url": _sanitize_url(str(location.get("url") or "")),
                     "line": location.get("lineNumber"),
@@ -512,7 +520,7 @@ async def main(
     ) as (_, context):
         try:
             keep_pending = await asyncio.wait_for(
-                _process_url(
+                execute_learning(
                     context,
                     target_url,
                     handler,
@@ -540,7 +548,11 @@ async def main(
         finally:
             await asyncio.sleep(0)
             if response_tasks:
-                await close_safely(asyncio.gather(*list(response_tasks), return_exceptions=True), timeout=5, label="probe response tasks")
+                await close_safely(
+                    asyncio.gather(*list(response_tasks), return_exceptions=True),
+                    timeout=5,
+                    label="probe response tasks",
+                )
 
     network_file = run_dir / "network.json"
     console_file = run_dir / "console.json"
@@ -575,6 +587,7 @@ async def main(
 
 if __name__ == "__main__":
     from core.runtime import protect_application_children
+
     protect_application_children()
     reconfigure_stdout = getattr(sys.stdout, "reconfigure", None)
     if callable(reconfigure_stdout):

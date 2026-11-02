@@ -158,8 +158,11 @@ async def install_login_preferences_watcher(
     )
 
 
-async def login_and_save_credential(*, confirm_same_account=None) -> AccountProfile:
-    async with create_browser_context(cookies_path=None, controller=False) as (_, context):
+async def login_and_save_credential() -> AccountProfile:
+    async with create_browser_context(cookies_path=None, controller=False) as (
+        _,
+        context,
+    ):
         page = await context.new_page()
         try:
             await page.goto(MYLEARNING_HOME)
@@ -178,12 +181,16 @@ async def login_and_save_credential(*, confirm_same_account=None) -> AccountProf
             await prepare_page_after_navigation_async(page)
             profile = await extract_account_profile_from_context(context)
             if not profile.account_name.strip():
-                raise LoginNotCompletedError("账号资料未返回稳定账号标识，登录凭证未更新；请确认中心站账号资料后重试")
-            _validate_pending_account(profile, confirm_same_account)
+                raise LoginNotCompletedError(
+                    "账号资料未返回稳定账号标识，登录凭证未更新；请确认中心站账号资料后重试"
+                )
+            _validate_pending_account(profile)
             cookies = await context.cookies()
             if COOKIES_FILE.exists():
                 _clear_readonly(COOKIES_FILE)
-            save_credential_bundle(datetime.now().astimezone(), profile, cookies, cookies_path=COOKIES_FILE)
+            save_credential_bundle(
+                datetime.now().astimezone(), profile, cookies, cookies_path=COOKIES_FILE
+            )
             logging.info(f"已更新登录凭证元数据，当前账号：{profile.label}")
             return profile
         except Exception as exc:
@@ -200,18 +207,27 @@ async def login_and_save_credential(*, confirm_same_account=None) -> AccountProf
             ) from exc
 
 
-def _validate_pending_account(profile, confirm_same_account) -> None:
+def _validate_pending_account(profile) -> None:
     from core.auth.credential import load_pending_owner_metadata
     from core.state import collect_project_state
+
     state = collect_project_state()
-    if not any((state.learning_count, state.learning_failure_count, state.exam_count, state.manual_exam_count)):
+    if not any(
+        (
+            state.learning_count,
+            state.learning_failure_count,
+            state.exam_count,
+            state.manual_exam_count,
+        )
+    ):
         return
     old = load_credential_metadata() or load_pending_owner_metadata()
     if old and old.account_name and profile.account_name:
         if old.account_name == profile.account_name:
             return
-        raise LoginNotCompletedError("仍有旧账号的待办，请先处理或导出后再切换账号；原凭证未更新")
-    # The currently available DOM may expose only a display name. Never infer
-    # identity equality from that non-unique field without the user's confirmation.
-    if confirm_same_account is None or not confirm_same_account(old.account_label if old else "未绑定账号", profile.label):
-        raise LoginNotCompletedError("未确认待办属于当前账号，原登录凭证未更新")
+        raise LoginNotCompletedError(
+            "仍有旧账号的待办，请先处理或导出后再切换账号；原凭证未更新"
+        )
+    raise LoginNotCompletedError(
+        "待办缺少稳定账号归属，请先导出或清空待办再登录；原凭证未更新"
+    )

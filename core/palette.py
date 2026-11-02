@@ -1,13 +1,13 @@
 """全应用统一色板。
 
-Textual 主题(core.ui.tui_app.COURSE_THEME)、CLI 的 Rich 渲染(core.ui)与
-TUI 的 Rich 渲染(core.ui.tui_render)共用这套颜色，保证 CLI 图标、TUI 日志、
+Textual 主题(core.ui.tui_app.COURSE_THEME)与
+TUI 的 Rich 渲染(core.ui.tui_render)共用这套颜色，保证 TUI 日志、
 焦点高亮、按钮变体、边框、标题都用同一套「翡翠绿主色 + 电信青 + 语义色」，
 整体色调一致，现代、通透且层级鲜明。
 
 - 翡翠绿主色：品牌色。标题、边框、序号、提示语、进度、info 图标、焦点高亮。
 - 电信青/亮薄荷：次级品牌强调色。徽标、重要操作标签、键帽高亮。
-- 语义色：成功 / 警告 / 错误。CLI 图标、TUI 日志、Textual 按钮变体共用同一套绿 / 黄 / 红。
+- 语义色：成功 / 警告 / 错误。TUI 日志、Textual 按钮变体共用同一套绿 / 黄 / 红。
 - 中性表面/文字：暗色扁平布局的画布-卡片-悬浮三层底色与正文三级文字色。
 """
 
@@ -20,7 +20,7 @@ GREEN_DEEP = "#065F46"    # 深绿：Textual 次级层次 (emerald-800)
 # 科技青强调色（Tailwind sky）
 CYAN = "#38BDF8"          # 科技青：建议操作标签 / 快捷键指示 / 关键链接 (sky-400)
 
-# 语义色：成功 / 警告 / 错误（CLI 图标 / TUI 日志 / 按钮变体共用）
+# 语义色：成功 / 警告 / 错误（TUI 日志 / 按钮变体共用）
 SUCCESS = "#34D399"       # emerald-400：与主色同族，靠亮度差区分
 WARNING = "#FBBF24"       # amber-400：醒目警示
 ERROR = "#F87171"         # red-400：失败与错误

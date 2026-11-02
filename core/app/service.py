@@ -34,6 +34,14 @@ class ApplicationService:
             host = get_host()
         self.host = host
 
+    def require_account(self):
+        from core.auth.access import CredentialUnavailableError
+
+        account = self.host.identity_provider()
+        if not account or account == "unbound":
+            raise CredentialUnavailableError("缺少可验证的账号标识，请先更新登录凭证")
+        return account
+
     async def batch(self, urls, kind, *, options=None, status_callback=None):
         if asyncio.get_running_loop() is not self.host.loop:
             return await asyncio.wrap_future(
@@ -47,10 +55,7 @@ class ApplicationService:
         from core.workflow.host import VERSION
 
         selected = list(dict.fromkeys(canonical_url(u) for u in urls))
-        account = self.host.identity_provider()
-        if account == "unbound":
-            from core.auth.access import CredentialUnavailableError
-            raise CredentialUnavailableError("缺少可验证的账号标识，请先更新登录凭证")
+        account = self.require_account()
         # Retain every selected task before the first browser can fail. Planned
         # runs without an engine row are dispatched with the same ID on retry.
         for url in selected:
@@ -105,13 +110,24 @@ class ApplicationService:
         )
         return await self.batch(urls, "learn", status_callback=status_callback)
 
-    async def exams(self, *, auto_submit=False, status_callback=None):
+    async def exams(
+        self,
+        *,
+        auto_submit=False,
+        status_callback=None,
+        exam_file=None,
+        manual_exam_file=None,
+    ):
+        self.require_account()
         from core.queues.exam import read_exam_urls
         from core.exam.routing import requeue_ai_exam_reviews
+        from core.config import EXAM_URLS_FILE, MANUAL_EXAM_FILE
 
-        requeue_ai_exam_reviews()
+        exam_file = exam_file or EXAM_URLS_FILE
+        manual_exam_file = manual_exam_file or MANUAL_EXAM_FILE
+        requeue_ai_exam_reviews(exam_file=exam_file, manual_exam_file=manual_exam_file)
         return await self.batch(
-            read_exam_urls(),
+            read_exam_urls(exam_file),
             "exam",
             options={"auto_submit": auto_submit},
             status_callback=status_callback,

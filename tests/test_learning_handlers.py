@@ -46,7 +46,12 @@ class _FakePage:
 
 class LearningHandlerTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.started = self.enterContext(patch("core.learning.handlers.ensure_course_started", new=AsyncMock(return_value={})))
+        self.started = self.enterContext(
+            patch(
+                "core.learning.handlers.ensure_course_started",
+                new=AsyncMock(return_value={}),
+            )
+        )
 
     async def test_handle_video_cleans_up_background_tasks_when_page_closes(self):
         from core.learning.handlers import handle_video
@@ -190,7 +195,12 @@ class _SleepingPage:
 
 class VideoWatchLoopTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.resume = self.enterContext(patch('core.learning.handlers.ensure_course_started', new=AsyncMock(return_value={})))
+        self.resume = self.enterContext(
+            patch(
+                "core.learning.handlers.ensure_course_started",
+                new=AsyncMock(return_value={}),
+            )
+        )
 
     async def test_watch_leaves_early_when_section_becomes_learned(self):
         from core.learning import handlers
@@ -198,14 +208,12 @@ class VideoWatchLoopTests(unittest.IsolatedAsyncioTestCase):
         page = _SleepingPage(_video_state())
 
         with (
-            patch("core.learning.progress.read_server_section_state",new=AsyncMock(return_value={"finish_status":2})),
+            patch(
+                "core.learning.progress.read_server_section_state",
+                new=AsyncMock(return_value={"finish_status": 2}),
+            ),
             patch.object(handlers, "VIDEO_WATCH_SLICE_MIN", 0.1),
             patch.object(handlers, "VIDEO_WATCH_SLICE_MAX", 0.1),
-            patch.object(
-                handlers,
-                "read_section_progress_text",
-                new=AsyncMock(return_value="必修 视频 19:55"),
-            ),
         ):
             started = time.monotonic()
             await handlers._watch_video_playback(page, object(), watch_seconds=30)
@@ -227,11 +235,6 @@ class VideoWatchLoopTests(unittest.IsolatedAsyncioTestCase):
             patch.object(handlers, "VIDEO_WATCH_SLICE_MAX", 0.1),
             patch.object(handlers, "_VIDEO_LAG_TOLERANCE", 0.01),
             patch.object(handlers, "VIDEO_STALL_MAX_EXTRA_WAIT", 5),
-            patch.object(
-                handlers,
-                "read_section_progress_text",
-                new=AsyncMock(return_value="必修 视频 19:55\n需学 05:00"),
-            ),
         ):
             started = time.monotonic()
             await handlers._watch_video_playback(page, object(), watch_seconds=1)
@@ -250,11 +253,6 @@ class VideoWatchLoopTests(unittest.IsolatedAsyncioTestCase):
             patch.object(handlers, "VIDEO_WATCH_SLICE_MAX", 0.1),
             patch.object(handlers, "_VIDEO_LAG_TOLERANCE", 0.01),
             patch.object(handlers, "VIDEO_STALL_MAX_EXTRA_WAIT", 0.5),
-            patch.object(
-                handlers,
-                "read_section_progress_text",
-                new=AsyncMock(return_value="必修 视频 19:55\n需学 05:00"),
-            ),
             patch.object(
                 handlers,
                 "check_and_handle_rating_popup",
@@ -288,11 +286,6 @@ class VideoWatchLoopTests(unittest.IsolatedAsyncioTestCase):
             patch.object(handlers, "VIDEO_WATCH_SLICE_MIN", 0.1),
             patch.object(handlers, "VIDEO_WATCH_SLICE_MAX", 0.1),
             patch.object(handlers, "_VIDEO_LAG_TOLERANCE", 0.01),
-            patch.object(
-                handlers,
-                "read_section_progress_text",
-                new=AsyncMock(return_value="必修 视频 19:55\n需学 05:00"),
-            ),
         ):
             started = time.monotonic()
             await handlers._watch_video_playback(page, object(), watch_seconds=1)

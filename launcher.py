@@ -18,9 +18,13 @@ def _disable_windows_console_input_modes_early() -> None:
     try:
         kernel32 = ctypes.windll.kernel32
         from ctypes import wintypes
+
         kernel32.GetStdHandle.argtypes = [wintypes.DWORD]
         kernel32.GetStdHandle.restype = wintypes.HANDLE
-        kernel32.GetConsoleMode.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        kernel32.GetConsoleMode.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
         kernel32.GetConsoleMode.restype = wintypes.BOOL
         kernel32.SetConsoleMode.argtypes = [wintypes.HANDLE, wintypes.DWORD]
         kernel32.SetConsoleMode.restype = wintypes.BOOL
@@ -46,6 +50,7 @@ _disable_windows_console_input_modes_early()
 
 
 from core.app.menus import MAIN_MENU_OPTIONS
+from core.ui.frontend import Frontend
 
 MENU_OPTIONS = MAIN_MENU_OPTIONS
 
@@ -58,9 +63,13 @@ MANUAL_SELECTION_PROMPTS = [
 ]
 
 
-def main() -> int:
+def _run_menu(ui: Frontend) -> int:
     _check_python_version()
-    from core.abort import BrowserCertificateError, UserAbortRequested, UserCancelRequested
+    from core.abort import (
+        BrowserCertificateError,
+        UserAbortRequested,
+        UserCancelRequested,
+    )
     from core.auth.access import CredentialUnavailableError
     from core.config import setup_logging
     from core.config import (
@@ -71,7 +80,6 @@ def main() -> int:
 
     setup_logging()
 
-    import core.ui as ui
     from core.app.launcher_controller import (
         handle_afk,
         handle_ai_exam,
@@ -103,7 +111,9 @@ def main() -> int:
                 elif choice == 4:
                     handle_reference_collection(ui)
                 elif choice == 5:
-                    handle_task_management(EXAM_URLS_FILE, LEARNING_URLS_FILE, MANUAL_EXAM_FILE, ui)
+                    handle_task_management(
+                        EXAM_URLS_FILE, LEARNING_URLS_FILE, MANUAL_EXAM_FILE, ui
+                    )
                 elif choice == 6:
                     handle_account_management(state, ui)
                 elif choice == 7:
@@ -131,10 +141,18 @@ def main() -> int:
         return 0
 
 
+def main(ui: Frontend) -> int:
+    from core.ui.frontend import use_frontend
+
+    with use_frontend(ui):
+        return _run_menu(ui)
+
+
 def entrypoint():
-    from core.startup import check_dependencies, report_fatal_error
+    from core.startup import check_dependencies, configure_terminal, report_fatal_error
 
     try:
+        configure_terminal()
         _check_python_version()
         check_dependencies()
         if "--check-startup" in sys.argv:

@@ -7,6 +7,7 @@ from tempfile import TemporaryDirectory
 from unittest import mock
 
 from core.app import workflows
+from core.discovery import manual
 from core.app.workflows import parse_manual_selection_input
 
 
@@ -14,7 +15,6 @@ from core.app.workflows import parse_manual_selection_input
 async def _fake_shared_browser_context(shared_context=None):
     """供手动选课共享浏览器路径 mock create_browser_context。"""
     yield object(), shared_context if shared_context is not None else object()
-
 
 
 class FakeManualSelectionPage:
@@ -81,9 +81,7 @@ class FakeManualSelectionContext:
 
     async def new_page(self):
         popup_url = (
-            self.popup_urls.pop(0)
-            if self.page_handler and self.popup_urls
-            else None
+            self.popup_urls.pop(0) if self.page_handler and self.popup_urls else None
         )
         page = FakeManualSelectionPage(
             popup_url=popup_url,
@@ -102,9 +100,7 @@ class FakeManualSelectionContext:
 async def _fake_create_browser_context_for_entry(context):
     """模拟 create_browser_context：已有主控页 + 复用同一 context。"""
     if not context.pages:
-        context.pages.append(
-            FakeManualSelectionPage(url="https://www.mylearning.cn/")
-        )
+        context.pages.append(FakeManualSelectionPage(url="https://www.mylearning.cn/"))
     try:
         yield object(), context
     finally:
@@ -135,7 +131,16 @@ class ManualSelectionTests(unittest.TestCase):
 
 
 class ManualSelectionWorkflowTests(unittest.IsolatedAsyncioTestCase):
-    async def test_collect_learning_links_from_entry_urls_keeps_context_created_pages_open(self):
+    def setUp(self):
+        self.enterContext(
+            mock.patch(
+                "core.auth.access.require_task_account", return_value="test-account"
+            )
+        )
+
+    async def test_collect_learning_links_from_entry_urls_keeps_context_created_pages_open(
+        self,
+    ):
         with TemporaryDirectory() as tmp:
             temp_root = Path(tmp)
             cookies_file = temp_root / "cookies.json"
@@ -148,17 +153,17 @@ class ManualSelectionWorkflowTests(unittest.IsolatedAsyncioTestCase):
             fake_context = FakeManualSelectionContext()
             callback_states = []
             with (
-                mock.patch.object(workflows, "LEARNING_URLS_FILE", learning_file),
-                mock.patch.object(workflows, "EXAM_URLS_FILE", exam_file),
+                mock.patch.object(manual, "LEARNING_URLS_FILE", learning_file),
+                mock.patch.object(manual, "EXAM_URLS_FILE", exam_file),
                 mock.patch.object(
-                    workflows,
+                    manual,
                     "create_browser_context",
                     side_effect=lambda **_k: _fake_create_browser_context_for_entry(
                         fake_context
                     ),
                 ),
             ):
-                result = await workflows.collect_learning_links_from_entry_urls(
+                result = await manual.collect_learning_links_from_entry_urls(
                     ["https://example.com/entry"],
                     before_close_callback=lambda counts: callback_states.append(
                         (
@@ -186,17 +191,17 @@ class ManualSelectionWorkflowTests(unittest.IsolatedAsyncioTestCase):
 
             fake_context = FakeManualSelectionContext(popup_urls=[popup_url])
             with (
-                mock.patch.object(workflows, "LEARNING_URLS_FILE", learning_file),
-                mock.patch.object(workflows, "EXAM_URLS_FILE", exam_file),
+                mock.patch.object(manual, "LEARNING_URLS_FILE", learning_file),
+                mock.patch.object(manual, "EXAM_URLS_FILE", exam_file),
                 mock.patch.object(
-                    workflows,
+                    manual,
                     "create_browser_context",
                     side_effect=lambda **_k: _fake_create_browser_context_for_entry(
                         fake_context
                     ),
                 ),
             ):
-                result = await workflows.collect_learning_links_from_entry_urls(
+                result = await manual.collect_learning_links_from_entry_urls(
                     ["https://example.com/entry"]
                 )
             saved_urls = _read_learning_queue_urls(learning_file)
@@ -218,17 +223,17 @@ class ManualSelectionWorkflowTests(unittest.IsolatedAsyncioTestCase):
 
             fake_context = FakeManualSelectionContext(popup_urls=[popup_url])
             with (
-                mock.patch.object(workflows, "LEARNING_URLS_FILE", learning_file),
-                mock.patch.object(workflows, "EXAM_URLS_FILE", exam_file),
+                mock.patch.object(manual, "LEARNING_URLS_FILE", learning_file),
+                mock.patch.object(manual, "EXAM_URLS_FILE", exam_file),
                 mock.patch.object(
-                    workflows,
+                    manual,
                     "create_browser_context",
                     side_effect=lambda **_k: _fake_create_browser_context_for_entry(
                         fake_context
                     ),
                 ),
             ):
-                result = await workflows.collect_learning_links_from_entry_urls(
+                result = await manual.collect_learning_links_from_entry_urls(
                     ["https://example.com/entry"]
                 )
 
@@ -239,7 +244,9 @@ class ManualSelectionWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(learning_urls, [])
         self.assertEqual(exam_urls, [popup_url])
 
-    async def test_collect_learning_links_from_entry_urls_records_nonstandard_learning_popup(self):
+    async def test_collect_learning_links_from_entry_urls_records_nonstandard_learning_popup(
+        self,
+    ):
         popup_url = "https://kc.zhixueyun.com/#/paas-container?paasurl=website%2Fdemo"
         with TemporaryDirectory() as tmp:
             temp_root = Path(tmp)
@@ -250,22 +257,22 @@ class ManualSelectionWorkflowTests(unittest.IsolatedAsyncioTestCase):
 
             fake_context = FakeManualSelectionContext(popup_urls=[popup_url])
             with (
-                mock.patch.object(workflows, "LEARNING_URLS_FILE", learning_file),
-                mock.patch.object(workflows, "EXAM_URLS_FILE", exam_file),
+                mock.patch.object(manual, "LEARNING_URLS_FILE", learning_file),
+                mock.patch.object(manual, "EXAM_URLS_FILE", exam_file),
                 mock.patch.object(
-                    workflows,
+                    manual,
                     "MANUAL_SELECTION_POPUP_URL_WAIT_MS",
                     0,
                 ),
                 mock.patch.object(
-                    workflows,
+                    manual,
                     "create_browser_context",
                     side_effect=lambda **_k: _fake_create_browser_context_for_entry(
                         fake_context
                     ),
                 ),
             ):
-                result = await workflows.collect_learning_links_from_entry_urls(
+                result = await manual.collect_learning_links_from_entry_urls(
                     ["https://example.com/entry"]
                 )
             saved_urls = _read_learning_queue_urls(learning_file)
@@ -280,7 +287,7 @@ class ManualSelectionWorkflowTests(unittest.IsolatedAsyncioTestCase):
             raise RuntimeError("boom")
 
         task = asyncio.create_task(fail())
-        workflows._track_background_task(task, pending_tasks)
+        manual._track_background_task(task, pending_tasks)
         await asyncio.sleep(0)
         await asyncio.sleep(0)
 
@@ -290,15 +297,27 @@ class ManualSelectionWorkflowTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_run_manual_course_selection_auto_parses_learning_zone_urls(self):
         from tests.workflow_harness import new_selection
-        await new_selection(self,'test_run_manual_course_selection_auto_parses_learning_zone_urls')
 
-    async def test_run_manual_course_selection_manual_mode_opens_learning_zone_urls_manually(self):
+        await new_selection(
+            self, "test_run_manual_course_selection_auto_parses_learning_zone_urls"
+        )
+
+    async def test_run_manual_course_selection_manual_mode_opens_learning_zone_urls_manually(
+        self,
+    ):
         from tests.workflow_harness import new_selection
-        await new_selection(self,'test_run_manual_course_selection_manual_mode_opens_learning_zone_urls_manually')
+
+        await new_selection(
+            self,
+            "test_run_manual_course_selection_manual_mode_opens_learning_zone_urls_manually",
+        )
 
     async def test_run_manual_course_selection_auto_parses_train_class_urls(self):
         from tests.workflow_harness import new_selection
-        await new_selection(self,'test_run_manual_course_selection_auto_parses_train_class_urls')
+
+        await new_selection(
+            self, "test_run_manual_course_selection_auto_parses_train_class_urls"
+        )
 
     async def test_run_manual_course_selection_routes_direct_exam_url(self):
         exam_url = (
@@ -316,7 +335,7 @@ class ManualSelectionWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 mock.patch.object(workflows, "LEARNING_URLS_FILE", learning_file),
                 mock.patch.object(workflows, "EXAM_URLS_FILE", exam_file),
                 mock.patch.object(
-                    workflows,
+                    manual,
                     "collect_learning_links_from_entry_urls",
                     new=mock.AsyncMock(return_value=(0, 0, 0)),
                 ),
@@ -343,13 +362,16 @@ class ManualSelectionWorkflowTests(unittest.IsolatedAsyncioTestCase):
             with (
                 mock.patch.object(workflows, "LEARNING_URLS_FILE", learning_file),
                 mock.patch.object(workflows, "EXAM_URLS_FILE", exam_file),
-                mock.patch.object(workflows, "create_browser_context") as create_browser,
+                mock.patch.object(manual, "create_browser_context") as create_browser,
             ):
                 result = await workflows.run_manual_course_selection(
                     f"考试链接：{url}\n{url}?from=manual"
                 )
             create_browser.assert_not_called()
-            self.assertEqual(_read_exam_queue_urls(exam_file), [url.replace('exam-detail','answer-paper')])
+            self.assertEqual(
+                _read_exam_queue_urls(exam_file),
+                [url.replace("exam-detail", "answer-paper")],
+            )
             self.assertFalse(learning_file.exists())
         self.assertEqual(result["direct_exam_count"], 1)
         self.assertEqual(result["exam_total"], 1)
@@ -357,15 +379,24 @@ class ManualSelectionWorkflowTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_run_manual_course_selection_expands_direct_subject_url(self):
         from tests.workflow_harness import new_selection
-        await new_selection(self,'test_run_manual_course_selection_expands_direct_subject_url')
+
+        await new_selection(
+            self, "test_run_manual_course_selection_expands_direct_subject_url"
+        )
 
     async def test_run_manual_course_selection_shares_browser_across_jobs(self):
         from tests.workflow_harness import new_selection
-        await new_selection(self,'test_run_manual_course_selection_shares_browser_across_jobs')
+
+        await new_selection(
+            self, "test_run_manual_course_selection_shares_browser_across_jobs"
+        )
 
     async def test_run_manual_course_selection_shares_browser_with_entry_phase(self):
         from tests.workflow_harness import new_selection
-        await new_selection(self,'test_run_manual_course_selection_shares_browser_with_entry_phase')
+
+        await new_selection(
+            self, "test_run_manual_course_selection_shares_browser_with_entry_phase"
+        )
 
     async def test_collect_entry_with_injected_context_does_not_create_browser(self):
         """context= 注入时不再 create_browser_context。"""
@@ -378,20 +409,20 @@ class ManualSelectionWorkflowTests(unittest.IsolatedAsyncioTestCase):
 
             fake_context = FakeManualSelectionContext()
             with (
-                mock.patch.object(workflows, "LEARNING_URLS_FILE", learning_file),
-                mock.patch.object(workflows, "EXAM_URLS_FILE", exam_file),
+                mock.patch.object(manual, "LEARNING_URLS_FILE", learning_file),
+                mock.patch.object(manual, "EXAM_URLS_FILE", exam_file),
                 mock.patch.object(
-                    workflows,
+                    manual,
                     "create_browser_context",
                     side_effect=AssertionError("不应自建浏览器"),
                 ),
                 mock.patch.object(
-                    workflows,
+                    manual,
                     "is_controller_page",
                     return_value=False,
                 ),
             ):
-                result = await workflows.collect_learning_links_from_entry_urls(
+                result = await manual.collect_learning_links_from_entry_urls(
                     ["https://example.com/entry"],
                     context=fake_context,
                 )

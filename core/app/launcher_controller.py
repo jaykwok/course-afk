@@ -41,16 +41,16 @@ def _begin_operation(ui, title: str, message: str) -> None:
 
 def _ensure_exam_urls_for_ai_exam(ui) -> bool:
     from core.auth.access import require_task_account
+
     require_task_account()
     from core.config import EXAM_URLS_FILE, MANUAL_EXAM_FILE
-    from core.exam.routing import requeue_ai_exam_reviews
     from core.queues.exam import append_exam_url, read_exam_urls
     from core.links import extract_urls_from_text
 
-    restored = requeue_ai_exam_reviews(exam_file=EXAM_URLS_FILE, manual_exam_file=MANUAL_EXAM_FILE)
-    if restored:
-        ui.show_info(f"已恢复 {restored} 条旧人工待办为 AI 补答，自动交卷关闭")
+    from core.queues.manual_exam import read_manual_exam_queue
+
     existing_urls = read_exam_urls(EXAM_URLS_FILE)
+    existing_urls += [entry.url for entry in read_manual_exam_queue(MANUAL_EXAM_FILE)]
     if existing_urls:
         return True
 
@@ -85,34 +85,6 @@ def _ensure_exam_urls_for_ai_exam(ui) -> bool:
     return total_count > 0
 
 
-def _maybe_delete_empty_learning_queue_file(ui) -> None:
-    from core.config import LEARNING_URLS_FILE
-    from core.file_ops import del_file
-    from core.queues.learning import read_learning_urls
-
-    if not LEARNING_URLS_FILE.exists():
-        return
-    if read_learning_urls(LEARNING_URLS_FILE):
-        return
-
-    del_file(LEARNING_URLS_FILE)
-    ui.show_success("已删除空的课程链接.json")
-
-
-def _maybe_delete_empty_exam_queue_file(ui) -> None:
-    from core.config import EXAM_URLS_FILE
-    from core.queues.exam import read_exam_urls
-    from core.file_ops import del_file
-
-    if not EXAM_URLS_FILE.exists():
-        return
-    if read_exam_urls(EXAM_URLS_FILE):
-        return
-
-    del_file(EXAM_URLS_FILE)
-    ui.show_success("已删除空的考试链接.json")
-
-
 def choose_learning_zone_mode(learning_zone_urls, prompt_choice_func) -> str:
     if not learning_zone_urls:
         return "manual"
@@ -136,7 +108,7 @@ def handle_refresh_credential(state, ui, *, switch_account: bool = False) -> Non
     title = "更换登录账号" if switch_account else "更新登录凭证"
     _begin_operation(ui, title, "正在打开新的登录窗口，请完成登录")
     try:
-        profile = run_async(refresh_credential(status_callback=ui.show_info, confirm_same_account=lambda old, new: ui.prompt_yes_no(f"已有 {old} 的待办；请确认当前登录的 {new} 是同一账号，或明确接管这些待办。", default="N")))
+        profile = run_async(refresh_credential(status_callback=ui.show_info))
     except LoginNotCompletedError as exc:
         ui.show_warning(str(exc))
         ui.pause()
@@ -160,16 +132,38 @@ def handle_account_management(state, ui) -> None:
 
 
 def handle_show_login_state(state, ui) -> None:
-    from core.auth.credential import load_credential_metadata, load_pending_owner_metadata
+    from core.auth.credential import (
+        load_credential_metadata,
+        load_pending_owner_metadata,
+    )
 
     metadata = load_credential_metadata()
     owner = load_pending_owner_metadata()
-    status = "未登录" if not state.has_credential else "已过期，请重新登录" if state.credential_expired else "有效"
-    rows = [("登录状态", status), ("当前账号", metadata.account_label if metadata and state.has_credential else "未登录")]
+    status = (
+        "未登录"
+        if not state.has_credential
+        else "已过期，请重新登录"
+        if state.credential_expired
+        else "有效"
+    )
+    rows = [
+        ("登录状态", status),
+        (
+            "当前账号",
+            metadata.account_label if metadata and state.has_credential else "未登录",
+        ),
+    ]
     if metadata and state.has_credential:
-        rows.extend([("保存时间", metadata.saved_at), ("到期时间", metadata.expires_at)])
+        rows.extend(
+            [("保存时间", metadata.saved_at), ("到期时间", metadata.expires_at)]
+        )
     if owner:
-        rows.append(("待办归属账号", owner.account_label or owner.account_name or owner.account_display_name))
+        rows.append(
+            (
+                "待办归属账号",
+                owner.account_label or owner.account_name or owner.account_display_name,
+            )
+        )
     ui.show_summary("本地登录状态", rows)
     ui.pause()
 
@@ -183,11 +177,24 @@ def handle_clear_credentials(state, ui) -> None:
         ui.pause()
         return
     metadata = load_credential_metadata()
-    pending = any((state.learning_count, state.learning_failure_count, state.exam_count, state.manual_exam_count))
-    rows = [("当前账号", metadata.account_label if metadata else "未登录或凭据异常"), ("清空内容", "本地 Cookie 与登录信息"), ("保留内容", "课程、失败记录、考试待办、考试历史及资料")]
+    pending = any(
+        (
+            state.learning_count,
+            state.learning_failure_count,
+            state.exam_count,
+            state.manual_exam_count,
+        )
+    )
+    rows = [
+        ("当前账号", metadata.account_label if metadata else "未登录或凭据异常"),
+        ("清空内容", "本地 Cookie 与登录信息"),
+        ("保留内容", "课程、失败记录、考试待办、考试历史及资料"),
+    ]
     if pending:
         rows.append(("待办归属", "保留所属账号，重新登录仍会核对归属"))
-    if not ui.prompt_summary_confirmation("清空本地登录凭据", rows, "确认清空？下次操作需要重新登录。", default="N"):
+    if not ui.prompt_summary_confirmation(
+        "清空本地登录凭据", rows, "确认清空？下次操作需要重新登录。", default="N"
+    ):
         ui.show_info("已取消清空登录凭据")
         return
     try:
@@ -215,7 +222,12 @@ def handle_show_learning_links(learning_urls_file, ui) -> None:
 
 
 def handle_clear_links(ui, *, include_exams: bool = False) -> None:
-    from core.queues.manage import clear_link_queues, link_queue_paths, queue_record_count, snapshot_link_queues
+    from core.queues.manage import (
+        clear_link_queues,
+        link_queue_paths,
+        queue_record_count,
+        snapshot_link_queues,
+    )
 
     try:
         snapshot = snapshot_link_queues(include_exams)
@@ -223,15 +235,23 @@ def handle_clear_links(ui, *, include_exams: bool = False) -> None:
         ui.show_error(f"无法读取待办，尚未清空：{exc}")
         ui.pause()
         return
-    counts = {label: queue_record_count(snapshot[path]) for label, path in link_queue_paths(include_exams).items()}
+    counts = {
+        label: queue_record_count(snapshot[path])
+        for label, path in link_queue_paths(include_exams).items()
+    }
     if all(count == 0 for count in counts.values()):
         ui.show_info("所选范围内没有待办或失败记录，无需清空")
         ui.pause()
         return
     title = "清空全部待办" if include_exams else "清空课程及失败记录"
-    rows = [(label, str(count) if count is not None else "文件格式异常，仍可备份并清空") for label, count in counts.items()]
+    rows = [
+        (label, str(count) if count is not None else "文件格式异常，仍可备份并清空")
+        for label, count in counts.items()
+    ]
     rows.append(("保留内容", "登录凭证、考试提交历史、已保存的课程资料"))
-    if not ui.prompt_summary_confirmation(title, rows, "确认清空以上记录？清空前会自动保存备份。", default="N"):
+    if not ui.prompt_summary_confirmation(
+        title, rows, "确认清空以上记录？清空前会自动保存备份。", default="N"
+    ):
         ui.show_info("已取消清空，待办保持不变")
         return
     try:
@@ -240,16 +260,24 @@ def handle_clear_links(ui, *, include_exams: bool = False) -> None:
         ui.show_error(str(exc))
         ui.pause()
         return
-    ui.show_summary("清空完成", [(label, "已清空") for label in result.counts] + [("备份位置", str(result.backup_dir))])
+    ui.show_summary(
+        "清空完成",
+        [(label, "已清空") for label in result.counts]
+        + [("备份位置", str(result.backup_dir))],
+    )
     ui.pause()
 
 
-def handle_task_management(exam_urls_file, learning_urls_file, manual_exam_file, ui) -> None:
+def handle_task_management(
+    exam_urls_file, learning_urls_file, manual_exam_file, ui
+) -> None:
     from core.app.menus import TASK_MENU_OPTIONS
 
     choice = ui.prompt_choice("任务管理", TASK_MENU_OPTIONS)
     if choice == 1:
-        handle_show_output_state(exam_urls_file, learning_urls_file, manual_exam_file, ui)
+        handle_show_output_state(
+            exam_urls_file, learning_urls_file, manual_exam_file, ui
+        )
     elif choice == 2:
         handle_show_learning_links(learning_urls_file, ui)
     elif choice == 3:
@@ -259,8 +287,14 @@ def handle_task_management(exam_urls_file, learning_urls_file, manual_exam_file,
 
 
 def handle_manual_selection(prompts, ui) -> None:
+    from core.auth.access import require_task_account
+
+    require_task_account()
     from core.links import split_manual_selection_urls
-    from core.app.workflows import parse_manual_selection_input, run_manual_course_selection
+    from core.app.workflows import (
+        parse_manual_selection_input,
+        run_manual_course_selection,
+    )
 
     try:
         input_text = ui.prompt_multiline_input(prompts)
@@ -333,11 +367,13 @@ def handle_manual_selection(prompts, ui) -> None:
 
 
 def handle_afk(ui) -> None:
+    from core.auth.access import require_task_account
+
+    require_task_account()
     from core.app.workflows import run_afk_workflow
 
     _begin_operation(ui, "课程学习", "正在打开浏览器并处理课程队列")
     has_exam = run_async(run_afk_workflow(status_callback=ui.show_info))
-    _maybe_delete_empty_learning_queue_file(ui)
     if has_exam:
         ui.show_success("挂课完成，并检测到考试链接")
     else:
@@ -346,6 +382,9 @@ def handle_afk(ui) -> None:
 
 
 def handle_ai_exam(ui) -> None:
+    from core.auth.access import require_task_account
+
+    require_task_account()
     from core.config import is_ai_configured
     from core.exam.answers import ExamAiConfigurationError
     from core.app.workflows import run_ai_exam_workflow
@@ -364,7 +403,9 @@ def handle_ai_exam(ui) -> None:
 
     auto_submit = ui.prompt_yes_no("AI考试是否自动交卷？", default="N")
     if auto_submit:
-        ui.show_info("本轮开启自动交卷；次数不足、续答或答案未确认等情况仅对当前考试改为人工交卷")
+        ui.show_info(
+            "本轮开启自动交卷；次数不足、续答或答案未确认等情况仅对当前考试改为人工交卷"
+        )
     _begin_operation(ui, "AI 自动考试", "正在打开浏览器并处理考试队列")
     try:
         manual_count = run_async(
@@ -377,7 +418,6 @@ def handle_ai_exam(ui) -> None:
         ui.show_error(str(exc))
         ui.pause()
         return
-    _maybe_delete_empty_exam_queue_file(ui)
     if manual_count:
         ui.show_warning(f"AI 自动考试结束，待复查考试 {manual_count} 条")
     else:
@@ -386,6 +426,9 @@ def handle_ai_exam(ui) -> None:
 
 
 def handle_reference_collection(ui) -> None:
+    from core.auth.access import require_task_account
+
+    require_task_account()
     from core.links import extract_urls_from_text
     from core.app.workflows import run_reference_collection_workflow
 
@@ -438,7 +481,9 @@ def handle_reference_collection(ui) -> None:
     ui.pause()
 
 
-def handle_show_output_state(exam_urls_file, learning_urls_file, manual_exam_file, ui) -> None:
+def handle_show_output_state(
+    exam_urls_file, learning_urls_file, manual_exam_file, ui
+) -> None:
     from core.config import LEARNING_FAILURES_FILE
     from core.queues.exam import read_exam_urls
     from core.queues.learning import (
@@ -456,9 +501,7 @@ def handle_show_output_state(exam_urls_file, learning_urls_file, manual_exam_fil
     failures_file = LEARNING_FAILURES_FILE
     pruned = prune_invalid_learning_failures(file_path=failures_file)
     if pruned:
-        ui.show_success(
-            f"已清理 {len(pruned)} 条无效失败链接（不合规 URL）"
-        )
+        ui.show_success(f"已清理 {len(pruned)} 条无效失败链接（不合规 URL）")
 
     failures = read_learning_failures(file_path=failures_file)
     rows: list[tuple[str, str]] = [
@@ -470,9 +513,7 @@ def handle_show_output_state(exam_urls_file, learning_urls_file, manual_exam_fil
     retriable_n = sum(
         1 for e in failures if e.reason in RETRIABLE_LEARNING_FAILURE_REASONS
     )
-    manual_n = sum(
-        1 for e in failures if e.reason in MANUAL_LEARNING_FAILURE_REASONS
-    )
+    manual_n = sum(1 for e in failures if e.reason in MANUAL_LEARNING_FAILURE_REASONS)
     denied_n = sum(
         1 for e in failures if e.reason in ACCESS_DENIED_LEARNING_FAILURE_REASONS
     )
