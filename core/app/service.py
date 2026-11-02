@@ -26,6 +26,7 @@ _STATUS_LABELS = {
 
 class ApplicationService:
     def __init__(self, host=None):
+        self._require_credentials = host is None
         if host is None:
             from core.auth.access import require_task_account
             from core.workflow.host import get_host
@@ -37,6 +38,10 @@ class ApplicationService:
     def require_account(self):
         from core.auth.access import CredentialUnavailableError
 
+        if self._require_credentials:
+            from core.auth.access import require_task_account
+
+            require_task_account()
         account = self.host.identity_provider()
         if not account or account == "unbound":
             raise CredentialUnavailableError("缺少可验证的账号标识，请先更新登录凭证")

@@ -16,6 +16,22 @@ from core.tasks.identity import account_id
 
 
 class StartupAccessTests(unittest.IsolatedAsyncioTestCase):
+    async def test_expired_credentials_are_rechecked_before_planning_tasks(self):
+        from core.app.service import ApplicationService
+        from tests.workflow_harness import ActivityHost
+
+        with TemporaryDirectory() as tmp:
+            host = ActivityHost(tmp, {})
+            with patch("core.workflow.host.get_host", return_value=host), patch(
+                "core.auth.access.require_task_account",
+                side_effect=["test-account", CredentialUnavailableError("凭证已过期")],
+            ):
+                service = ApplicationService()
+                with self.assertRaises(CredentialUnavailableError):
+                    await service.batch(["https://example.invalid/course"], "learn")
+            self.assertEqual(host.repository.export()["tasks"], [])
+            self.assertEqual(host.repository.export()["runs"], [])
+
     async def test_authenticated_account_can_add_links_without_browser_or_orphan_tasks(
         self,
     ):
