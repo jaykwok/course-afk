@@ -20,24 +20,21 @@ class AccountFixture(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.cookies = self.root/'credentials/cookies.json'
-        self.legacy = self.root/'credentials/credential_meta.json'
         self.cookies.parent.mkdir()
         self.metadata = {'saved_at':'2026-10-20T10:00:00+08:00','expires_at':'2099-12-31T10:00:00+08:00','account_name':'account-a','account_display_name':'测试甲','account_label':'测试甲（account-a）'}
         self.bundle = {'version':1,'cookies':[{'name':'authorization','value':'test-only-cookie-value'}], 'metadata':self.metadata}
         self.cookies.write_text(json.dumps(self.bundle), encoding='utf-8')
-        self.legacy.write_text(json.dumps(self.metadata), encoding='utf-8')
         self.original = self.cookies.read_bytes()
-        self.enterContext(patch.multiple(config, COOKIES_FILE=self.cookies, CREDENTIAL_META_FILE=self.legacy))
-        self.enterContext(patch.multiple(credential, COOKIES_FILE=self.cookies, CREDENTIAL_META_FILE=self.legacy))
+        self.enterContext(patch.multiple(config, COOKIES_FILE=self.cookies))
+        self.enterContext(patch.multiple(credential, COOKIES_FILE=self.cookies))
         self.pending = ProjectState(True, False, 1, 1, 1, 1)
 
 
 class ClearCredentialTests(AccountFixture):
-    def test_clear_removes_all_credentials_and_legacy_metadata_but_preserves_pending_owner(self):
+    def test_clear_removes_credentials_but_preserves_pending_owner(self):
         self.assertTrue(clear_local_credentials(preserve_pending_owner=True))
         self.assertEqual(load_cookies(self.cookies), [])
         self.assertIsNone(load_credential_metadata())
-        self.assertFalse(self.legacy.exists())
         self.assertNotIn('test-only-cookie-value', self.cookies.read_text())
         self.assertEqual(load_pending_owner_metadata().account_name, 'account-a')
         self.assertEqual(list(self.cookies.parent.iterdir()), [self.cookies])
@@ -48,18 +45,12 @@ class ClearCredentialTests(AccountFixture):
         self.assertIsNone(load_pending_owner_metadata())
         self.assertIsNone(load_credential_metadata())
 
-    def test_legacy_cookie_array_uses_legacy_metadata_only_for_pending_owner(self):
-        self.cookies.write_text(json.dumps(self.bundle['cookies']), encoding='utf-8')
-        clear_local_credentials(preserve_pending_owner=True)
-        self.assertEqual(load_pending_owner_metadata().account_name, 'account-a')
-        self.assertEqual(load_cookies(self.cookies), [])
 
     def test_write_failure_keeps_original_credentials(self):
         with patch('core.auth.credential.write_json_atomic', side_effect=OSError('disk full')):
             with self.assertRaises(OSError):
                 clear_local_credentials(preserve_pending_owner=True)
         self.assertEqual(self.cookies.read_bytes(), self.original)
-        self.assertTrue(self.legacy.exists())
 
     def test_clearing_does_not_bypass_pending_account_guard(self):
         clear_local_credentials(preserve_pending_owner=True)

@@ -161,7 +161,7 @@ class WorkflowHost:
             account = self.identity_provider()
             if account == "unbound":
                 raise ValueError(
-                    "缺少可验证的账号标识，请先更新登录凭证；旧数据可用迁移工具明确关联"
+                    "缺少可验证的账号标识，请先更新登录凭证"
                 )
             entry = parse_entry(
                 url, account, kind="references" if kind == "references" else None

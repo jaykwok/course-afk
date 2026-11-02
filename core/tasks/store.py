@@ -1,12 +1,7 @@
-"""Compatibility projections over TaskRepository, never a second JSON queue.
-
-JSON files are imported once (or explicitly), then exported as readable
-snapshots. Queue membership and history are always read from SQLite.
-"""
+"""SQLite queue and history storage with readable JSON output snapshots."""
 
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 
@@ -27,63 +22,7 @@ def repository_for(path: Path) -> TaskRepository:
     return TaskRepository(directory / "state.sqlite")
 
 
-def _read_source(path: Path):
-    try:
-        raw = path.read_bytes()
-    except FileNotFoundError:
-        return [], "missing"
-    if not raw.strip():
-        return [], hashlib.sha256(raw).hexdigest()
-    value = json.loads(raw.decode("utf-8-sig"))
-    if not isinstance(value, list):
-        raise ValueError(f"队列必须是 JSON 数组: {path.name}")
-    return value, hashlib.sha256(raw).hexdigest()
-
-
-def import_queue(
-    path: Path,
-    *,
-    account="unbound",
-    force=False,
-    db=None,
-    repository=None,
-    expected_fingerprint=None,
-):
-    path = Path(path).resolve()
-    repo = repository or repository_for(path)
-    if db is None:
-        with repo.connect() as connection:
-            return import_queue(
-                path,
-                account=account,
-                force=force,
-                db=connection,
-                repository=repo,
-                expected_fingerprint=expected_fingerprint,
-            )
-    source = str(path)
-    previous = db.execute(
-        "SELECT fingerprint FROM imports WHERE source=?", (source,)
-    ).fetchone()
-    if previous and not force:
-        return
-    rows, fingerprint = _read_source(path)
-    if expected_fingerprint is not None and fingerprint != expected_fingerprint:
-        raise RuntimeError("迁移期间源文件发生变化，导入事务已回滚")
-    if any(
-        not isinstance(row, dict)
-        or not isinstance(row.get("url"), str)
-        or not row["url"].strip()
-        for row in rows
-    ):
-        raise ValueError(f"队列含无法识别的条目，源文件保留: {path.name}")
-    _replace(repo, db, path.name, rows, account, merge=True)
-    db.execute(
-        "INSERT OR REPLACE INTO imports VALUES(?,?,?)", (source, fingerprint, now())
-    )
-
-
-def _replace(repo, db, collection, rows, account, *, merge=False):
+def _replace(repo, db, collection, rows, account):
     previous = list(
         db.execute(
             "SELECT task_id,item_key,q.payload,t.identity FROM queue_items q JOIN tasks t USING(task_id) WHERE collection=? AND t.account=?",
@@ -94,11 +33,10 @@ def _replace(repo, db, collection, rows, account, *, merge=False):
         (r["task_id"], r["item_key"]): json.loads(r["payload"]) for r in previous
     }
     changed = set()
-    if not merge:
-        db.execute(
-            "DELETE FROM queue_items WHERE collection=? AND task_id IN (SELECT task_id FROM tasks WHERE account=?)",
-            (collection, account),
-        )
+    db.execute(
+        "DELETE FROM queue_items WHERE collection=? AND task_id IN (SELECT task_id FROM tasks WHERE account=?)",
+        (collection, account),
+    )
     retained_issues = set()
     for index, row in enumerate(rows):
         if not isinstance(row, dict) or not row.get("url"):
@@ -125,7 +63,7 @@ def _replace(repo, db, collection, rows, account, *, merge=False):
             "SELECT payload FROM queue_items WHERE collection=? AND task_id=? AND item_key=?",
             (collection, task_id, item_key),
         ).fetchone()
-        # Merge duplicate aliases inside an import and preserve sticky protection.
+        # Merge duplicate aliases inside a queue write and preserve sticky protection.
         previous_payload = existing.get((task_id, item_key), {})
         payload = merge_queue(
             merge_queue(previous_payload, json.loads(old[0]) if old else {}), payload
@@ -197,25 +135,24 @@ def _replace(repo, db, collection, rows, account, *, merge=False):
                 source="course_source",
                 evidence={"url": entry.url},
             )
-    if not merge:
-        for previous_item in previous:
-            if previous_item["item_key"] == "queue":
-                continue
-            identity = json.loads(previous_item["identity"])
-            issue = TaskKey(
-                identity["tenant"],
-                account,
-                "url_review"
-                if previous_item["item_key"].startswith("url_type_pending:")
-                else "issue",
-                previous_item["task_id"] + ":" + previous_item["item_key"],
-            ).task_id
-            if issue not in retained_issues:
-                changed.add(issue)
-                db.execute(
-                    "UPDATE tasks SET status='COMPLETED',updated_at=? WHERE task_id=?",
-                    (now(), issue),
-                )
+    for previous_item in previous:
+        if previous_item["item_key"] == "queue":
+            continue
+        identity = json.loads(previous_item["identity"])
+        issue = TaskKey(
+            identity["tenant"],
+            account,
+            "url_review"
+            if previous_item["item_key"].startswith("url_type_pending:")
+            else "issue",
+            previous_item["task_id"] + ":" + previous_item["item_key"],
+        ).task_id
+        if issue not in retained_issues:
+            changed.add(issue)
+            db.execute(
+                "UPDATE tasks SET status='COMPLETED',updated_at=? WHERE task_id=?",
+                (now(), issue),
+            )
     repo.refresh_ancestors(changed, db=db)
     # A queue removal never supplies completion evidence. Outcomes own status.
     return previous
@@ -224,7 +161,6 @@ def _replace(repo, db, collection, rows, account, *, merge=False):
 def read_queue(path: Path) -> list:
     path = Path(path).resolve()
     repo = repository_for(path)
-    import_queue(path, repository=repo)
     with repo.connect() as db:
         return [
             json.loads(row[0])
@@ -238,7 +174,6 @@ def read_queue(path: Path) -> list:
 def write_queue(path: Path, rows: list, *, keep_file=True):
     path = Path(path).resolve()
     repo = repository_for(path)
-    import_queue(path, repository=repo)
     with repo.connect() as db:
         _replace(repo, db, path.name, rows, account_id())
     # Export after commit: interrupted export cannot roll back committed state.
@@ -250,9 +185,6 @@ def write_queue(path: Path, rows: list, *, keep_file=True):
 
 def read_history(path: Path) -> dict:
     repo = repository_for(path)
-    from core.tasks.migration import import_history
-
-    import_history(repo, Path(path).with_name("exam-history.json"))
     with repo.connect() as db:
         return {
             "version": 2,

@@ -125,7 +125,6 @@ def choose_learning_zone_mode(learning_zone_urls, prompt_choice_func) -> str:
     return "auto" if choice == 1 else "manual"
 
 
-
 def handle_refresh_credential(state, ui, *, switch_account: bool = False) -> None:
     from core.auth.login import LoginNotCompletedError
     from core.app.workflows import refresh_credential
@@ -174,16 +173,16 @@ def handle_show_login_state(state, ui) -> None:
 
 
 def handle_clear_credentials(state, ui) -> None:
-    from core.config import COOKIES_FILE, CREDENTIAL_META_FILE
+    from core.config import COOKIES_FILE
     from core.auth.credential import clear_local_credentials, load_credential_metadata
 
-    if not COOKIES_FILE.exists() and not CREDENTIAL_META_FILE.exists():
+    if not COOKIES_FILE.exists():
         ui.show_info("当前没有本地登录凭据")
         ui.pause()
         return
     metadata = load_credential_metadata()
     pending = any((state.learning_count, state.learning_failure_count, state.exam_count, state.manual_exam_count))
-    rows = [("当前账号", metadata.account_label if metadata else "未登录或凭据异常"), ("清空内容", "本地 Cookie、登录信息与遗留登录元数据"), ("保留内容", "课程、失败记录、考试待办、考试历史及资料")]
+    rows = [("当前账号", metadata.account_label if metadata else "未登录或凭据异常"), ("清空内容", "本地 Cookie 与登录信息"), ("保留内容", "课程、失败记录、考试待办、考试历史及资料")]
     if pending:
         rows.append(("待办归属", "保留所属账号，重新登录仍会核对归属"))
     if not ui.prompt_summary_confirmation("清空本地登录凭据", rows, "确认清空？下次操作需要重新登录。", default="N"):

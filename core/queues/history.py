@@ -65,9 +65,9 @@ def pending_submission(url: str, queue_file: Path, *, account: str = "unbound") 
     submission = entry.get("submissions", {}).get(account)
     repo = repository_for(queue_file)
     pending = repo.pending_intents(parse_entry(url, account).key.task_id, "submit")
-    legacy = [s for s in entry.get("legacy_submissions", []) if s.get("account")==account and s.get("state")=="unverified"]
-    if pending or legacy or isinstance(submission, dict) and submission.get("state") == "unverified":
-        return {**(submission or {}), "state": "unverified", "intents": pending, "legacy": legacy}
+    additional = [s for s in entry.get("additional_submissions", []) if s.get("account")==account and s.get("state")=="unverified"]
+    if pending or additional or isinstance(submission, dict) and submission.get("state") == "unverified":
+        return {**(submission or {}), "state": "unverified", "intents": pending, "additional": additional}
     return None
 
 

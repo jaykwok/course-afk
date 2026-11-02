@@ -48,5 +48,5 @@ class ExamPolicy:
             permit.url, permit.queue_file, account=permit.account
         )
         ids = tuple(i["action_id"] for i in (pending or {}).get("intents", []))
-        if len(ids) != 1 or ids != permit.action_ids or (pending or {}).get("legacy"):
+        if len(ids) != 1 or ids != permit.action_ids or (pending or {}).get("additional"):
             raise UserCancelRequested("交卷意图发生变化或存在未确认记录，禁止重复交卷")

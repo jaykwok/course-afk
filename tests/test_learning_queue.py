@@ -119,28 +119,6 @@ class LearningQueueTests(unittest.TestCase):
 
             self.assertFalse(failures_file.exists())
 
-    def test_read_learning_queue_rejects_legacy_text_file(self):
-        from core.queues.learning import read_learning_queue
-
-        with TemporaryDirectory() as tmp:
-            learning_file = Path(tmp) / "learning.json"
-            learning_file.write_text("https://example.com/course/1\n", encoding="utf-8")
-
-            with self.assertRaises(ValueError):
-                read_learning_queue(file_path=learning_file)
-
-    def test_read_learning_failures_rejects_non_list_json(self):
-        from core.queues.learning import read_learning_failures
-
-        with TemporaryDirectory() as tmp:
-            failures_file = Path(tmp) / "failures.json"
-            failures_file.write_text(
-                json.dumps({"url": "https://example.com/course/1"}),
-                encoding="utf-8",
-            )
-
-            with self.assertRaises(ValueError):
-                read_learning_failures(file_path=failures_file)
 
     def test_group_and_requeue_retryable_learning_failures(self):
         from core.queues.learning import (

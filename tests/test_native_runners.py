@@ -7,7 +7,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import AsyncMock, patch
 
-
+from core.tasks.store import write_queue
 
 
 def _model_config(
@@ -39,10 +39,7 @@ def _exam_entries(urls, failed_model_configs_by_url=None):
 
 
 def _write_exam_queue_fixture(file_path, urls, failed_model_configs_by_url=None):
-    file_path.write_text(
-        json.dumps(_exam_entries(urls, failed_model_configs_by_url), ensure_ascii=False),
-        encoding="utf-8",
-    )
+    write_queue(file_path, _exam_entries(urls, failed_model_configs_by_url))
 
 
 def _read_exam_queue_urls(file_path):
@@ -65,12 +62,9 @@ def _manual_entries(urls, reason="manual_pending", failed_model_configs_by_url=N
 
 
 def _write_manual_exam_queue_fixture(file_path, urls, failed_model_configs_by_url=None):
-    file_path.write_text(
-        json.dumps(
-            _manual_entries(urls, failed_model_configs_by_url=failed_model_configs_by_url),
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
+    write_queue(
+        file_path,
+        _manual_entries(urls, failed_model_configs_by_url=failed_model_configs_by_url),
     )
 
 
@@ -83,10 +77,7 @@ def _learning_entries(urls):
 
 
 def _write_learning_queue_fixture(file_path, urls):
-    file_path.write_text(
-        json.dumps(_learning_entries(urls), ensure_ascii=False),
-        encoding="utf-8",
-    )
+    write_queue(file_path, _learning_entries(urls))
 
 
 def _read_learning_queue_urls(file_path):
@@ -168,18 +159,6 @@ class AfkBatchPreparationTests(unittest.TestCase):
 
             self.assertEqual(batch.urls, [course])
             self.assertEqual(_read_learning_queue_urls(learning_file), [course])
-
-    def test_prepare_afk_batch_rejects_legacy_text_learning_file(self):
-        from core.learning.afk_runner import prepare_afk_batch
-
-        with TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            learning_file = root / "learning.json"
-
-            learning_file.write_text("https://c.example.com/3\n", encoding="utf-8")
-
-            with self.assertRaises(ValueError):
-                prepare_afk_batch(learning_file=learning_file)
 
 
 class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
@@ -1013,7 +992,6 @@ class AiExamRunnerTests(unittest.IsolatedAsyncioTestCase):
                 page, page.url, require_entry_dom=False,
             ))
         dom_ready.assert_not_awaited()
-
 
 
 class RunAsyncInterruptionTests(unittest.TestCase):

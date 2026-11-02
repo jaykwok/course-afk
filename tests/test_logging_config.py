@@ -24,7 +24,6 @@ class LoggingConfigTests(unittest.TestCase):
             LOGS_DIR=logs_dir,
             REFERENCE_OUTPUT_DIR=references_dir,
             COOKIES_FILE=credentials_dir / "cookies.json",
-            CREDENTIAL_META_FILE=credentials_dir / "credential_meta.json",
             LEARNING_URLS_FILE=links_dir / "课程链接.json",
             LEARNING_FAILURES_FILE=links_dir / "挂课失败链接.json",
             EXAM_URLS_FILE=links_dir / "考试链接.json",

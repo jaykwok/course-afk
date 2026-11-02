@@ -1,7 +1,6 @@
 """Behavior regressions R1-R9 from the post-implementation audit."""
 
 from contextlib import asynccontextmanager
-import hashlib
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -12,7 +11,7 @@ from unittest.mock import AsyncMock, patch
 from core.abort import BrowserCertificateError
 from core.discovery.contracts import CollectionResult
 from core.tasks.identity import parse_entry
-from core.tasks.repository import TaskRepository, now
+from core.tasks.repository import TaskRepository
 from core.tasks.relations import record_discovered_tasks
 from core.tasks.store import repository_for
 from core.queues.learning import (
@@ -129,8 +128,7 @@ class StateRegressions(unittest.TestCase):
             [],
         )
 
-    def test_R2_alias_import_unions_failures_and_sticky_manual_protection(self):
-        from core.tasks.migration import migrate
+    def test_R2_alias_writes_unions_failures_and_sticky_manual_protection(self):
         from core.queues.exam import requires_manual_submission, write_exam_urls
 
         rows = [
@@ -144,9 +142,10 @@ class StateRegressions(unittest.TestCase):
                 "ai_failed_model_configs": [{"model": "B", "account": ACCOUNT}],
             },
         ]
-        self.exams.write_text(json.dumps(rows), encoding="utf-8")
-        migrate(self.root, self.repo, account=ACCOUNT)
-        migrate(self.root, self.repo, account=ACCOUNT)
+        from core.tasks.store import write_queue
+
+        write_queue(self.exams, rows)
+        write_queue(self.exams, rows)
         self.assertEqual(len(read_exam_queue(self.exams)), 1)
         for model in ("A", "B"):
             self.assertTrue(
@@ -220,120 +219,6 @@ class StateRegressions(unittest.TestCase):
         self.assertEqual(
             json.loads(self.repo.task(parent)["outcome"])["reason_codes"], []
         )
-
-    def test_R1_R2_existing_state_repair_is_backed_up_additive_and_idempotent(self):
-        from core.tasks.repair import repair_state
-
-        parent = self.task(COURSE)
-        foreign = self.task(OTHER)
-        exam = self.task(OTHER_EXAM)
-        self.task(EXAM)
-        original = self.repo.intent(parent, "submit", {"record_id": "source"})
-        copied = hashlib.sha256((original["action_id"] + exam).encode()).hexdigest()
-        rows = [
-            {
-                "url": EXAM.replace("answer-paper", "exam-detail"),
-                "ai_failed_model_configs": [{"model": "lost", "account": ACCOUNT}],
-            },
-            {
-                "url": EXAM,
-                "ai_failed_model_configs": [{"model": "survived", "account": ACCOUNT}],
-            },
-        ]
-        backup = self.repo.path.parent / "backups/original"
-        backup.mkdir(parents=True)
-        raw = json.dumps(rows).encode()
-        (backup / "考试链接.json").write_bytes(raw)
-        with self.repo.connect() as db:
-            for child in (foreign, exam):
-                db.execute("INSERT INTO task_edges VALUES(?,?,1)", (parent, child))
-            db.execute(
-                "INSERT INTO action_intents VALUES(?,?,?,'unverified',?,NULL,?)",
-                (copied, exam, "submit", original["baseline"], now()),
-            )
-            db.execute(
-                "INSERT INTO imports VALUES(?,?,?)",
-                (str(self.exams.resolve()), hashlib.sha256(raw).hexdigest(), now()),
-            )
-        report = repair_state(self.repo, self.root, apply=True)
-        self.assertEqual(report["quarantined_edges"], 2)
-        self.assertEqual(report["quarantined_intents"], 1)
-        self.assertTrue(Path(report["backup"]).exists())
-        self.assertEqual(self.repo.children(parent), [])
-        self.assertEqual(len(self.repo.pending_intents(parent, "submit")), 1)
-        self.assertEqual(self.repo.task(parent)["status"], "NEEDS_REVIEW")
-        self.assertEqual(self.repo.pending_intents(exam, "submit"), [])
-        self.assertTrue(
-            has_ai_failed_model_config(
-                EXAM, {"model": "lost", "account": ACCOUNT}, file_path=self.exams
-            )
-        )
-        from core.queues.exam import requires_manual_submission
-
-        self.assertTrue(requires_manual_submission(OTHER_EXAM, file_path=self.exams))
-        self.assertEqual(
-            repair_state(self.repo, self.root, apply=True), {"already_repaired": True}
-        )
-
-    def test_repair_failure_rolls_back_and_keeps_backup_for_retry(self):
-        from core.tasks import repair
-
-        parent = self.task(COURSE)
-        foreign = self.task(OTHER)
-        with self.repo.connect() as db:
-            db.execute("INSERT INTO task_edges VALUES(?,?,1)", (parent, foreign))
-        with patch.object(
-            self.repo, "refresh_ancestors", side_effect=OSError("simulated disk full")
-        ):
-            with self.assertRaises(OSError):
-                repair.repair_state(self.repo, self.root, apply=True)
-        self.assertEqual(len(self.repo.children(parent)), 1)
-        with self.repo.connect() as db:
-            self.assertFalse(
-                db.execute("SELECT 1 FROM schema_migrations WHERE version=2").fetchone()
-            )
-        self.assertTrue(
-            list((self.repo.path.parent / "backups").glob("repair-v2-*/state.sqlite"))
-        )
-        self.assertEqual(
-            repair.repair_state(self.repo, self.root, apply=True)["quarantined_edges"],
-            1,
-        )
-
-    def test_missing_original_can_be_restored_later_without_requeue(self):
-        from core.tasks.repair import repair_state
-
-        self.task(EXAM)
-        raw = json.dumps(
-            [
-                {
-                    "url": EXAM,
-                    "ai_failed_model_configs": [
-                        {"model": "missing", "account": ACCOUNT}
-                    ],
-                }
-            ]
-        ).encode()
-        with self.repo.connect() as db:
-            db.execute(
-                "INSERT INTO imports VALUES(?,?,?)",
-                (str(self.exams.resolve()), hashlib.sha256(raw).hexdigest(), now()),
-            )
-        self.assertEqual(
-            repair_state(self.repo, self.root, apply=True)["missing_source_snapshots"],
-            1,
-        )
-        backup = self.repo.path.parent / "backups/recovered"
-        backup.mkdir(parents=True)
-        (backup / self.exams.name).write_bytes(raw)
-        report = repair_state(self.repo, self.root, apply=True, recheck=True)
-        self.assertEqual(report["missing_source_snapshots"], 0)
-        self.assertTrue(
-            has_ai_failed_model_config(
-                EXAM, {"model": "missing", "account": ACCOUNT}, file_path=self.exams
-            )
-        )
-        self.assertEqual(read_exam_queue(self.exams), [])
 
 
 class ActivityRegressions(unittest.IsolatedAsyncioTestCase):
@@ -498,7 +383,7 @@ class ActivityRegressions(unittest.IsolatedAsyncioTestCase):
             await service.learn()
         self.assertEqual(service.batch.await_args.args[0], [SUBJECT])
 
-    async def test_R4_clear_also_dismisses_legacy_latent_reviews_without_queue_rows(
+    async def test_R4_clear_also_dismisses_latent_reviews_without_queue_rows(
         self,
     ):
         from core.queues.manage import clear_link_queues
@@ -719,7 +604,7 @@ class ActivityRegressions(unittest.IsolatedAsyncioTestCase):
             exams.return_value = CourseExamQueueResult(1, 0, 1, 0)
             self.assertFalse(await flows.course_learning(SimpleNamespace(url=COURSE)))
 
-    async def test_R7_new_exam_evidence_resolves_legacy_media_section_dependency(self):
+    async def test_R7_new_exam_evidence_resolves_media_section_dependency(self):
         from core.learning import flows
         from core.learning.exam_api import CourseExamQueueResult
         from core.learning.course_session import CompletionPolicy

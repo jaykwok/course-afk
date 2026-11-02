@@ -48,8 +48,9 @@ def load_cookies(path) -> list:
         raise PermissionError(
             "无法读取登录凭证文件（可能被网盘/同步软件占用），请关闭相关软件后重试。"
         ) from exc
-    if isinstance(cookies, dict) and cookies.get("version") == 1:
-        cookies = cookies.get("cookies")
+    if not isinstance(cookies, dict) or cookies.get("version") != 1:
+        raise ValueError("登录凭证包格式异常，请重新登录。")
+    cookies = cookies.get("cookies")
     if not isinstance(cookies, list):
         raise ValueError("登录凭证文件格式异常（应为 cookie 列表），请重新登录。")
     return cookies

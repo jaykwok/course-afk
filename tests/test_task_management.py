@@ -4,6 +4,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from core.tasks.store import write_queue
+
 from core import config
 from core.queues.manage import clear_link_queues, link_queue_paths, snapshot_link_queues
 
@@ -24,7 +26,7 @@ class QueueFixture(unittest.TestCase):
         self.addCleanup(self.patch.stop)
         for path in self.paths.values():
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text('[{"url":"https://example.com/1"}]', encoding='utf-8')
+            write_queue(path, [{"url": "https://example.com/1"}])
         self.original = {path: path.read_bytes() for path in self.paths.values()}
         self.history = self.root/'links/exam-history.json'
         self.history.write_text('history', encoding='utf-8')
@@ -57,7 +59,7 @@ class QueueClearTests(QueueFixture):
     def test_cancelled_or_stale_confirmation_does_not_clear(self):
         snapshot = snapshot_link_queues()
         path = self.paths['LEARNING_URLS_FILE']
-        path.write_text('[]')
+        write_queue(path, [])
         with self.assertRaisesRegex(RuntimeError, '发生变化'):
             clear_link_queues(expected_snapshot=snapshot)
         self.assertEqual(self.paths['LEARNING_FAILURES_FILE'].read_bytes(), self.original[self.paths['LEARNING_FAILURES_FILE']])
@@ -91,7 +93,7 @@ class QueueClearTests(QueueFixture):
 
     def test_empty_queues_need_no_backup(self):
         for path in self.paths.values():
-            path.write_bytes(b'[]')
+            write_queue(path, [])
         self.assertIsNone(clear_link_queues(True).backup_dir)
         self.assertFalse((self.root/'backups').exists())
 

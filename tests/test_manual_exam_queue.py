@@ -79,29 +79,6 @@ class ManualExamQueueTests(unittest.TestCase):
             self.assertEqual(entries[0].threshold, 1)
             self.assertEqual(entries[0].ai_failed_model_configs, [MODEL_CONFIG])
 
-    def test_read_manual_exam_queue_rejects_legacy_text_file(self):
-        from core.queues.manual_exam import read_manual_exam_queue
-
-        with TemporaryDirectory() as tmp:
-            manual_file = Path(tmp) / "manual.json"
-            manual_file.write_text("https://example.com/exam/1\n", encoding="utf-8")
-
-            with self.assertRaises(ValueError):
-                read_manual_exam_queue(file_path=manual_file)
-
-    def test_read_manual_exam_queue_rejects_non_list_json(self):
-        from core.queues.manual_exam import read_manual_exam_queue
-
-        with TemporaryDirectory() as tmp:
-            manual_file = Path(tmp) / "manual.json"
-            manual_file.write_text(
-                json.dumps({"url": "https://example.com/exam/1"}),
-                encoding="utf-8",
-            )
-
-            with self.assertRaises(ValueError):
-                read_manual_exam_queue(file_path=manual_file)
-
 
 if __name__ == "__main__":
     unittest.main()

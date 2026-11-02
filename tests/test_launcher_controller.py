@@ -1,8 +1,9 @@
-import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
+
+from core.tasks.store import write_queue
 
 
 class LauncherControllerTests(unittest.TestCase):
@@ -90,7 +91,9 @@ class LauncherControllerTests(unittest.TestCase):
             "manual",
         )
 
-    def test_choose_learning_zone_mode_returns_auto_when_user_selects_first_option(self):
+    def test_choose_learning_zone_mode_returns_auto_when_user_selects_first_option(
+        self,
+    ):
         from core.app.launcher_controller import choose_learning_zone_mode
 
         self.assertEqual(
@@ -101,7 +104,9 @@ class LauncherControllerTests(unittest.TestCase):
             "auto",
         )
 
-    def test_choose_learning_zone_mode_returns_manual_when_user_selects_second_option(self):
+    def test_choose_learning_zone_mode_returns_manual_when_user_selects_second_option(
+        self,
+    ):
         from core.app.launcher_controller import choose_learning_zone_mode
 
         self.assertEqual(
@@ -145,16 +150,9 @@ class LauncherControllerTests(unittest.TestCase):
 
         with TemporaryDirectory() as tmp:
             exam_file = Path(tmp) / "考试链接.json"
-            exam_file.write_text(
-                json.dumps(
-                    [
-                        {
-                            "url": "https://example.com/exam/1",
-                            "ai_failed_model_configs": [],
-                        }
-                    ]
-                ),
-                encoding="utf-8",
+            write_queue(
+                exam_file,
+                [{"url": "https://example.com/exam/1", "ai_failed_model_configs": []}],
             )
             ui = FakeUi()
 
@@ -197,10 +195,7 @@ class LauncherControllerTests(unittest.TestCase):
 
         with TemporaryDirectory() as tmp:
             learning_file = Path(tmp) / "课程链接.json"
-            learning_file.write_text(
-                json.dumps([{"url": "https://example.com/course/1"}]),
-                encoding="utf-8",
-            )
+            write_queue(learning_file, [{"url": "https://example.com/course/1"}])
             ui = FakeUi()
 
             with patch("core.config.LEARNING_URLS_FILE", learning_file):
@@ -237,16 +232,9 @@ class LauncherControllerTests(unittest.TestCase):
 
         with TemporaryDirectory() as tmp:
             exam_file = Path(tmp) / "考试链接.json"
-            exam_file.write_text(
-                json.dumps(
-                    [
-                        {
-                            "url": "https://example.com/exam/1",
-                            "ai_failed_model_configs": [],
-                        }
-                    ]
-                ),
-                encoding="utf-8",
+            write_queue(
+                exam_file,
+                [{"url": "https://example.com/exam/1", "ai_failed_model_configs": []}],
             )
             ui = FakeUi()
             with (
@@ -390,8 +378,7 @@ class LauncherControllerTests(unittest.TestCase):
 
         self.assertTrue(
             any(
-                isinstance(message, str)
-                and "已写入 2 条考试链接" in message
+                isinstance(message, str) and "已写入 2 条考试链接" in message
                 for message in ui.messages
             )
         )
@@ -420,7 +407,9 @@ class LauncherControllerTests(unittest.TestCase):
             def pause(self):
                 self.messages.append("pause")
 
-        state = type("State", (), {"has_credential": False, "credential_expired": True})()
+        state = type(
+            "State", (), {"has_credential": False, "credential_expired": True}
+        )()
         ui = FakeUi()
 
         with patch(
@@ -476,9 +465,7 @@ class LauncherControllerTests(unittest.TestCase):
                     )
                 )
 
-            def prompt_summary_confirmation(
-                self, title, rows, message, *, default
-            ):
+            def prompt_summary_confirmation(self, title, rows, message, *, default):
                 self.confirmation = (title, dict(rows), message, default)
                 return False
 
@@ -614,7 +601,9 @@ class LauncherControllerTests(unittest.TestCase):
 
         with patch(
             "core.app.workflows.run_reference_collection_workflow",
-            new=unittest.mock.AsyncMock(side_effect=ValueError("未识别到有效的知学云学习专区链接")),
+            new=unittest.mock.AsyncMock(
+                side_effect=ValueError("未识别到有效的知学云学习专区链接")
+            ),
         ):
             handle_reference_collection(ui)
 

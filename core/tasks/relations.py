@@ -121,7 +121,3 @@ def _copy_exam_protection(repository, db, parent, child):
             "INSERT OR IGNORE INTO action_intents VALUES(?,?,?,'unverified',?,NULL,?)",
             (action_id, child, "submit", encode(baseline), intent["created_at"]),
         )
-        db.execute(
-            "UPDATE action_intents SET state='unverified',baseline=? WHERE action_id=? AND state='quarantined'",
-            (encode(baseline), action_id),
-        )

@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-from core.storage import serialized, write_text_atomic
+from core.storage import serialized
 
-import json
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 
 from core.config import LEARNING_FAILURES_FILE, LEARNING_URLS_FILE
-from core.file_ops import del_file, is_compliant_url_regex, normalize_text, normalize_url
+from core.file_ops import is_compliant_url_regex, normalize_text, normalize_url
 from core.links import unique_urls, normalize_urls
 
 
@@ -225,28 +224,6 @@ def remove_learning_failure(
 
 def count_learning_failures(file_path: Path = LEARNING_FAILURES_FILE) -> int:
     return len(read_learning_failures(file_path=file_path))
-
-
-@serialized
-def replace_learning_urls(
-    replacements: dict[str, str],
-    *,
-    learning_file: Path = LEARNING_URLS_FILE,
-    failures_file: Path = LEARNING_FAILURES_FILE,
-) -> tuple[int, int]:
-    """仅按已验证的来源映射迁移 URL；不从课程 ID 猜测所属专题。"""
-    mapping = {normalize_url(old): normalize_url(new) for old, new in replacements.items()}
-    if not all(is_compliant_url_regex(url) for url in mapping.values()):
-        raise ValueError("迁移目标包含不合规学习链接")
-    learning = read_learning_queue(learning_file)
-    failures = read_learning_failures(failures_file)
-    learning_changed = sum(entry.url in mapping and mapping[entry.url] != entry.url for entry in learning)
-    failures_changed = sum(entry.url in mapping and mapping[entry.url] != entry.url for entry in failures)
-    if learning_changed:
-        write_learning_queue([replace(entry, url=mapping.get(entry.url, entry.url)) for entry in learning], file_path=learning_file)
-    if failures_changed:
-        write_learning_failures([replace(entry, url=mapping.get(entry.url, entry.url)) for entry in failures], file_path=failures_file)
-    return learning_changed, failures_changed
 
 
 @serialized

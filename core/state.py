@@ -35,7 +35,6 @@ class ProjectState:
     learning_failure_count: int
     exam_count: int
     manual_exam_count: int
-    unbound_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -88,13 +87,6 @@ def has_valid_credential() -> tuple[bool, bool]:
 
 def collect_project_state() -> ProjectState:
     has_credential, credential_expired = has_valid_credential()
-    from core.config import DATA_DIR
-    from core.tasks.repository import TaskRepository
-
-    with TaskRepository(DATA_DIR / "workflows" / "state.sqlite").connect() as db:
-        unbound = db.execute(
-            "SELECT count(DISTINCT task_id) FROM queue_items JOIN tasks USING(task_id) WHERE account='unbound'"
-        ).fetchone()[0]
     return ProjectState(
         has_credential=has_credential,
         credential_expired=credential_expired,
@@ -102,7 +94,6 @@ def collect_project_state() -> ProjectState:
         learning_failure_count=count_learning_failures(LEARNING_FAILURES_FILE),
         exam_count=count_exam_urls(EXAM_URLS_FILE),
         manual_exam_count=count_manual_exam_urls(MANUAL_EXAM_FILE),
-        unbound_count=unbound,
     )
 
 

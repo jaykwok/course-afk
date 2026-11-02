@@ -3,6 +3,8 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from core.tasks.store import write_queue
+
 
 MODEL_CONFIG_A = {
     "model": "model-a",
@@ -10,8 +12,12 @@ MODEL_CONFIG_A = {
     "web_search": False,
     "thinking": False,
     "reasoning_effort": None,
-    "base_url": None, "provider": None, "output_mode": None,
-    "prompt_version": None, "temperature": None, "account": None,
+    "base_url": None,
+    "provider": None,
+    "output_mode": None,
+    "prompt_version": None,
+    "temperature": None,
+    "account": None,
 }
 
 MODEL_CONFIG_A_WITH_WEB = {
@@ -20,8 +26,12 @@ MODEL_CONFIG_A_WITH_WEB = {
     "web_search": True,
     "thinking": False,
     "reasoning_effort": None,
-    "base_url": None, "provider": None, "output_mode": None,
-    "prompt_version": None, "temperature": None, "account": None,
+    "base_url": None,
+    "provider": None,
+    "output_mode": None,
+    "prompt_version": None,
+    "temperature": None,
+    "account": None,
 }
 
 
@@ -104,21 +114,18 @@ class ExamQueueTests(unittest.TestCase):
 
         with TemporaryDirectory() as tmp:
             exam_file = Path(tmp) / "exam.json"
-            exam_file.write_text(
-                json.dumps(
-                    [
-                        {
-                            "url": "https://example.com/exam/1",
-                            "ai_failed_model_configs": [],
-                        },
-                        {
-                            "url": "https://example.com/exam/2",
-                            "ai_failed_model_configs": [MODEL_CONFIG_A],
-                        },
-                    ],
-                    ensure_ascii=False,
-                ),
-                encoding="utf-8",
+            write_queue(
+                exam_file,
+                [
+                    {
+                        "url": "https://example.com/exam/1",
+                        "ai_failed_model_configs": [],
+                    },
+                    {
+                        "url": "https://example.com/exam/2",
+                        "ai_failed_model_configs": [MODEL_CONFIG_A],
+                    },
+                ],
             )
 
             entries = read_exam_queue(file_path=exam_file)
@@ -136,27 +143,27 @@ class ExamQueueTests(unittest.TestCase):
 
         with TemporaryDirectory() as tmp:
             exam_file = Path(tmp) / "exam.json"
-            exam_file.write_text(
-                json.dumps(
-                    [
-                        {
-                            "url": "https://example.com/exam/1",
-                            "ai_failed_model_configs": [MODEL_CONFIG_A],
-                        },
-                        {
-                            "url": "https://example.com/exam/2",
-                            "ai_failed_model_configs": [],
-                        },
-                    ],
-                    ensure_ascii=False,
-                ),
-                encoding="utf-8",
+            write_queue(
+                exam_file,
+                [
+                    {
+                        "url": "https://example.com/exam/1",
+                        "ai_failed_model_configs": [MODEL_CONFIG_A],
+                    },
+                    {
+                        "url": "https://example.com/exam/2",
+                        "ai_failed_model_configs": [],
+                    },
+                ],
             )
 
             write_exam_urls(["https://example.com/exam/1"], file_path=exam_file)
 
             self.assertEqual(
-                [(entry.url, entry.ai_failed_model_configs) for entry in read_exam_queue(file_path=exam_file)],
+                [
+                    (entry.url, entry.ai_failed_model_configs)
+                    for entry in read_exam_queue(file_path=exam_file)
+                ],
                 [("https://example.com/exam/1", [MODEL_CONFIG_A])],
             )
 
@@ -182,29 +189,6 @@ class ExamQueueTests(unittest.TestCase):
                     file_path=exam_file,
                 )
             )
-
-    def test_read_exam_queue_rejects_invalid_json(self):
-        from core.queues.exam import read_exam_queue
-
-        with TemporaryDirectory() as tmp:
-            exam_file = Path(tmp) / "exam.json"
-            exam_file.write_text("https://example.com/exam/1\n", encoding="utf-8")
-
-            with self.assertRaises(ValueError):
-                read_exam_queue(file_path=exam_file)
-
-    def test_read_exam_queue_rejects_non_list_json(self):
-        from core.queues.exam import read_exam_queue
-
-        with TemporaryDirectory() as tmp:
-            exam_file = Path(tmp) / "exam.json"
-            exam_file.write_text(
-                json.dumps({"url": "https://example.com/exam/1"}),
-                encoding="utf-8",
-            )
-
-            with self.assertRaises(ValueError):
-                read_exam_queue(file_path=exam_file)
 
 
 if __name__ == "__main__":

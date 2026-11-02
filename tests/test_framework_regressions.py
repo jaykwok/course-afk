@@ -28,27 +28,6 @@ EXAM = "https://kc.zhixueyun.com/#/exam/exam/answer-paper/" + UUID
 
 
 class IdentityAndIssuesTests(unittest.TestCase):
-    def test_binding_rekeys_child_issues_and_is_idempotent(self):
-        from core.tasks.migration import bind_unbound
-
-        with TemporaryDirectory() as tmp:
-            path = Path(tmp) / "挂课失败链接.json"
-            for reason in ("url_type_pending", "other_learning_type"):
-                record_learning_failure(
-                    COURSE, reason=reason, reason_text=reason, file_path=path
-                )
-            repo = repository_for(path)
-            self.assertEqual(bind_unbound(repo, "verified-account"), 3)
-            self.assertEqual(bind_unbound(repo, "verified-account"), 0)
-            with patch("core.tasks.store.account_id", return_value="verified-account"):
-                remove_learning_failure(
-                    COURSE, reason="url_type_pending", file_path=path
-                )
-            children = repo.children(
-                parse_entry(COURSE, "verified-account").key.task_id
-            )
-            self.assertEqual(sum(c["status"] == "NEEDS_REVIEW" for c in children), 1)
-            self.assertEqual(sum(c["status"] == "COMPLETED" for c in children), 1)
 
     def test_course_unknown_submission_protects_each_verified_exam_id(self):
         with TemporaryDirectory() as tmp:

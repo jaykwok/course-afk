@@ -69,8 +69,6 @@ def main() -> int:
     )
 
     setup_logging()
-    from core.tasks.migration import initialize_store
-    initialize_store()
 
     import core.ui as ui
     from core.app.launcher_controller import (
@@ -90,8 +88,6 @@ def main() -> int:
                 ui.prepare_menu_loading()
             first_loop = False
             state = collect_project_state()
-            if getattr(state,"unbound_count",0):
-                ui.show_warning(f"有 {state.unbound_count} 项旧数据尚未关联账号；请核对归属后运行 tools/workflow_state.py bind-current")
             ui.show_title("中国电信网上大学自动化工具", "登录、学习、考试统一入口")
             ui.render_dashboard(state)
             choice = ui.show_menu(MENU_OPTIONS)

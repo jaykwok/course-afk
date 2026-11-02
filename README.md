@@ -13,7 +13,7 @@ Copy-Item .env.example .env
 .\.venv\Scripts\python.exe launcher.py
 ```
 
-Windows 可双击 `run.bat`，macOS 可运行 `sh run.command`，或在已激活虚拟环境中运行 `python launcher.py`。Windows 默认使用系统 Edge；macOS 优先已安装 Chrome，再选 Edge。使用 Playwright 自带浏览器时，在 `.env` 设置 `BROWSER_CHANNEL=""`，并执行 `python -m playwright install chromium`。正式验收矩阵为 Windows x64、macOS 15 arm64 和 Intel x64，实际回执见 [工作流维护说明](ARCHITECTURE.md)。
+Windows 可双击 `run.bat`，macOS 可运行 `sh run.command`，或在已激活虚拟环境中运行 `python launcher.py`。Windows 默认使用系统 Edge；macOS 优先已安装 Chrome，再选 Edge。使用 Playwright 自带浏览器时，在 `.env` 设置 `BROWSER_CHANNEL=""`，并执行 `python -m playwright install chromium`。支持 Windows x64、macOS 15 arm64 和 Intel x64，CI 在这三个环境运行验证。
 
 一级菜单直接提供开始挂课、AI 考试、添加课程 / 考试链接和课程资料；任务管理与账号登录使用二级菜单；`0` 退出，二级菜单 `0` 返回。常规窗口显示功能说明，窄窗口只显示简短标题。任务管理可查看统计、重试失败课程、查看链接，以及清空课程与失败/复查记录，或清空全部待办（含考试与复查）。清空前展示数量并确认，原文件备份到 `data/backups/clear-links-时间/`；登录凭证、考试提交历史和已保存资料不在清空范围内。
 
@@ -21,7 +21,7 @@ Windows 可双击 `run.bat`，macOS 可运行 `sh run.command`，或在已激活
 
 ## 工作流与完成判据
 
-学习、发现/报名、考试和资料收集统一使用 DBOS 与本地 SQLite。应用重启保持菜单空闲，选择本轮操作后才恢复对应账号的任务。四类 JSON 链接文件首次备份导入后成为可读快照，业务状态以 SQLite 为准。账号不明的旧任务保留为 `unbound`，核对归属后可使用 `python tools/workflow_state.py bind-current` 明确关联；诊断、迁移、备份与版本恢复规则见 [ARCHITECTURE.md](ARCHITECTURE.md)。
+学习、发现/报名、考试和资料收集统一使用 DBOS 与本地 SQLite。应用重启保持菜单空闲，选择本轮操作后才恢复对应账号的任务。仅支持全新部署：使用空的数据目录，登录后重新添加课程与考试链接。任务及考试历史以 SQLite 为准，JSON 文件仅为可读输出快照，修改快照不会改变待办。旧 JSON、数据库及凭证格式不导入、不迁移；请勿复用旧数据目录。
 
 课程收集支持 `topic` 学习专区、主题详情、培训班和天翼专家助手 `/expert-assist-web/casePool`。普通 `topic` 的 HTTP 首屏只提供种子链接，随后仍通过浏览器展开“更多”。案例库经独立 SSO 认证后遍历全分类及分页；接口失败时的页面兜底标记为不完整，并保留入口供重试。未知章节类型保留主题待办。
 
@@ -35,11 +35,11 @@ Windows 可双击 `run.bat`，macOS 可运行 `sh run.command`，或在已激活
 
 章节选中不等于已开始学习。文档和视频会检查平台的开始遮罩，点击实际开始按钮后重新激活同一章节并读回状态；视频另查原生 `paused` / `ended` 状态，文档在失焦时恢复课程页焦点。同步轮询期间也会检查暂停，仍无法启动时记录“课程尚未开始/仍暂停”，保留目标、遮罩和媒体状态供重试；不会通过直接写入学习进度绕过播放器。
 
-专题课程保存为 `course/detail/课程ID/6/required/专题ID`，保留来源与必修标记；同一课程属于不同专题时分别保留。普通独立课程仍支持裸 UUID 链接。完整的 `type=6&required=0或1&sourceId=专题ID` 查询参数输入会转为上述路径；不完整的来源参数不降级为裸链接。手动选课时会将平台 `detailInfo…` 临时入口解析为可持久保存的链接；无法解析则保留入口供重试。历史裸链接无法反推出来源，需从原专题重新收集，或使用明确的来源映射迁移。
+专题课程保存为 `course/detail/课程ID/6/required/专题ID`，保留来源与必修标记；同一课程属于不同专题时分别保留。普通独立课程仍支持裸 UUID 链接。完整的 `type=6&required=0或1&sourceId=专题ID` 查询参数输入会转为上述路径；不完整的来源参数不降级为裸链接。手动选课时会将平台 `detailInfo…` 临时入口解析为可持久保存的链接；无法解析则保留入口供重试。裸链接无法反推出专题来源，需要从对应专题重新收集。
 
 考试只有统一的 AI 答题入口。每轮启动询问是否自动交卷，默认 **N（不自动交卷）**：AI 作答后保持原页面打开，供人工审查、补答并手动提交；关闭页面会保留待办。显式开启后，仅满足题目完整、答案合法、选项读回一致等条件的考试自动交卷。低次数 / 阈值内、次数未知、未确认提交的续答、既往同配置失败、已有答案待核对、单题导航或作答不完整等情况仅关闭当前考试的自动交卷，后续正常考试仍按本轮开启设置执行。媒体内容、未知题型、填空、拒答、截断、断流或非法答案会留下具体题号和原因，供人工在当前页补答，不从解释文字或 reasoning 中猜答案。
 
-剩余 1 次、达到次数阈值或次数未知的考试也使用同一 AI 答题流程。旧人工队列会在启动考试时恢复为 AI 补答或结果复查，并保留“仅人工交卷”标记。发现上次未确认的考试时，只续答当前试卷或“继续考试”入口，保留已有答案、补答空题，不自动重开新一轮。已通过的考试跳过并清除旧复查待办；平台禁止进入或待评卷的考试仍保留复查。关闭页面不能作为交卷成功的证据。
+剩余 1 次、达到次数阈值或次数未知的考试也使用同一 AI 答题流程。考试复查队列会在启动考试时进入 AI 补答或结果复查，并保留“仅人工交卷”标记。发现上次未确认的考试时，只续答当前试卷或“继续考试”入口，保留已有答案、补答空题，不自动重开新一轮。已通过的考试跳过并清除旧复查待办；平台禁止进入或待评卷的考试仍保留复查。关闭页面不能作为交卷成功的证据。
 
 考试开始答题前先保存提交意图，避免强制退出后盲目重考。存在未确认意图时，下次先核对结果，不能确认则转人工。这个判据偏保守：取消可能发生在真正提交之前，仍需人工核对。同账号、同模型配置的失败历史跨队列保留；配置指纹包含接口、协议、能力开关与提示词版本，不含密钥。
 
@@ -92,10 +92,12 @@ AI_MAX_RETRIES=2
 
 | 路径 | 内容 |
 |---|---|
-| `data/links/课程链接.json` | 待学习课程和主题 |
+| `data/workflows/state.sqlite` | 任务、依赖、队列和考试历史的权威业务状态 |
+| `data/workflows/execution.sqlite` | DBOS 工作流执行与恢复记录 |
+| `data/links/课程链接.json` | 待学习课程和主题的快照 |
 | `data/links/挂课失败链接.json` | 失败、人工分流、入口不完整与 URL 复查记录 |
 | `data/links/考试链接.json` | AI 待办 |
-| `data/links/人工考试链接.json` | 考试答案及评卷结果复查（兼容旧文件名） |
+| `data/links/人工考试链接.json` | 考试答案及评卷结果复查 |
 | `data/links/exam-history.json` | 按账号隔离的提交意图及失败配置历史 |
 | `data/credentials/cookies.json` | version 1 凭证包：Cookie 与账号元数据一起提交 |
 | `data/references/` | 资料原件、AI 导学文字与下载清单 |
@@ -103,7 +105,9 @@ AI_MAX_RETRIES=2
 | `data/logs/app-warn.log` | WARNING 日志 |
 | `data/logs/app-error.log` | ERROR / CRITICAL 与异常堆栈 |
 
-登录必须取得账号信息和 Cookie 才替换凭证；失败保留原文件。还有旧账号待办时拒绝切换到另一稳定账号；只有显示名可用时要求确认待办归属。旧 Cookie 数组与 `credential_meta.json` 只读兼容，下次成功登录写单一凭证包。更早的根目录平铺数据不自动迁移。
+登录必须取得账号信息和 Cookie 才替换凭证；失败保留原文件。还有其他账号的待办时拒绝切换到另一稳定账号；只有显示名可用时要求确认待办归属。登录仅使用单一凭证包。
+
+使用 `python tools/workflow_state.py status` 查看任务数量与未确认写入，或使用 `python tools/workflow_state.py export --output <文件路径>` 导出当前业务状态。
 
 日志在零点后的下一次写入时轮转；无日期文件只代表当前日志，各级互不重复。默认不记录完整题干/答案。探针输出保留 HTML 结构并脱敏常见凭证、签名 URL，仍需检查后再分享；账号、课程名称和本地路径可能属于私人信息。
 
@@ -120,8 +124,8 @@ AI_MAX_RETRIES=2
 ## 验证
 
 ```powershell
-.\.venv\Scripts\python.exe -X utf8 -m unittest discover -s tests -t . -v
+.\.venv\Scripts\python.exe -X utf8 tools/run_tests.py
 .\.venv\Scripts\python.exe -m compileall -q core tools tests
 ```
 
-测试使用临时数据目录、模拟页面/服务及自建短命子进程，不读取正式凭证，也不操作真实考试。真实平台 DOM、评分单位和第三方模型能力仍需在对应环境验证。详见审计报告的验收记录。
+测试使用临时数据目录、模拟页面/服务及自建短命子进程，不读取正式凭证，也不操作真实考试。真实平台 DOM、评分单位和第三方模型能力仍需在对应环境验证。

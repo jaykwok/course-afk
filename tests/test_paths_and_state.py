@@ -15,7 +15,6 @@ class PathConfigTests(unittest.TestCase):
         self.assertEqual(config.EXAM_URLS_FILE.parent, config.LINKS_DIR)
         self.assertEqual(config.MANUAL_EXAM_FILE.parent, config.LINKS_DIR)
         self.assertEqual(config.COOKIES_FILE.parent, config.CREDENTIALS_DIR)
-        self.assertEqual(config.CREDENTIAL_META_FILE.parent, config.CREDENTIALS_DIR)
         self.assertEqual(config.INFO_LOG_FILE.parent, config.LOGS_DIR)
         self.assertEqual(config.WARN_LOG_FILE.parent, config.LOGS_DIR)
         self.assertEqual(config.ERROR_LOG_FILE.parent, config.LOGS_DIR)
@@ -37,10 +36,6 @@ class PathConfigTests(unittest.TestCase):
     def test_exam_links_file_is_project_relative(self):
         self.assertTrue(str(config.EXAM_URLS_FILE).endswith("考试链接.json"))
 
-    def test_cookie_metadata_file_is_defined(self):
-        self.assertTrue(
-            str(config.CREDENTIAL_META_FILE).endswith("credential_meta.json")
-        )
 
     def test_core_package_does_not_eagerly_import_learning_flows(self):
         import core

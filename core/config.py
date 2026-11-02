@@ -33,7 +33,6 @@ LOGS_DIR = DATA_DIR / "logs"
 REFERENCE_OUTPUT_DIR = DATA_DIR / "references"
 
 COOKIES_FILE = CREDENTIALS_DIR / "cookies.json"
-CREDENTIAL_META_FILE = CREDENTIALS_DIR / "credential_meta.json"
 LEARNING_URLS_FILE = LINKS_DIR / "课程链接.json"
 LEARNING_FAILURES_FILE = LINKS_DIR / "挂课失败链接.json"
 EXAM_URLS_FILE = LINKS_DIR / "考试链接.json"

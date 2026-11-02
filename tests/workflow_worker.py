@@ -52,22 +52,6 @@ async def synthetic(host, payload):
 
 def main():
     DIRECTORY.mkdir(parents=True, exist_ok=True)
-    if MODE in {"crash-migration", "recover-migration"}:
-        from core.tasks.repository import TaskRepository
-        from core.tasks.migration import migrate
-        import core.tasks.store as store
-
-        repo = TaskRepository(DIRECTORY / "workflows/state.sqlite")
-        if MODE == "crash-migration":
-            original = store._replace
-
-            def crash(*args, **kwargs):
-                original(*args, **kwargs)
-                os._exit(86)
-
-            store._replace = crash
-        migrate(DIRECTORY / "links", repo)
-        return
     host = WorkflowHost(
         DIRECTORY / "workflows",
         activities={"learn": synthetic},

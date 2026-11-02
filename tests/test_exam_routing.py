@@ -35,7 +35,7 @@ class ExamRoutingTests(unittest.TestCase):
             self.assertTrue(has_ai_failed_model_config(entries[0].url, {"model": "test"}, file_path=exam_file))
             self.assertEqual(requeue_ai_exam_reviews(exam_file=exam_file, manual_exam_file=manual_file), 0)
 
-    def test_review_migration_keeps_source_when_target_write_fails(self):
+    def test_review_routing_keeps_source_when_target_write_fails(self):
         from core.exam.routing import requeue_ai_exam_reviews
         from core.queues.manual_exam import append_manual_exam_entry, read_manual_exam_queue
         with TemporaryDirectory() as tmp:
@@ -46,7 +46,7 @@ class ExamRoutingTests(unittest.TestCase):
                     requeue_ai_exam_reviews(exam_file=exam_file, manual_exam_file=manual_file)
             self.assertEqual(len(read_manual_exam_queue(manual_file)), 1)
 
-    def test_review_migration_source_write_failure_leaves_protected_duplicate(self):
+    def test_review_routing_source_write_failure_leaves_protected_duplicate(self):
         from core.exam.routing import requeue_ai_exam_reviews
         from core.queues.exam import read_exam_queue
         from core.queues.manual_exam import append_manual_exam_entry, read_manual_exam_queue

@@ -1,4 +1,4 @@
-"""Lossless merging of protective exam records, including legacy aliases."""
+"""Lossless merging of protective exam records, across URL aliases."""
 
 from __future__ import annotations
 
@@ -20,8 +20,8 @@ def merge_history(previous: dict, incoming: dict) -> dict:
         previous.get("requires_manual_submit") or incoming.get("requires_manual_submit")
     )
     submissions = dict(previous.get("submissions", {}))
-    ambiguous = previous.get("legacy_submissions", []) + incoming.get(
-        "legacy_submissions", []
+    ambiguous = previous.get("additional_submissions", []) + incoming.get(
+        "additional_submissions", []
     )
     for owner, submission in incoming.get("submissions", {}).items():
         if owner not in submissions or submissions[owner] == submission:
@@ -29,7 +29,7 @@ def merge_history(previous: dict, incoming: dict) -> dict:
         else:
             ambiguous.append({"account": owner, **submission})
     result["submissions"] = submissions
-    result["legacy_submissions"] = unique(ambiguous)
+    result["additional_submissions"] = unique(ambiguous)
     result["verified_submissions"] = unique(
         previous.get("verified_submissions", [])
         + incoming.get("verified_submissions", [])

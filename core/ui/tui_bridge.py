@@ -272,7 +272,7 @@ class TuiFrontend:
         """用 5 个 stat（~0.05ms）判断队列/凭证文件是否有变动，避免每条状态
         消息都做 ~1.2ms 的 JSON 重读——挂课期间计数一门课完成才变一次。"""
         from core.config import (
-            CREDENTIAL_META_FILE,
+            COOKIES_FILE,
             EXAM_URLS_FILE,
             LEARNING_FAILURES_FILE,
             LEARNING_URLS_FILE,
@@ -286,7 +286,7 @@ class TuiFrontend:
                 LEARNING_FAILURES_FILE,
                 EXAM_URLS_FILE,
                 MANUAL_EXAM_FILE,
-                CREDENTIAL_META_FILE,
+                COOKIES_FILE,
             )
         )
         if stats == self._last_queue_file_stats:
@@ -457,8 +457,6 @@ def launch_tui() -> int:
     signal.signal(signal.SIGTERM, lambda *_: app.exit(143))
     try:
         with application_lock(DATA_DIR / "application.lock"):
-            from core.tasks.migration import initialize_store
-            initialize_store()
             protect_application_children()
             result = app.run()
             if app._launcher_thread is not None and app._launcher_thread.is_alive():

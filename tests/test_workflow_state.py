@@ -1,9 +1,10 @@
 import unittest
-import json
 from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
+
+from core.tasks.store import write_queue
 
 from core.state import recommend_next_step
 from core.auth.credential import CredentialMetadata
@@ -20,73 +21,61 @@ class WorkflowStateTests(unittest.TestCase):
             exam_file = root / "exam.json"
             manual_exam_file = root / "manual.json"
 
-            learning_file.write_text(
-                json.dumps(
-                    [
-                        {"url": "https://example.com/course/1"},
-                        {"url": "https://example.com/course/1"},
-                    ],
-                    ensure_ascii=False,
-                ),
-                encoding="utf-8",
+            write_queue(
+                learning_file,
+                [
+                    {"url": "https://example.com/course/1"},
+                    {"url": "https://example.com/course/1"},
+                ],
             )
-            learning_failures_file.write_text(
-                json.dumps(
-                    [
-                        {
-                            "url": "https://example.com/course/failure",
-                            "reason": "no_permission",
-                            "reason_text": "无权限访问该学习资源",
-                            "detail": {},
-                        }
-                    ],
-                    ensure_ascii=False,
-                ),
-                encoding="utf-8",
+            write_queue(
+                learning_failures_file,
+                [
+                    {
+                        "url": "https://example.com/course/failure",
+                        "reason": "no_permission",
+                        "reason_text": "无权限访问该学习资源",
+                        "detail": {},
+                    }
+                ],
             )
-            exam_file.write_text(
-                json.dumps(
-                    [
-                        {
-                            "url": "https://example.com/exam/1",
-                            "ai_failed_model_configs": [],
-                        },
-                        {
-                            "url": "https://example.com/exam/1",
-                            "ai_failed_model_configs": [],
-                        },
-                        {
-                            "url": "https://example.com/exam/2",
-                            "ai_failed_model_configs": [],
-                        },
-                    ],
-                    ensure_ascii=False,
-                ),
-                encoding="utf-8",
+            write_queue(
+                exam_file,
+                [
+                    {
+                        "url": "https://example.com/exam/1",
+                        "ai_failed_model_configs": [],
+                    },
+                    {
+                        "url": "https://example.com/exam/1",
+                        "ai_failed_model_configs": [],
+                    },
+                    {
+                        "url": "https://example.com/exam/2",
+                        "ai_failed_model_configs": [],
+                    },
+                ],
             )
-            manual_exam_file.write_text(
-                json.dumps(
-                    [
-                        {
-                            "url": "https://example.com/manual/1",
-                            "reason": "manual_pending",
-                            "reason_text": "测试人工考试待处理",
-                            "remaining_attempts": None,
-                            "threshold": None,
-                            "ai_failed_model_configs": [],
-                        },
-                        {
-                            "url": "https://example.com/manual/1",
-                            "reason": "manual_pending",
-                            "reason_text": "测试人工考试待处理",
-                            "remaining_attempts": None,
-                            "threshold": None,
-                            "ai_failed_model_configs": [],
-                        },
-                    ],
-                    ensure_ascii=False,
-                ),
-                encoding="utf-8",
+            write_queue(
+                manual_exam_file,
+                [
+                    {
+                        "url": "https://example.com/manual/1",
+                        "reason": "manual_pending",
+                        "reason_text": "测试人工考试待处理",
+                        "remaining_attempts": None,
+                        "threshold": None,
+                        "ai_failed_model_configs": [],
+                    },
+                    {
+                        "url": "https://example.com/manual/1",
+                        "reason": "manual_pending",
+                        "reason_text": "测试人工考试待处理",
+                        "remaining_attempts": None,
+                        "threshold": None,
+                        "ai_failed_model_configs": [],
+                    },
+                ],
             )
 
             with (

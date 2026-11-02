@@ -39,8 +39,6 @@ class TaskRepository:
         with self.connect() as db:
             db.executescript("""
                 PRAGMA journal_mode=WAL;
-                CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY, at TEXT NOT NULL);
-                INSERT OR IGNORE INTO schema_migrations VALUES(1, CURRENT_TIMESTAMP);
                 CREATE TABLE IF NOT EXISTS tasks(
                     task_id TEXT PRIMARY KEY, identity TEXT NOT NULL UNIQUE, account TEXT NOT NULL,
                     kind TEXT NOT NULL, url TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'READY',
@@ -64,8 +62,6 @@ class TaskRepository:
                 CREATE TABLE IF NOT EXISTS phases(
                     run_id TEXT NOT NULL REFERENCES runs, phase TEXT NOT NULL, started_at TEXT NOT NULL,
                     budget REAL NOT NULL, consumed REAL NOT NULL DEFAULT 0, PRIMARY KEY(run_id,phase));
-                CREATE TABLE IF NOT EXISTS imports(
-                    source TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, imported_at TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS queue_items(
                     collection TEXT NOT NULL, task_id TEXT NOT NULL REFERENCES tasks,
                     item_key TEXT NOT NULL, payload TEXT NOT NULL, position INTEGER NOT NULL,
@@ -80,8 +76,6 @@ class TaskRepository:
                 CREATE TABLE IF NOT EXISTS task_dismissals(
                     task_id TEXT NOT NULL REFERENCES tasks, scope TEXT NOT NULL, at TEXT NOT NULL,
                     PRIMARY KEY(task_id,scope));
-                CREATE TABLE IF NOT EXISTS state_repairs(
-                    repair_key TEXT PRIMARY KEY, kind TEXT NOT NULL, payload TEXT NOT NULL, at TEXT NOT NULL);
             """)
 
     @contextmanager
@@ -361,7 +355,6 @@ class TaskRepository:
                     children.remove(parent)
                     if not children:
                         ready.append(ancestor)
-        # Legacy cycles cannot be completed without evidence; repair quarantines them.
 
     def dismiss(self, task_ids, scope, *, db):
         for task_id in task_ids:
@@ -464,19 +457,16 @@ class TaskRepository:
             return {
                 table: [dict(r) for r in db.execute(f"SELECT * FROM {table}")]
                 for table in (
-                    "schema_migrations",
                     "tasks",
                     "task_aliases",
                     "task_edges",
                     "runs",
                     "action_intents",
                     "phases",
-                    "imports",
                     "queue_items",
                     "exam_history",
                     "task_edge_evidence",
                     "task_local_outcomes",
                     "task_dismissals",
-                    "state_repairs",
                 )
             }

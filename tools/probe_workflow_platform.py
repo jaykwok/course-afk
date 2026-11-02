@@ -103,13 +103,9 @@ def main():
         from core.config import LEARNING_URLS_FILE
         from core.file_ops import is_course_detail_url
 
-        # Read the legacy snapshot without creating/migrating any queue state.
-        entries = json.loads(LEARNING_URLS_FILE.read_text(encoding="utf-8"))
-        candidates = [
-            e["url"]
-            for e in entries
-            if isinstance(e, dict) and is_course_detail_url(e.get("url", ""))
-        ]
+        from core.queues.learning import read_learning_urls
+
+        candidates = [url for url in read_learning_urls(LEARNING_URLS_FILE) if is_course_detail_url(url)]
         if candidates:
             args.course.append(candidates[0])
     result = asyncio.run(probe(args.course, args.class_url))

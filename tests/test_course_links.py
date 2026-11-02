@@ -81,21 +81,6 @@ class CourseLinkTests(unittest.TestCase):
             remove_learning_failure(QUERY, file_path=failures)
             self.assertEqual(read_learning_failures(failures), [])
 
-    def test_verified_migration_is_scoped_idempotent_and_keeps_failure_details(self):
-        from core.queues.learning import replace_learning_urls, write_learning_urls, read_learning_urls, read_learning_failures, record_learning_failure
-        with TemporaryDirectory() as tmp:
-            queue, failures = Path(tmp)/'queue.json', Path(tmp)/'failures.json'
-            other = build_subject_course_url(COURSE, OTHER_SUBJECT, 1)
-            write_learning_urls([BARE, other, FULL], file_path=queue)
-            record_learning_failure(BARE, reason='course_info_api_error', reason_text='422', detail={'http_status':422}, file_path=failures)
-            self.assertEqual(replace_learning_urls({BARE: FULL}, learning_file=queue, failures_file=failures), (1,1))
-            self.assertEqual(read_learning_urls(queue), [FULL, other])
-            entry = read_learning_failures(failures)[0]
-            self.assertEqual((entry.url, entry.detail), (FULL, {'http_status':422}))
-            self.assertEqual(replace_learning_urls({BARE: FULL}, learning_file=queue, failures_file=failures), (0,0))
-            with self.assertRaises(ValueError):
-                replace_learning_urls({FULL: BARE+'/6'}, learning_file=queue, failures_file=failures)
-            self.assertEqual(read_learning_urls(queue), [FULL, other])
 
     def test_prune_keeps_context_and_explicit_invalid_context_record(self):
         from core.queues.learning import record_learning_failure, prune_invalid_learning_failures, read_learning_failures

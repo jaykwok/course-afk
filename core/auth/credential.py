@@ -8,7 +8,6 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from core.config import (
-    CREDENTIAL_META_FILE,
     COOKIES_FILE,
     CREDENTIAL_VALID_DAYS,
     MYLEARNING_CENTER_HOME,
@@ -86,8 +85,6 @@ def extract_account_profile(user_data: dict[str, Any] | None) -> AccountProfile:
     )
 
 
-
-
 async def extract_account_profile_from_context(context, navigation_timeout: int = 30000) -> AccountProfile:
     from core.runtime import close_safely
     page = await context.new_page()
@@ -105,28 +102,17 @@ def save_credential_bundle(saved_at: datetime, profile: AccountProfile, cookies:
     if not (profile.full_name or profile.account_name) or not cookies:
         raise ValueError("账号信息或 cookie 不完整，凭证未更新")
     metadata = CredentialMetadata(saved_at=saved_at.isoformat(timespec="seconds"), expires_at=(saved_at + timedelta(days=CREDENTIAL_VALID_DAYS)).isoformat(timespec="seconds"), account_display_name=profile.full_name, account_name=profile.account_name, account_label=profile.label)
-    # One authoritative commit replaces the old cookie/metadata two-file write.
+    # Cookie and account metadata share one atomic commit.
     write_json_atomic(cookies_path, {"version": 1, "cookies": cookies, "metadata": asdict(metadata)})
     return metadata
 
 
-
-
-def load_credential_metadata(metadata_path=None) -> CredentialMetadata | None:
-    metadata_path = metadata_path or CREDENTIAL_META_FILE
+def load_credential_metadata(cookies_path=None) -> CredentialMetadata | None:
     try:
-        data = None
-        if Path(metadata_path) == Path(CREDENTIAL_META_FILE) and Path(COOKIES_FILE).exists():
-            bundle = json.loads(Path(COOKIES_FILE).read_text(encoding="utf-8"))
-            if isinstance(bundle, dict):
-                if bundle.get("version") != 1 or not bundle.get("cookies"):
-                    return None
-                data = bundle.get("metadata")
-                if not isinstance(data, dict):
-                    return None
-        if data is None:
-            with open(metadata_path, "r", encoding="utf-8") as file:
-                data = json.load(file)
+        bundle = json.loads(Path(cookies_path or COOKIES_FILE).read_text(encoding="utf-8"))
+        if not isinstance(bundle, dict) or bundle.get("version") != 1 or not bundle.get("cookies"):
+            return None
+        data = bundle.get("metadata")
         if not isinstance(data, dict):
             return None
     except (OSError, json.JSONDecodeError):
@@ -176,26 +162,20 @@ def load_pending_owner_metadata(cookies_path=None) -> CredentialMetadata | None:
 
 
 @serialized
-def clear_local_credentials(*, preserve_pending_owner: bool = False, cookies_path=None, metadata_path=None) -> bool:
+def clear_local_credentials(*, preserve_pending_owner: bool = False, cookies_path=None) -> bool:
     """清空本地 Cookie 和登录元数据；有待办时只留下账号归属。"""
     cookies_path = Path(cookies_path or COOKIES_FILE)
-    metadata_path = Path(metadata_path or CREDENTIAL_META_FILE)
-    if not cookies_path.exists() and not metadata_path.exists():
+    if not cookies_path.exists():
         return False
     owner = None
     if preserve_pending_owner:
-        for path in (cookies_path, metadata_path):
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-            except (FileNotFoundError, ValueError):
-                continue
-            if path == cookies_path:
-                data = (data.get("metadata") or data.get("pending_owner")) if isinstance(data, dict) else None
-            if isinstance(data, dict) and (data.get("account_name") or data.get("account_display_name")):
-                owner = {key: str(data.get(key) or "") for key in ("account_display_name", "account_name", "account_label")}
-                break
-    # 权威文件先写入空凭据，防止遗留元数据被误当成仍已登录。
+        try:
+            bundle = json.loads(cookies_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, ValueError):
+            bundle = None
+        data = (bundle.get("metadata") or bundle.get("pending_owner")) if isinstance(bundle, dict) and bundle.get("version") == 1 else None
+        if isinstance(data, dict) and (data.get("account_name") or data.get("account_display_name")):
+            owner = {key: str(data.get(key) or "") for key in ("account_display_name", "account_name", "account_label")}
     # 不备份 Cookie；重新登录即可获得新的凭据。
     write_json_atomic(cookies_path, {"version": 1, "cookies": [], "metadata": None, "pending_owner": owner})
-    metadata_path.unlink(missing_ok=True)
     return True
