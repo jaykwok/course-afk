@@ -35,6 +35,9 @@ targetId => {
     start_gate_visible: Array.from(document.querySelectorAll('.register-mask-layer')).some(visible),
     content_visible: Array.from(document.querySelectorAll('[class*="fullScreen-content"]')).some(visible),
     videos: Array.from(document.querySelectorAll('video')).filter(visible).map(video => ({
+      visible: true, network_state: video.networkState,
+      error_code: video.error ? video.error.code : null,
+      source_kind: String(video.currentSrc || '').startsWith('blob:') ? 'blob' : video.currentSrc ? 'url' : 'none',
       paused: video.paused, ended: video.ended, ready_state: video.readyState,
       current_time: Number.isFinite(video.currentTime) ? video.currentTime : null,
       duration: Number.isFinite(video.duration) ? video.duration : null,
@@ -64,12 +67,28 @@ async def read_course_playback_state(page, box) -> dict:
             target_id = await box.get_attribute('id')
             if not target_id:
                 return {"available": False, "error": "target_id_missing"}
-            state = await page.evaluate(_PLAYBACK_STATE_SCRIPT, target_id)
+            state = await read_playback_snapshot(page, box)
             return state if isinstance(state, dict) else {"available": False, "error": "invalid_state"}
     except Exception as exc:
         if is_target_closed_exception(exc):
             raise
         return {"available": False, "error": type(exc).__name__}
+
+
+async def read_playback_snapshot(page, box=None) -> dict:
+    """Single JS sampling model for video readiness, focus, timer and recovery."""
+    try:
+        target_id = await box.get_attribute('id') if box is not None else ''
+        state = await page.evaluate(_PLAYBACK_STATE_SCRIPT, target_id)
+        if not isinstance(state,dict):
+            return {"available": False, "ready": False}
+        videos = state.get('videos',[])
+        state['ready'] = bool(state.get('ready')) or any(v.get('ready_state',0)>=1 and (v.get('duration') or 0)>0 and not v.get('error_code') for v in videos)
+        return state
+    except Exception as exc:
+        if is_target_closed_exception(exc):
+            raise
+        return {"available": False, "ready": False, "probe_error": type(exc).__name__}
 
 
 def _paused_media(state: dict) -> bool:
@@ -80,6 +99,8 @@ def _paused_media(state: dict) -> bool:
 async def ensure_course_started(page, box, *, attempts: int = 3) -> dict:
     """点击真正绑定 studyRegister 的按钮，并读回状态；不直接提交学习进度。"""
     state = {}
+    from core.learning.course_session import CourseSession
+    await CourseSession(page).maintain()
     actions = []
     for attempt in range(max(1, attempts)):
         state = await read_course_playback_state(page, box)

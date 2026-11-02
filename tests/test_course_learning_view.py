@@ -130,17 +130,17 @@ class CourseLearningViewTests(unittest.IsolatedAsyncioTestCase):
                 "core.learning.flows.handle_rating_popup",
                 new=handle_rating,
             ),
-            patch("core.learning.flows._is_course_completed", new=completed),
         ):
             page.wait_for_load_state = AsyncMock(return_value=None)
             title = AsyncMock()
             title.inner_text = AsyncMock(return_value="测试课程")
             page.locator = lambda selector: title
-            await course_learning(page)
+            from core.learning.flows import prepare_course_page
+            await prepare_course_page(page)
 
         self.assertEqual(
             events,
-            ["rating", "archive", "ready", "course-view", "completed-check"],
+            ["rating", "archive", "ready", "course-view"],
         )
 
 

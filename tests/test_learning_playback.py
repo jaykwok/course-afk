@@ -15,6 +15,7 @@ def state(**changes):
 
 class PlaybackTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
+        self.enterContext(patch("core.learning.course_session.CourseSession.maintain",new=AsyncMock()))
         self.button = SimpleNamespace(click=AsyncMock())
         self.controls = SimpleNamespace(count=AsyncMock(return_value=0), first=self.button)
         self.page = SimpleNamespace(locator=lambda selector: SimpleNamespace(first=self.button) if 'registerMask' in selector else self.controls,

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import hashlib
 from typing import Callable
 
 from openai import AsyncOpenAI
@@ -27,6 +26,7 @@ from core.config import (
 )
 from core.exam.flow import ExamQuestionExtractionError, ai_exam, wait_for_finish_test
 from core.exam.answers import ExamAiConfigurationError
+from core.workflow.contracts import TaskOutcome,Status
 from core.exam.settings import AiSettings
 from core.exam.entry_api import (
     ExamEntryUnavailable, exam_id_from_url, read_exam_entry, validate_exam_entry,
@@ -45,7 +45,6 @@ from core.queues.exam import (
 from core.learning.exam_bridge import get_course_exam_outcome
 from core.learning.exam_api import read_exam_state
 from core.queues.history import record_submission_intent, pending_submission, finish_submission
-from core.auth.credential import load_credential_metadata
 from core.learning.popups import handle_rating_popup
 from core.queues.manual_exam import (
     append_manual_exam_entry,
@@ -226,9 +225,8 @@ def _build_exam_client() -> tuple[AsyncOpenAI, str]:
 
 
 def _current_account() -> str:
-    metadata = load_credential_metadata()
-    identity = (metadata.account_name or metadata.account_label) if metadata else "unbound"
-    return hashlib.sha256(identity.encode()).hexdigest()[:16]
+    from core.tasks.identity import account_id
+    return account_id()
 
 
 def _build_ai_exam_model_config(model: str, client=None) -> dict[str, object]:
@@ -315,14 +313,15 @@ async def _close_page_safely(page) -> None:
     await close_safely(page.close(), label="exam page")
 
 
-def _to_manual(url: str, reason: str, message: str, model_config=None) -> bool:
+def _to_manual(url: str, reason: str, message: str, model_config=None) -> TaskOutcome:
     """目标先落盘；调用方随后删除 AI 待办，崩溃窗口只允许重复，不允许丢失。"""
     if reason == "ai_failed" and model_config:
         record_ai_failed_model_config(url, model_config, file_path=EXAM_URLS_FILE)
     append_manual_exam_entry(url, reason=reason, reason_text=message,
         ai_failed_model_config=model_config if reason == "ai_failed" else None,
         file_path=MANUAL_EXAM_FILE)
-    return True
+    from core.tasks.identity import parse_entry, account_id
+    return TaskOutcome(parse_entry(url,account_id()).key.task_id,Status.NEEDS_REVIEW,[reason],details={"message": message})
 
 
 async def _paper_state(page, url):
@@ -335,23 +334,26 @@ async def _paper_state(page, url):
         return None
 
 
-def _finish_ai_outcome(url, outcome, model_config) -> bool:
+def _finish_ai_outcome(url, outcome, model_config) -> TaskOutcome:
     if outcome == "passed":
         finish_submission(url, "verified", EXAM_URLS_FILE, account=model_config["account"])
         remove_manual_exam_url(url, file_path=MANUAL_EXAM_FILE)
-        return True
+        from core.tasks.identity import parse_entry, account_id
+        return TaskOutcome(parse_entry(url,account_id()).key.task_id,Status.COMPLETED,evidence_refs=["exam_server_passed"])
     if outcome == "pending_grading":
         _to_manual(url, "pending_grading", "已提交，等待服务端评卷后复查")
         finish_submission(url, "pending_grading", EXAM_URLS_FILE, account=model_config["account"])
-        return True
+        from core.tasks.identity import parse_entry, account_id
+        return TaskOutcome(parse_entry(url,account_id()).key.task_id,Status.WAITING_SYNC,["pending_grading"])
     if outcome == "failed":
         _to_manual(url, "ai_failed", "本次已交卷但未通过，转人工处理", model_config)
         finish_submission(url, "failed", EXAM_URLS_FILE, account=model_config["account"])
-        return True
+        from core.tasks.identity import parse_entry, account_id
+        return TaskOutcome(parse_entry(url,account_id()).key.task_id,Status.NEEDS_REVIEW,["ai_failed"])
     return _to_manual(url, "submission_unverified", "交卷结果尚未确认，请核对考试记录；禁止自动重考")
 
 
-async def _run_course_ai_exam(page, url: str, client: AsyncOpenAI, model: str, *, auto_submit: bool = True) -> bool:
+async def _run_course_ai_exam(page, url: str, client: AsyncOpenAI, model: str, *, auto_submit: bool = True) -> TaskOutcome:
     model_config = _build_ai_exam_model_config(model, client)
     await _open_course_exam_tab(page)
     outcome = await get_course_exam_outcome(page)
@@ -384,7 +386,7 @@ async def _run_course_ai_exam(page, url: str, client: AsyncOpenAI, model: str, *
     return _finish_ai_outcome(url, outcome, model_config)
 
 
-async def _run_paper_ai_exam(page, url: str, client: AsyncOpenAI, model: str, *, auto_submit: bool = True) -> bool:
+async def _run_paper_ai_exam(page, url: str, client: AsyncOpenAI, model: str, *, auto_submit: bool = True) -> TaskOutcome:
     model_config = _build_ai_exam_model_config(model, client)
     await _raise_if_login_required(page, url)
     direct_answer = await _has_ready_answer_question(page)
@@ -413,7 +415,7 @@ async def _run_paper_ai_exam(page, url: str, client: AsyncOpenAI, model: str, *,
     if not auto_submit:
         logging.info("继续 AI 作答，自动交卷已关闭（次数阈值、历史记录或用户设置）")
     if not resume:
-        record_submission_intent(url, model_config, EXAM_URLS_FILE)
+        record_submission_intent(url, model_config, EXAM_URLS_FILE, baseline={"record_id": before.record_id if before else None, "used_attempts": before.used_attempts if before else None})
     if entry:
         # Resolve the official answer route from the API ID; labels and popup
         # behavior do not participate in exam entry or resume decisions.
@@ -430,47 +432,8 @@ async def _run_paper_ai_exam(page, url: str, client: AsyncOpenAI, model: str, *,
     return _finish_ai_outcome(url, outcome, model_config)
 
 
-async def run_ai_exam_batch(status_callback: StatusCallback | None = None, *, auto_submit: bool = False) -> int:
-    requeue_ai_exam_reviews(exam_file=EXAM_URLS_FILE, manual_exam_file=MANUAL_EXAM_FILE)
-    urls = read_exam_urls(EXAM_URLS_FILE)
-    if not urls:
-        return 0
-    client, model = _build_exam_client()
-    try:
-        model_config = _build_ai_exam_model_config(model, client)
-        async with create_browser_context() as (_, context):
-            for index, url in enumerate(urls, start=1):
-                allow_submit = auto_submit and not has_ai_failed_model_config(url, model_config, file_path=EXAM_URLS_FILE)
-                entry_type = classify_exam_entry_url(url)
-                if entry_type not in {"course", "exam"}:
-                    _to_manual(url, "unknown_url_type", "此入口需要人工展开或核对")
-                    remove_exam_url(url, file_path=EXAM_URLS_FILE)
-                    continue
-                page = None
-                try:
-                    page = await context.new_page()
-                    if status_callback:
-                        status_callback(f"AI 考试 {index}/{len(urls)}: {url}")
-                    await page.goto(url, timeout=30000)
-                    runner = _run_course_ai_exam if entry_type == "course" else _run_paper_ai_exam
-                    completed = await runner(page, url, client, model, auto_submit=allow_submit)
-                    if completed is True:
-                        remove_exam_url(url, file_path=EXAM_URLS_FILE)
-                except (UserAbortRequested, UserCancelRequested, ExamAiConfigurationError):
-                    raise
-                except ExamQuestionExtractionError as exc:
-                    raise UserCancelRequested(f"{exc}；题目提取不完整，已保留考试待办") from exc
-                except Exception as exc:
-                    raise_for_certificate_error(exc)
-                    if is_target_closed_exception(exc):
-                        raise UserCancelRequested("考试页面已关闭，未确认完成的待办已保留") from None
-                    logging.exception("AI 考试流程失败，转人工核对")
-                    _to_manual(url, "ai_exam_error", f"流程失败（{type(exc).__name__}），请核对提交记录")
-                    remove_exam_url(url, file_path=EXAM_URLS_FILE)
-                finally:
-                    await _close_page_safely(page)
-    except asyncio.CancelledError:
-        raise UserCancelRequested("已中断 AI 考试，未确认完成的待办已保留") from None
-    finally:
-        await close_safely(client.close(), label="AI client")
+async def run_ai_exam_batch(status_callback=None, *, auto_submit=False):
+    from core.app.service import ApplicationService
+    requeue_ai_exam_reviews(exam_file=EXAM_URLS_FILE,manual_exam_file=MANUAL_EXAM_FILE)
+    await ApplicationService().batch(read_exam_urls(EXAM_URLS_FILE),'exam',options={'auto_submit':auto_submit},status_callback=status_callback)
     return len(read_manual_exam_queue(MANUAL_EXAM_FILE))

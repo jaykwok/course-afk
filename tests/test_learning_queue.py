@@ -81,13 +81,14 @@ class LearningQueueTests(unittest.TestCase):
             )
 
             entries = read_learning_failures(file_path=failures_file)
-            self.assertEqual(len(entries), 1)
+            self.assertEqual(len(entries), 2)
+            entries = [entry for entry in entries if entry.reason == "no_permission"]
             self.assertEqual(entries[0].url, "https://example.com/course/1")
             self.assertEqual(entries[0].reason, "no_permission")
             self.assertEqual(entries[0].reason_text, "无权限访问该学习资源")
             self.assertEqual(entries[0].detail, {"source": "subject"})
             self.assertEqual(
-                json.loads(failures_file.read_text(encoding="utf-8")),
+                [entry for entry in json.loads(failures_file.read_text(encoding="utf-8")) if entry["reason"] == "no_permission"],
                 [
                     {
                         "url": "https://example.com/course/1",

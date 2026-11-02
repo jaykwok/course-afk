@@ -78,11 +78,11 @@ def _normalize_failure_entries(raw_entries) -> list[LearningFailureEntry]:
     if not isinstance(raw_entries, list):
         raise ValueError("挂课失败队列必须是 JSON 数组")
 
-    entries_by_url: dict[str, LearningFailureEntry] = {}
+    entries_by_url: dict[tuple, LearningFailureEntry] = {}
     for raw_entry in raw_entries:
         entry = _normalize_failure_entry(raw_entry)
         if entry is not None:
-            entries_by_url[entry.url] = entry
+            entries_by_url[(entry.url, entry.reason, str(entry.detail.get("section_id") or entry.detail.get("section_index") or ""), str(entry.detail.get("section_type") or ""))] = entry
     return list(entries_by_url.values())
 
 
@@ -101,19 +101,8 @@ def _serialize_failure_entries(
 
 
 def read_learning_queue(file_path: Path = LEARNING_URLS_FILE) -> list[LearningQueueEntry]:
-    try:
-        content = file_path.read_text(encoding="utf-8").strip()
-    except FileNotFoundError:
-        return []
-
-    if not content:
-        return []
-
-    try:
-        raw_entries = json.loads(content)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"课程链接队列不是有效 JSON: {exc}") from exc
-    return _normalize_queue_entries(raw_entries)
+    from core.tasks.store import read_queue
+    return _normalize_queue_entries(read_queue(file_path))
 
 
 @serialized
@@ -124,14 +113,8 @@ def write_learning_queue(
     keep_file: bool = True,
 ) -> None:
     normalized = _normalize_queue_entries(_serialize_queue_entries(entries))
-    if not normalized and not keep_file:
-        del_file(file_path)
-        return
-
-    write_text_atomic(
-        file_path,
-        json.dumps(_serialize_queue_entries(normalized), ensure_ascii=False, indent=2),
-    )
+    from core.tasks.store import write_queue
+    write_queue(file_path, _serialize_queue_entries(normalized), keep_file=keep_file)
 
 
 @serialized
@@ -177,19 +160,8 @@ def write_learning_urls(
 def read_learning_failures(
     file_path: Path = LEARNING_FAILURES_FILE,
 ) -> list[LearningFailureEntry]:
-    try:
-        content = file_path.read_text(encoding="utf-8").strip()
-    except FileNotFoundError:
-        return []
-
-    if not content:
-        return []
-
-    try:
-        raw_entries = json.loads(content)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"挂课失败队列不是有效 JSON: {exc}") from exc
-    return _normalize_failure_entries(raw_entries)
+    from core.tasks.store import read_queue
+    return _normalize_failure_entries(read_queue(file_path))
 
 
 @serialized
@@ -200,14 +172,8 @@ def write_learning_failures(
     keep_file: bool = True,
 ) -> None:
     normalized = _normalize_failure_entries(_serialize_failure_entries(entries))
-    if not normalized and not keep_file:
-        del_file(file_path)
-        return
-
-    write_text_atomic(
-        file_path,
-        json.dumps(_serialize_failure_entries(normalized), ensure_ascii=False, indent=2),
-    )
+    from core.tasks.store import write_queue
+    write_queue(file_path, _serialize_failure_entries(normalized), keep_file=keep_file)
 
 
 @serialized
@@ -231,14 +197,9 @@ def record_learning_failure(
         detail=_normalize_detail(detail),
     )
     entries = read_learning_failures(file_path=file_path)
-    existing = {entry.url: entry for entry in entries}
-    if incoming.url not in existing:
-        entries.append(incoming)
-    else:
-        entries = [
-            incoming if entry.url == incoming.url else entry
-            for entry in entries
-        ]
+    def issue_key(entry):
+        return (entry.url, entry.reason, entry.detail.get("section_id"), entry.detail.get("section_index"), entry.detail.get("section_type"))
+    entries = [entry for entry in entries if issue_key(entry) != issue_key(incoming)] + [incoming]
     write_learning_failures(entries, file_path=file_path)
 
 
@@ -248,6 +209,7 @@ def remove_learning_failure(
     *,
     file_path: Path = LEARNING_FAILURES_FILE,
     keep_file: bool = True,
+    reason: str | None = None,
 ) -> None:
     normalized_url = normalize_url(normalize_text(url))
     if not normalized_url:
@@ -256,7 +218,7 @@ def remove_learning_failure(
     entries = [
         entry
         for entry in read_learning_failures(file_path=file_path)
-        if entry.url != normalized_url
+        if entry.url != normalized_url or (reason is not None and entry.reason != reason)
     ]
     write_learning_failures(entries, file_path=file_path, keep_file=keep_file)
 

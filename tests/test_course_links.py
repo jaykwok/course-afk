@@ -121,10 +121,9 @@ class TemporaryCourseRouteTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_process_url_navigates_with_full_context_and_installs_course_monitor(self):
         from core.learning.afk_runner import _process_url
-        page = type('Page', (), {'is_closed': lambda self:False, 'close':AsyncMock()})()
+        page = type('Page', (), {'is_closed': lambda self:False, 'close':AsyncMock(), 'goto':AsyncMock()})()
         context = object()
-        with TemporaryDirectory() as tmp, patch('core.learning.afk_runner._open_course_page', AsyncMock(return_value=page)), patch('core.learning.afk_runner._install_course_info_monitor', return_value=object()) as monitor, patch('core.learning.afk_runner._wait_for_course_bootstrap', AsyncMock()), patch('core.learning.afk_runner.goto_and_prepare_async', AsyncMock()) as goto, patch('core.learning.afk_runner._close_page_quiet', AsyncMock()):
-            self.assertFalse(await _process_url(context, FULL, AsyncMock(return_value=True), failure_file=Path(tmp)/'failures.json'))
+        with TemporaryDirectory() as tmp, patch('core.learning.afk_runner._open_course_page', AsyncMock(return_value=page)), patch('core.learning.afk_runner._install_course_info_monitor', return_value=object()) as monitor, patch('core.learning.afk_runner._wait_for_course_bootstrap', AsyncMock()), patch.object(page,'goto',new=AsyncMock()) as goto, patch('core.learning.afk_runner._close_page_quiet', AsyncMock()):
+            self.assertEqual((await _process_url(context, FULL, AsyncMock(return_value=True), failure_file=Path(tmp)/'failures.json')).status,"COMPLETED")
         monitor.assert_called_once_with(page)
-        goto.assert_awaited_once_with(page, FULL)
-
+        goto.assert_awaited_once_with(FULL, wait_until='load')

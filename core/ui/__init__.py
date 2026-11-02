@@ -372,28 +372,17 @@ def prepare_menu_loading() -> None:
 
 
 def _credential_display(state: ProjectState, metadata) -> Text:
-    g = _g()
-    if not state.has_credential:
-        return Text(f"{g.icon_failure} 不存在", style=f"bold {ERROR}")
-    if state.credential_expired:
-        return Text(f"{g.icon_warning} 已过期", style=f"bold {WARNING}")
-    if metadata and metadata.expires_at:
-        try:
-            expires_dt = datetime.fromisoformat(metadata.expires_at)
-            now = datetime.now(tz=expires_dt.tzinfo)
-            if now.date() >= expires_dt.date():
-                return Text(f"{g.icon_warning} 已过期", style=f"bold {WARNING}")
-            seconds_left = (expires_dt - now).total_seconds()
-            days_left = max(1, math.ceil(seconds_left / 86400))
-            t = Text(
-                f"{g.icon_success} 有效至 {expires_dt:%Y-%m-%d}",
-                style=f"bold {SUCCESS}",
-            )
-            t.append(f"  （还有 {days_left} 天）", style="dim")
-            return t
-        except ValueError:
-            pass
-    return Text(f"{g.icon_success} 有效", style=f"bold {SUCCESS}")
+    from core.state import credential_view
+    view=credential_view(state,metadata,clock=datetime)
+    g=_g()
+    if view.status=='missing':
+        return Text(f'{g.icon_failure} 不存在',style=f'bold {ERROR}')
+    if view.status=='expired':
+        return Text(f'{g.icon_warning} 已过期',style=f'bold {WARNING}')
+    text=Text(f'{g.icon_success} 有效至 {view.expires_on}' if view.expires_on else f'{g.icon_success} 有效',style=f'bold {SUCCESS}')
+    if view.days_left is not None:
+        text.append(f'  （还有 {view.days_left} 天）',style='dim')
+    return text
 
 
 def build_dashboard_renderable(state: ProjectState):

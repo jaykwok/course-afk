@@ -6,6 +6,7 @@ from pathlib import Path
 
 from core.config import MANUAL_EXAM_FILE
 from core.queues.exam import normalize_model_config, unique_model_configs
+from core.tasks.identity import canonical_url
 from core.file_ops import del_file, normalize_optional_text
 from core.storage import serialized, write_text_atomic
 from core.queues.history import record_failures
@@ -34,7 +35,7 @@ def _normalize_entry(raw_entry) -> ManualExamEntry | None:
     if not isinstance(raw_entry, dict):
         return None
 
-    url = str(raw_entry.get("url", "")).strip()
+    url = canonical_url(str(raw_entry.get("url", "")).strip())
     if not url:
         return None
 
@@ -98,19 +99,8 @@ def _serialize_entries(entries: list[ManualExamEntry]) -> list[dict[str, object]
 
 
 def read_manual_exam_queue(file_path: Path = MANUAL_EXAM_FILE) -> list[ManualExamEntry]:
-    try:
-        content = file_path.read_text(encoding="utf-8").strip()
-    except FileNotFoundError:
-        return []
-
-    if not content:
-        return []
-
-    try:
-        raw_entries = json.loads(content)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"人工考试队列不是有效 JSON: {exc}") from exc
-    return _normalize_entries(raw_entries)
+    from core.tasks.store import read_queue
+    return _normalize_entries(read_queue(file_path))
 
 
 @serialized
@@ -123,14 +113,8 @@ def write_manual_exam_queue(
     normalized = _normalize_entries(_serialize_entries(entries))
     for entry in read_manual_exam_queue(file_path) + normalized:
         record_failures(entry.url, entry.ai_failed_model_configs, file_path)
-    if not normalized and not keep_file:
-        del_file(file_path)
-        return
-
-    write_text_atomic(
-        file_path,
-        json.dumps(_serialize_entries(normalized), ensure_ascii=False, indent=2),
-    )
+    from core.tasks.store import write_queue
+    write_queue(file_path, _serialize_entries(normalized), keep_file=keep_file)
 
 
 @serialized
@@ -144,7 +128,7 @@ def append_manual_exam_entry(
     ai_failed_model_config: dict[str, object] | None = None,
     file_path: Path = MANUAL_EXAM_FILE,
 ) -> None:
-    normalized_url = url.strip()
+    normalized_url = canonical_url(url)
     if not normalized_url:
         return
 
@@ -183,7 +167,7 @@ def read_manual_exam_urls(file_path: Path = MANUAL_EXAM_FILE) -> list[str]:
 @serialized
 def remove_manual_exam_url(url: str, *, file_path: Path = MANUAL_EXAM_FILE) -> None:
     entries = read_manual_exam_queue(file_path)
-    retained = [entry for entry in entries if entry.url != url]
+    retained = [entry for entry in entries if entry.url != canonical_url(url)]
     if len(retained) != len(entries):
         write_manual_exam_queue(retained, file_path=file_path, keep_file=True)
 

@@ -167,7 +167,8 @@ class CoursePageProbeTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("course_page", str(failure_file))
             await capture_callback(FakePage(), "page_created")
             await capture_callback(FakePage(), "after_navigation")
-            return False
+            from core.workflow.contracts import TaskOutcome,Status
+            return TaskOutcome('probe',Status.COMPLETED)
 
         with TemporaryDirectory() as tmp:
             capture_dir = Path(tmp) / "course_page"
@@ -208,7 +209,7 @@ class CoursePageProbeTests(unittest.IsolatedAsyncioTestCase):
                 slow_mo=2345,
             )
             self.assertEqual(result["browser_slow_mo"], 2345)
-            self.assertEqual(result["flow"]["status"], "completed")
+            self.assertEqual(result["flow"]["status"], "COMPLETED")
             self.assertEqual(result["headless"], False)
             self.assertEqual(len(result["captures"]), 1)
             self.assertTrue(latest.exists())

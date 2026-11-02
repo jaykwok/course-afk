@@ -243,9 +243,14 @@ async def queue_course_exams_from_api(page) -> CourseExamQueueResult | None:
             "Version": "12.1.1",
             "Accept": "application/json, text/plain, */*",
         }
+        from core.tasks.identity import parse_entry
+        from urllib.parse import urlencode
+        source = parse_entry(str(page.url), "probe").key
+        from core.browser.course_links import observed_course_source
+        query = {"type": source.source_type, "sourceId": source.source_id} if source.source_type else observed_course_source(page,course_id) or {}
         course_payload = await fetch_json(
             page,
-            f"{_COURSE_INFO_API.format(course_id=course_id)}?type=1&sourceId=",
+            f"{_COURSE_INFO_API.format(course_id=course_id)}?{urlencode(query)}",
             headers=headers,
         )
         sections = extract_course_exam_sections(course_payload)

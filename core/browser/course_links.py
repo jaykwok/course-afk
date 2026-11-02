@@ -3,9 +3,44 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from urllib.parse import urlsplit,parse_qs
+from weakref import WeakKeyDictionary
 
 from core.config import ZHIXUEYUN_COURSE_PREFIX
 from core.file_ops import build_subject_course_url, is_course_detail_url, normalize_url
+
+_observed_sources=WeakKeyDictionary()
+
+
+def install_course_source_tracker(page):
+    """Capture only the source of an actual page-generated course-info request."""
+    def request_seen(request):
+        parsed=urlsplit(request.url)
+        marker='/api/v1/course-study/course-front/info/'
+        if parsed.hostname!='kc.zhixueyun.com' or marker not in parsed.path:
+            return
+        params=parse_qs(parsed.query,keep_blank_values=True)
+        source_type=params.get('type',[])
+        source_id=params.get('sourceId',[])
+        if len(source_type)!=1 or len(source_id)!=1 or not source_type[0].isdigit():
+            return
+        course_id=parsed.path.split(marker,1)[1].lower()
+        sources=_observed_sources.setdefault(page,{})
+        sources.setdefault(course_id,set()).add((source_type[0],source_id[0]))
+    on=getattr(page,'on',None)
+    if callable(on):
+        on('request',request_seen)
+
+
+def observed_course_source(page,course_id):
+    try:
+        sources=_observed_sources.get(page,{}).get(course_id.lower(),set())
+    except TypeError:
+        return None
+    if len(sources)==1:
+        source_type,source_id=next(iter(sources))
+        return {'type':source_type,'sourceId':source_id}
+    return None
 
 
 async def resolve_course_page_url(page) -> str | None:

@@ -309,63 +309,18 @@ class LoggingConfigTests(unittest.TestCase):
         self.assertEqual(previous_calls, [(loop, context)])
 
     def test_run_async_keeps_target_closed_filter_during_runner_shutdown(self):
+        from core.workflow.host import get_host
+        async def noop():
+            return 'coroutine-result'
+        self.assertEqual(config.run_async(noop()),'coroutine-result')
+        host=get_host()
+        handler=host.loop.get_exception_handler()
         class TargetClosedError(Exception):
             pass
-
-        default_calls = []
-        previous_calls = []
-
-        def previous_handler(loop, context):
-            previous_calls.append((loop, context))
-
-        class FakeLoop:
-            def __init__(self):
-                self.handler = None
-
-            def get_exception_handler(self):
-                return previous_handler
-
-            def set_exception_handler(self, handler):
-                self.handler = handler
-
-            def default_exception_handler(self, context):
-                default_calls.append(context)
-
-        class FakeRunner:
-            def __init__(self):
-                self.loop = FakeLoop()
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                self.loop.handler(
-                    self.loop,
-                    {
-                        "message": "Future exception was never retrieved",
-                        "exception": TargetClosedError(
-                            "Target page, context or browser has been closed"
-                        ),
-                    },
-                )
-                return False
-
-            def get_loop(self):
-                return self.loop
-
-            def run(self, awaitable):
-                awaitable.close()
-                return "runner-result"
-
-        async def noop():
-            return "coroutine-result"
-
-        with patch("core.runtime.asyncio.Runner", return_value=FakeRunner()):
-            result = config.run_async(noop())
-
-        self.assertEqual(result, "runner-result")
-        self.assertEqual(default_calls, [])
-        self.assertEqual(previous_calls, [])
+        with patch.object(host.loop,'default_exception_handler') as default:
+            handler(host.loop,{'message':'Future exception was never retrieved','exception':TargetClosedError('Target page, context or browser has been closed')})
+            default.assert_not_called()
+        self.assertIs(host.loop.get_exception_handler(),handler)
 
     def test_disable_windows_console_input_modes_clears_quick_edit_and_insert(self):
         class FakeKernel32:

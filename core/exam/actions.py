@@ -115,8 +115,11 @@ async def close_exam_notice_if_present(page):
 
 
 async def submit_exam(page):
+    from core.exam.policy import ExamPolicy
+    ExamPolicy.verify()
     await page.locator("text=我要交卷").click()
     await pause_between(page, EXAM_SUBMIT_GAP_MIN, EXAM_SUBMIT_GAP_MAX)
+    ExamPolicy.verify()
     await page.locator("button:has-text('确 定')").click()
     await pause_between(page, EXAM_SUBMIT_GAP_MIN, EXAM_SUBMIT_GAP_MAX)
     receipt = page.locator("[data-region='modal:modal'] .btn.white.border:has-text('确定')").last

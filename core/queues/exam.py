@@ -5,6 +5,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from core.config import EXAM_URLS_FILE
+from core.tasks.identity import canonical_url
 from core.file_ops import del_file
 from core.links import unique_urls
 from core.storage import serialized, write_text_atomic
@@ -86,7 +87,7 @@ def _normalize_entries(raw_entries) -> list[ExamQueueEntry]:
     for raw_entry in raw_entries:
         if not isinstance(raw_entry, dict):
             continue
-        url = str(raw_entry.get("url", "")).strip()
+        url = canonical_url(str(raw_entry.get("url", "")).strip())
         if not url:
             continue
         failed_model_configs = _unique_model_configs(
@@ -117,19 +118,8 @@ def _serialize_entries(entries: list[ExamQueueEntry]) -> list[dict[str, object]]
 
 
 def read_exam_queue(file_path: Path = EXAM_URLS_FILE) -> list[ExamQueueEntry]:
-    try:
-        content = file_path.read_text(encoding="utf-8").strip()
-    except FileNotFoundError:
-        return []
-
-    if not content:
-        return []
-
-    try:
-        raw_entries = json.loads(content)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"考试链接队列不是有效 JSON: {exc}") from exc
-    return _normalize_entries(raw_entries)
+    from core.tasks.store import read_queue
+    return _normalize_entries(read_queue(file_path))
 
 
 @serialized
@@ -143,14 +133,11 @@ def write_exam_queue(
     # Archive both retained and removed entries before replacing the queue.
     for entry in read_exam_queue(file_path) + normalized:
         record_failures(entry.url, entry.ai_failed_model_configs, file_path)
-    if not normalized and not keep_file:
-        del_file(file_path)
-        return
-
-    write_text_atomic(
-        file_path,
-        json.dumps(_serialize_entries(normalized), ensure_ascii=False, indent=2),
-    )
+        if entry.requires_manual_submit:
+            from core.queues.history import protect_manual_submission
+            protect_manual_submission(entry.url,file_path)
+    from core.tasks.store import write_queue
+    write_queue(file_path, _serialize_entries(normalized), keep_file=keep_file)
 
 
 def append_exam_url(url: str, *, file_path: Path = EXAM_URLS_FILE) -> None:
@@ -164,7 +151,7 @@ def append_exam_urls(
     file_path: Path = EXAM_URLS_FILE,
     requires_manual_submit: bool = False,
 ) -> list[str]:
-    normalized_urls = unique_urls(urls)
+    normalized_urls = unique_urls([canonical_url(u) for u in urls])
     if not normalized_urls:
         return []
 
@@ -195,7 +182,7 @@ def append_exam_urls(
 @serialized
 def remove_exam_url(url: str, *, file_path: Path = EXAM_URLS_FILE) -> bool:
     """从 AI 考试队列移除单个链接，保留队列文件。"""
-    normalized_url = str(url or "").strip()
+    normalized_url = canonical_url(url or "")
     if not normalized_url:
         return False
 
@@ -212,7 +199,8 @@ def read_exam_urls(file_path: Path = EXAM_URLS_FILE) -> list[str]:
 
 
 def requires_manual_submission(url: str, *, file_path: Path = EXAM_URLS_FILE) -> bool:
-    return any(entry.url == url and entry.requires_manual_submit for entry in read_exam_queue(file_path))
+    from core.queues.history import manual_submission_required
+    return manual_submission_required(url,file_path) or any(entry.url == canonical_url(url) and entry.requires_manual_submit for entry in read_exam_queue(file_path))
 
 
 def count_exam_urls(file_path: Path = EXAM_URLS_FILE) -> int:
@@ -240,7 +228,7 @@ def has_ai_failed_model_config(
     *,
     file_path: Path = EXAM_URLS_FILE,
 ) -> bool:
-    normalized_url = url.strip()
+    normalized_url = canonical_url(url)
     normalized_config = _normalize_model_config(model_config)
     if not normalized_url or normalized_config is None:
         return False
@@ -264,7 +252,7 @@ def record_ai_failed_model_config(
     *,
     file_path: Path = EXAM_URLS_FILE,
 ) -> None:
-    normalized_url = url.strip()
+    normalized_url = canonical_url(url)
     normalized_config = _normalize_model_config(model_config)
     if not normalized_url or normalized_config is None:
         return

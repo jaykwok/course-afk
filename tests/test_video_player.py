@@ -54,7 +54,7 @@ class _Page:
         assert selector == ".register-mask-layer"
         return _EmptyLocator()
 
-    async def evaluate(self, _script):
+    async def evaluate(self, _script, *_args):
         if not self.states:
             return {"ready": False, "selectors": {}, "videos": []}
         if len(self.states) == 1:

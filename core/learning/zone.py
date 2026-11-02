@@ -36,7 +36,7 @@ _CASE_POOL_AUTH_WAIT_MS = 60000
 _CASE_POOL_AUTH_POLL_MS = 250
 _UUID = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 _DETAIL_IN_TEXT = re.compile(
-    rf"(?:https?://kc\.zhixueyun\.com)?/?#?/study/(course|subject)/detail/({_UUID})",
+    rf"(?:https?://kc\.zhixueyun\.com)?/?#?/study/(course|subject)/detail/({_UUID})((?:/[1-9][0-9]*/[01]/{_UUID})?)(?![0-9a-fA-F/-])",
     re.IGNORECASE,
 )
 _APP_RESOURCE = re.compile(
@@ -354,7 +354,7 @@ def _extract_detail_urls_from_text(text: str) -> list[str]:
         prefix = (
             ZHIXUEYUN_COURSE_PREFIX if kind == "course" else ZHIXUEYUN_SUBJECT_PREFIX
         )
-        candidate = f"{prefix}{uuid}"
+        candidate = f"{prefix}{uuid}{match.group(3)}"
         if is_compliant_url_regex(candidate):
             results.append(candidate)
 

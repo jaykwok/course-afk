@@ -397,6 +397,10 @@ async def create_browser_context(
             driver_job = own_playwright_driver(p)
             browser = await asyncio.wait_for(launch_async_browser(p, headless=headless, slow_mo=slow_mo), 30)
             context = await asyncio.wait_for(browser.new_context(**build_browser_context_options(headless=headless)), 30)
+            from core.browser.course_links import install_course_source_tracker
+            on = getattr(context,'on',None)
+            if callable(on):
+                on('page',install_course_source_tracker)
             await apply_async_browser_stealth(context)
             await context.add_cookies(cookies)
 
@@ -410,6 +414,9 @@ async def create_browser_context(
         raise
     finally:
         exception_info = sys.exc_info()
+        capture = getattr(driver_job, "capture", None)
+        if callable(capture):
+            capture()
         if driver_job is None:
             # __aenter__ may start a transport before timing out or being
             # cancelled. The manager still owns that partially started driver.

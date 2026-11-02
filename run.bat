@@ -36,7 +36,7 @@ if not exist "%PYTHON_EXE%" (
     set "PYTHON_EXE=python"
 )
 
-"%PYTHON_EXE%" "launcher.py"
+"%PYTHON_EXE%" "launcher.py" %*
 set "EXIT_CODE=%ERRORLEVEL%"
 if not "%EXIT_CODE%"=="0" (
     color 0C

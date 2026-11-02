@@ -4,9 +4,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from datetime import datetime, timezone
 from urllib.parse import urlencode
 
-from core.browser.course_links import resolve_course_page_url
+from core.browser.course_links import resolve_course_page_url,observed_course_source
 from core.browser.page_auth import fetch_json, get_authorization_header
 from core.config import ZHIXUEYUN_COURSE_PREFIX
 
@@ -38,7 +39,7 @@ async def read_server_section_states(page) -> dict[str, dict] | None:
                 return None
             parts = url.removeprefix(ZHIXUEYUN_COURSE_PREFIX).split("/")
             course_id = parts[0]
-            query = {"type": parts[1] if len(parts) == 4 else "1", "sourceId": parts[3] if len(parts) == 4 else ""}
+            query = {"type": parts[1], "sourceId": parts[3]} if len(parts) == 4 else observed_course_source(page,course_id) or {}
             auth = await get_authorization_header(page)
             if not auth:
                 return None
@@ -61,7 +62,7 @@ async def read_server_section_states(page) -> dict[str, dict] | None:
             progress = await fetch_json(
                 page, f"{_API}/course-section-progress",
                 headers={**headers, "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"},
-                method="POST", data=urlencode({"courseId": course_id, "resourceIds": ",".join(dict.fromkeys(resources.values()))}),
+                method="POST", data=urlencode({"courseId": course_id, "resourceIds": ",".join(dict.fromkeys(resources.values()))}), read_only=True,
             )
             if not isinstance(progress, list):
                 return None
@@ -78,6 +79,9 @@ async def read_server_section_states(page) -> dict[str, dict] | None:
                     return None
                 states[section_id] = {
                     "section_id": section_id, "record_found": True,
+                    "course_id": course_id, "resource_id": resources[section_id],
+                    "source": "course-section-progress",
+                    "read_at": datetime.now(timezone.utc).isoformat(),
                     "finish_status": record.get("finishStatus"),
                     "completed_rate": record.get("completedRate"),
                     "study_total_time": record.get("studyTotalTime"),

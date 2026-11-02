@@ -53,8 +53,9 @@ class LearningUtilityTests(unittest.TestCase):
             async def wait_for_timeout(self, _ms):
                 return None
 
-        asyncio.run(
-            wait_until_learned(
+        with patch("core.learning.common.read_server_section_state",new=AsyncMock(return_value={"finish_status":2})):
+            asyncio.run(
+                wait_until_learned(
                 Box("必修 视频 10:00\n需再学 0:00"),
                 FakePage(),
                 max_wait=30,
@@ -90,7 +91,7 @@ class LearningUtilityTests(unittest.TestCase):
             async def wait_for_timeout(self, _ms):
                 return None
 
-        with patch("core.learning.common.jitter", return_value=1):
+        with patch("core.learning.common.jitter", return_value=1), patch("core.learning.common.read_server_section_state",new=AsyncMock(side_effect=[{"finish_status":1},{"finish_status":1},{"finish_status":2}])):
             asyncio.run(
                 wait_until_learned(Box(), FakePage(), max_wait=5, poll_interval=5)
             )

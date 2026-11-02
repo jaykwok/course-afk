@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from urllib.parse import urlparse
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from core.browser.overlays import dismiss_topmost_overlays_async
 
@@ -80,22 +81,42 @@ async def _poll_authorization_header(page) -> str:
 
 
 async def fetch_json(
-    page, url: str, *, headers: dict[str, str], method: str = "GET", data=None,
+    page, url: str, *, headers: dict[str, str], method: str = "GET", data=None, read_only=False,
 ) -> object:
     parsed = urlparse(url)
     if parsed.scheme != "https" or parsed.hostname != "kc.zhixueyun.com" or parsed.username is not None or parsed.password is not None or parsed.port not in (None, 443):
         raise ValueError("API 地址不在允许的站点范围")
     if method not in {"GET", "POST"}:
         raise ValueError("API 请求方法仅支持 GET / POST")
+    if read_only and method=='POST' and not parsed.path.endswith('/course-section-progress'):
+        raise ValueError("仅已核实的只读进度 POST 可重试")
+    attempts=3 if method=='GET' or read_only else 1
+    async with asyncio.timeout(35):
+        for attempt in range(attempts):
+            try:
+                return await _fetch_json_once(page,url,headers=headers,method=method,data=data)
+            except (_TransientApiError,PlaywrightTimeoutError,TimeoutError):
+                if attempt+1==attempts:
+                    raise
+                await asyncio.sleep(.25*(2**attempt))
+
+
+class _TransientApiError(RuntimeError):
+    pass
+
+
+async def _fetch_json_once(page,url,*,headers,method,data):
     response = None
     try:
         async with asyncio.timeout(35):
-            options = dict(headers=headers, timeout=30000, max_redirects=0)
+            options = dict(headers=headers, timeout=10000, max_redirects=0)
             if method == "POST":
                 response = await page.context.request.post(url, data=data, **options)
             else:
                 response = await page.context.request.get(url, **options)
             if not response.ok:
+                if response.status in {429,502,503,504}:
+                    raise _TransientApiError(f"API 请求失败 HTTP {response.status}")
                 raise RuntimeError(f"API 请求失败 HTTP {response.status}")
             result = await response.json()
             if not isinstance(result, (dict, list)):

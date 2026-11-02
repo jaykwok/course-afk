@@ -244,240 +244,35 @@ async def collect_learning_links_from_entry_urls(
         )
 
 
-async def run_manual_course_selection(
-    input_text: str,
-    learning_zone_mode: str = "manual",
-    status_callback: StatusCallback | None = None,
-    result_ready_callback: Callable[[dict[str, int]], None] | None = None,
-) -> dict[str, int]:
+async def run_manual_course_selection(input_text, learning_zone_mode='manual', status_callback=None, result_ready_callback=None):
+    from core.app.service import ApplicationService
     urls = parse_manual_selection_input(input_text)
-    (
-        direct_learning_urls,
-        direct_exam_urls,
-        learning_zone_urls,
-        train_class_urls,
-        entry_urls,
-    ) = split_manual_selection_urls(urls)
-
-    # 主题按章节类型展开：课→学习队列，考→考试队列，未知→主题残留。
-    direct_course_urls, direct_subject_urls = partition_course_and_subject_urls(
-        direct_learning_urls
-    )
-    added_learning = append_learning_urls(
-        direct_course_urls,
-        file_path=LEARNING_URLS_FILE,
-    )
-    if status_callback and added_learning:
-        status_callback(f"已直接写入 {len(added_learning)} 条课程链接")
-
-    added_exam_urls = append_exam_urls(
-        direct_exam_urls,
-        file_path=EXAM_URLS_FILE,
-    )
-    if status_callback and added_exam_urls:
-        status_callback(f"已直接写入 {len(added_exam_urls)} 条考试链接")
-
-    subject_expand_learning_added = 0
-    subject_expand_exam_added = 0
-    result_notified = False
-
-    def build_result(
-        learning_zone_parsed_count: int,
-        train_class_parsed_count: int,
-        manual_record_count: int,
-        manual_exam_record_count: int,
-        manual_entry_urls: list[str],
-    ) -> dict[str, int]:
-        return {
-            "input_url_count": len(urls),
-            "direct_learning_count": len(added_learning) + subject_expand_learning_added,
-            "direct_exam_count": len(added_exam_urls) + subject_expand_exam_added,
-            "direct_subject_count": len(direct_subject_urls),
-            "learning_zone_url_count": len(learning_zone_urls),
-            "learning_zone_parsed_count": learning_zone_parsed_count,
-            "train_class_url_count": len(train_class_urls),
-            "train_class_parsed_count": train_class_parsed_count,
-            "entry_url_count": len(manual_entry_urls),
-            "manual_record_count": manual_record_count,
-            "manual_exam_record_count": manual_exam_record_count,
-            "learning_total": len(read_learning_urls(LEARNING_URLS_FILE)),
-            "exam_total": len(read_exam_urls(EXAM_URLS_FILE)),
-        }
-
-    def notify_result_ready(result: dict[str, int]) -> None:
-        nonlocal result_notified
-        if result_notified or result_ready_callback is None:
-            return
-        result_notified = True
+    learning, exams, zones, classes, entries = split_manual_selection_urls(urls)
+    courses, subjects = partition_course_and_subject_urls(learning)
+    added_learning = append_learning_urls(courses,file_path=LEARNING_URLS_FILE)
+    added_exams = append_exam_urls(exams,file_path=EXAM_URLS_FILE)
+    discoveries = subjects + zones + classes + entries
+    remember_discovery_entries(discoveries)
+    before_learning = len(read_learning_urls(LEARNING_URLS_FILE))
+    before_exams = len(read_exam_urls(EXAM_URLS_FILE))
+    outcomes = await ApplicationService().batch(discoveries,'discover',options={'zone_mode': learning_zone_mode},status_callback=status_callback) if discoveries else []
+    result = {
+        'input_url_count': len(urls), 'direct_learning_count': len(added_learning),
+        'direct_exam_count': len(added_exams), 'direct_subject_count': len(subjects),
+        'learning_zone_url_count': len(zones), 'learning_zone_parsed_count': 0,
+        'train_class_url_count': len(classes), 'train_class_parsed_count': 0,
+        'entry_url_count': len(entries), 'manual_record_count': 0, 'manual_exam_record_count': 0,
+        'learning_total': len(read_learning_urls(LEARNING_URLS_FILE)),
+        'exam_total': len(read_exam_urls(EXAM_URLS_FILE)),
+        'blocked_count': sum(o['status']=='BLOCKED' for o in outcomes),
+    }
+    for outcome in outcomes:
+        details = outcome.get('details',{})
+        result['manual_record_count'] += details.get('manual_record_count',0)
+        result['manual_exam_record_count'] += details.get('manual_exam_record_count',0)
+    result['learning_zone_parsed_count'] = max(0,result['learning_total']-before_learning)
+    if result_ready_callback:
         result_ready_callback(result)
-
-    learning_zone_parsed_count = 0
-    train_class_parsed_count = 0
-    # 学习专区 manual 模式并入入口，稍后与 entry 一并打开
-    auto_zone_urls = (
-        learning_zone_urls if learning_zone_mode == "auto" else []
-    )
-    manual_entry_urls = (
-        learning_zone_urls + entry_urls
-        if learning_zone_urls and learning_zone_mode != "auto"
-        else list(entry_urls)
-    )
-
-    # Phase A 自动批 + Phase B 入口：同一浏览器会话，串行，只冷启动一次
-    needs_auto_browser = bool(
-        direct_subject_urls or auto_zone_urls or train_class_urls
-    )
-    needs_browser = needs_auto_browser or bool(manual_entry_urls)
-    # A failure in an earlier source must not discard later source categories.
-    remember_discovery_entries(direct_subject_urls + auto_zone_urls + train_class_urls)
-
-    async def _run_auto_browser_jobs(shared_context) -> None:
-        """Phase A：主题/专区/培训班。无 page 监听，各 job 自管 new_page/close。"""
-        nonlocal subject_expand_learning_added, subject_expand_exam_added
-        nonlocal learning_zone_parsed_count, train_class_parsed_count
-
-        share_kwargs: dict = {"context": shared_context}
-
-        if direct_subject_urls:
-            if status_callback:
-                status_callback(
-                    f"正在展开 {len(direct_subject_urls)} 个主题链接（课→学习队列，"
-                    "考→考试队列，未知类型保留主题）"
-                )
-            subject_stats = await expand_and_append_subject_urls(
-                direct_subject_urls,
-                status_callback=status_callback,
-                **share_kwargs,
-            )
-            subject_expand_learning_added = subject_stats["learning_added"]
-            subject_expand_exam_added = subject_stats["exam_added"]
-
-        if auto_zone_urls:
-            zone_before_close = None
-            if not train_class_urls and not manual_entry_urls:
-                zone_before_close = lambda parsed_count: notify_result_ready(
-                    build_result(parsed_count, 0, 0, 0, manual_entry_urls)
-                )
-            zone_kwargs = {"status_callback": status_callback, **share_kwargs}
-            if zone_before_close is not None:
-                zone_kwargs["before_close_callback"] = zone_before_close
-            learning_zone_parsed_count = (
-                await collect_learning_links_from_learning_zone_urls(
-                    auto_zone_urls,
-                    **zone_kwargs,
-                )
-            )
-
-        if train_class_urls:
-            class_before_close = None
-            if not manual_entry_urls:
-                class_before_close = lambda parsed_count: notify_result_ready(
-                    build_result(
-                        learning_zone_parsed_count,
-                        parsed_count,
-                        0,
-                        0,
-                        manual_entry_urls,
-                    )
-                )
-            class_kwargs = {"status_callback": status_callback, **share_kwargs}
-            if class_before_close is not None:
-                class_kwargs["before_close_callback"] = class_before_close
-            train_class_parsed_count = (
-                await collect_learning_links_from_train_class_urls(
-                    train_class_urls,
-                    **class_kwargs,
-                )
-            )
-
-        # 无入口时，在关浏览器前尽量先回传结果
-        if (
-            not manual_entry_urls
-            and result_ready_callback is not None
-            and not result_notified
-        ):
-            notify_result_ready(
-                build_result(
-                    learning_zone_parsed_count,
-                    train_class_parsed_count,
-                    0,
-                    0,
-                    manual_entry_urls,
-                )
-            )
-
-    def entry_before_close(counts: tuple[int, int, int]) -> None:
-        _, learning_count, exam_count = counts
-        notify_result_ready(
-            build_result(
-                learning_zone_parsed_count,
-                train_class_parsed_count,
-                learning_count,
-                exam_count,
-                manual_entry_urls,
-            )
-        )
-
-    manual_record_count = 0
-    manual_exam_record_count = 0
-
-    if needs_browser:
-        auto_parts = sum(
-            [
-                1 if direct_subject_urls else 0,
-                1 if auto_zone_urls else 0,
-                1 if train_class_urls else 0,
-            ]
-        )
-        if status_callback:
-            if auto_parts >= 2 and manual_entry_urls:
-                status_callback(
-                    "将在同一浏览器会话中完成主题/专区/培训班解析，随后处理入口页"
-                )
-            elif auto_parts >= 2:
-                status_callback("将在同一浏览器会话中完成主题/专区/培训班解析")
-            elif needs_auto_browser and manual_entry_urls:
-                status_callback(
-                    "将在同一浏览器会话中完成自动解析，随后处理入口页"
-                )
-
-        # 有入口必须有头；仅自动批保持默认（与 create_browser_context 一致）
-        browser_kwargs: dict = {}
-        if manual_entry_urls:
-            browser_kwargs["headless"] = False
-
-        async with create_browser_context(**browser_kwargs) as (_, shared_context):
-            if needs_auto_browser:
-                await _run_auto_browser_jobs(shared_context)
-
-            if manual_entry_urls:
-                if status_callback and needs_auto_browser:
-                    status_callback(
-                        "自动解析已完成，请在同一浏览器中处理入口页"
-                        "（同时只打开一条，关闭后继续下一条）"
-                    )
-                entry_kwargs: dict = {
-                    "status_callback": status_callback,
-                    "context": shared_context,
-                }
-                if result_ready_callback is not None:
-                    entry_kwargs["before_close_callback"] = entry_before_close
-                (
-                    _,
-                    manual_record_count,
-                    manual_exam_record_count,
-                ) = await collect_learning_links_from_entry_urls(
-                    manual_entry_urls,
-                    **entry_kwargs,
-                )
-    result = build_result(
-        learning_zone_parsed_count,
-        train_class_parsed_count,
-        manual_record_count,
-        manual_exam_record_count,
-        manual_entry_urls,
-    )
-    notify_result_ready(result)
     return result
 
 
@@ -517,14 +312,23 @@ async def run_reference_collection_workflow(
     subject_urls: list[str],
     status_callback: StatusCallback | None = None,
 ) -> dict:
-    from core.discovery.reference_collector import collect_reference_materials
-
-    if status_callback:
-        status_callback("开始保存课程课件和视频 AI 导学资料")
-    result = await collect_reference_materials(
-        subject_urls,
-        status_callback=status_callback,
-    )
-    if status_callback:
-        status_callback(f"资料保存{'完成' if result.get('complete') else '结束，仍有未完成项'}：{result['output_dir']}")
-    return result
+    from core.app.service import ApplicationService
+    outcomes = await ApplicationService().references(subject_urls,status_callback=status_callback)
+    details = [o.get('details',{}) for o in outcomes]
+    from core.config import REFERENCE_OUTPUT_DIR
+    return {
+        'complete': all(o['status']=='COMPLETED' for o in outcomes),
+        'output_dir': str(REFERENCE_OUTPUT_DIR),
+        'course_count': sum(d.get('course_count',0) for d in details),
+        'section_count': sum(d.get('section_count',0) for d in details),
+        'document_count': sum(d.get('document_count',0) for d in details),
+        'pdf_count': sum(d.get('pdf_count',0) for d in details),
+        'document_failed_count': sum(d.get('document_failed_count',0) for d in details),
+        'course_failed_count': sum(d.get('course_failed_count',0) for d in details),
+        'video_count': sum(d.get('video_count',0) for d in details),
+        'video_with_items': sum(d.get('video_with_items',0) for d in details),
+        'downloaded_count': sum(d.get('downloaded_count',0) for d in details),
+        'summary_count': sum(d.get('summary_count',0) for d in details),
+        'failed_count': sum(d.get('failed_count',0) for d in details),
+        'outcomes': outcomes,
+    }

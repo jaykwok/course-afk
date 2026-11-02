@@ -5,6 +5,7 @@ No configuration or UI imports: browser lifecycle helpers stay independent.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 from contextlib import contextmanager
 from dataclasses import dataclass
 import logging
@@ -25,23 +26,34 @@ _lock = threading.Lock()
 
 
 def run_operation(awaitable, *, exception_handler_factory=None):
+    from core.workflow.host import get_host
+    host = get_host()
     thread_id = threading.get_ident()
+    operation = _Operation(host.loop)
+    with _lock:
+        _operations[thread_id] = operation
+
+    async def tracked():
+        operation.task = asyncio.current_task()
+        if exception_handler_factory:
+            host.loop.set_exception_handler(exception_handler_factory(host.loop.get_exception_handler()))
+        if operation.stopping:
+            operation.task.cancel()
+        return await awaitable
+
     try:
-        with asyncio.Runner() as runner:
-            loop = runner.get_loop()
-            if exception_handler_factory:
-                loop.set_exception_handler(exception_handler_factory(loop.get_exception_handler()))
-            operation = _Operation(loop)
-            with _lock:
-                _operations[thread_id] = operation
-
-            async def tracked():
-                operation.task = asyncio.current_task()
-                if operation.stopping:
-                    operation.task.cancel()
-                return await awaitable
-
-            return runner.run(tracked())
+        future = host.submit(tracked())
+        try:
+            return future.result()
+        except KeyboardInterrupt:
+            interrupt_running_async(include_current=True)
+            try:
+                future.result(timeout=30)
+            except BaseException:
+                pass
+            raise
+        except concurrent.futures.CancelledError:
+            raise asyncio.CancelledError from None
     finally:
         # Keep registration throughout Runner.__exit__: a second ESC must not
         # abandon the UI while asynchronous generators/resources are closing.
@@ -206,14 +218,65 @@ def protect_application_children() -> None:
         _application_job = WindowsJob(os.getpid())
 
 
-def own_playwright_driver(playwright) -> WindowsJob | None:
+def own_playwright_driver(playwright) -> WindowsJob | PosixDriver | None:
     """Isolate the Playwright transport detail in one adapter."""
     implementation = getattr(playwright, "_impl_obj", playwright)
     connection = getattr(implementation, "_connection", None)
     transport = getattr(connection, "_transport", None)
     process = getattr(transport, "_proc", None)
     pid = getattr(process, "pid", None)
-    return WindowsJob(pid) if os.name == "nt" and isinstance(pid, int) else None
+    if not isinstance(pid, int):
+        return None
+    return WindowsJob(pid) if os.name == "nt" else PosixDriver(process)
+
+
+class PosixDriver:
+    """Bounded fallback for the exact owned transport, never name-based killing."""
+    def __init__(self, process):
+        self.process = process
+        import psutil
+        self.owner = psutil.Process(process.pid)
+        self.children = []
+
+    def capture(self):
+        import psutil
+        try:
+            known={child.pid:child for child in self.children}
+            known.update({child.pid:child for child in self.owner.children(recursive=True)})
+            self.children=list(known.values())
+        except psutil.Error:
+            pass
+
+    async def terminate(self, timeout=3):
+        import psutil
+        process = self.process
+        self.capture()
+        try:
+            if process.returncode is None:
+                process.terminate()
+        except ProcessLookupError:
+            pass
+        try:
+            await asyncio.wait_for(process.wait(), timeout)
+        except TimeoutError:
+            if process.returncode is None:
+                process.kill()
+            await asyncio.wait_for(process.wait(), 1)
+        finally:
+            # psutil Process stores PID + creation time and checks identity on
+            # signals. A recycled PID cannot target an unrelated user's browser.
+            for child in reversed(self.children):
+                try:
+                    child.terminate()
+                except psutil.Error:
+                    pass
+            _, alive = await asyncio.to_thread(psutil.wait_procs,self.children,timeout=1)
+            for child in alive:
+                try:
+                    child.kill()
+                except psutil.Error:
+                    pass
+            await asyncio.to_thread(psutil.wait_procs,alive,timeout=1)
 
 
 @contextmanager
@@ -235,7 +298,10 @@ def application_lock(path: Path):
                 raise RuntimeError("本项目已有运行实例，请先关闭原窗口") from exc
         else:
             import fcntl
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as exc:
+                raise RuntimeError("本项目已有运行实例，请先关闭原窗口") from exc
         try:
             yield
         finally:

@@ -20,7 +20,16 @@ def link_queue_paths(include_exams: bool = False) -> dict[str, Path]:
 
 @serialized
 def snapshot_link_queues(include_exams: bool = False) -> dict[Path, bytes | None]:
-    return {path: path.read_bytes() if path.exists() else None for path in link_queue_paths(include_exams).values()}
+    from core.tasks.store import read_queue
+    result={}
+    for path in link_queue_paths(include_exams).values():
+        raw=path.read_bytes() if path.exists() else None
+        try:
+            rows=read_queue(path)
+            result[path]=raw if raw is not None and json.loads(raw)==rows else (json.dumps(rows,ensure_ascii=False).encode() if rows or raw is not None else None)
+        except (ValueError,UnicodeError):
+            result[path]=raw
+    return result
 
 
 def queue_record_count(content: bytes | None) -> int | None:
@@ -67,10 +76,20 @@ def clear_link_queues(
     })
     cleared = []
     try:
-        for path, content in snapshot.items():
-            if content is not None:
-                write_bytes_atomic(path, b"[]\n")
-                cleared.append(path)
+        from contextlib import ExitStack
+        from core.tasks.store import repository_for
+        from core.tasks.identity import account_id
+        repositories={repository_for(path).path:repository_for(path) for path in paths.values()}
+        for index,repository in enumerate(repositories.values()):
+            repository.backup(backup/f'state-{index}.sqlite')
+        with ExitStack() as stack:
+            connections={path:stack.enter_context(repo.connect()) for path,repo in repositories.items()}
+            for path, content in snapshot.items():
+                db=connections[repository_for(path).path]
+                db.execute("DELETE FROM queue_items WHERE collection=? AND task_id IN (SELECT task_id FROM tasks WHERE account=?)",(path.name,account_id()))
+                if content is not None:
+                    write_bytes_atomic(path, b"[]\n")
+                    cleared.append(path)
     except OSError as exc:
         rollback_errors = []
         for path in cleared:

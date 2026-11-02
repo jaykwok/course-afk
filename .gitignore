@@ -25,6 +25,7 @@ tmp_*
 .pytest_cache/
 htmlcov/
 build/
+/build-*.txt
 dist/
 
 # Local capture / reverse-engineering experiments (do not upload)

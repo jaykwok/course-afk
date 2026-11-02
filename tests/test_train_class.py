@@ -385,8 +385,7 @@ class TrainClassCollectionTests(unittest.IsolatedAsyncioTestCase):
         page.context.request.registration_status = 1
         url = "https://kc.zhixueyun.com/#/train-new/class-detail/6b5003f9-9163-4384-9240-8f3225ab373d"
         with patch("core.discovery.train_class.enqueue_learning_links_with_subject_expand", new=AsyncMock()) as enqueue, patch("core.discovery.train_class.record_learning_failure") as failure, patch("core.discovery.train_class.remove_learning_failure") as remove:
-            with self.assertRaisesRegex(ClassEnrollmentError, "待审核"):
-                await collect_learning_links_from_train_class_urls([url], context=FakeTrainClassContext(page))
+            self.assertEqual(await collect_learning_links_from_train_class_urls([url], context=FakeTrainClassContext(page)),0)
         enqueue.assert_not_awaited()
         remove.assert_not_called()
         self.assertEqual(failure.call_args.args, (url,))

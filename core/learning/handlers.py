@@ -26,7 +26,7 @@ from core.learning.common import (
     wait_until_learned,
 )
 from core.queues.learning import record_learning_failure
-from core.learning.popups import check_and_handle_rating_popup, check_rating_popup_periodically
+from core.learning.popups import check_and_handle_rating_popup
 from core.learning.playback import ensure_course_started, read_course_playback_state
 
 
@@ -41,60 +41,16 @@ async def _cleanup_background_tasks(*tasks) -> None:
     await asyncio.gather(*active_tasks, return_exceptions=True)
 
 
-_VIDEO_PLAYER_STATE_SCRIPT = r"""
-() => {
-  const isVisible = (element) => {
-    if (!element) return false;
-    const style = window.getComputedStyle(element);
-    const rect = element.getBoundingClientRect();
-    return style.display !== "none" && style.visibility !== "hidden" &&
-      Number(style.opacity || 1) !== 0 && rect.width > 0 && rect.height > 0;
-  };
-  const visibleCount = (selector) =>
-    Array.from(document.querySelectorAll(selector)).filter(isVisible).length;
-  const videos = Array.from(document.querySelectorAll("video")).map((video) => ({
-    visible: isVisible(video),
-    readyState: Number(video.readyState || 0),
-    networkState: Number(video.networkState || 0),
-    paused: Boolean(video.paused),
-    duration: Number.isFinite(video.duration) ? Number(video.duration) : null,
-    currentTime: Number.isFinite(video.currentTime) ? Number(video.currentTime) : null,
-    errorCode: video.error ? Number(video.error.code || 0) : null,
-    sourceKind: String(video.currentSrc || "").startsWith("blob:") ? "blob" :
-      (video.currentSrc ? "url" : "none"),
-  }));
-  const selectors = {
-    progress: visibleCount(".vjs-progress-control"),
-    duration: visibleCount(".vjs-duration-display"),
-    video: visibleCount("video"),
-    player: visibleCount(".video-js, [class*='video-player']"),
-  };
-  const mediaReady = videos.some((video) =>
-    video.visible && video.errorCode === null && video.readyState >= 1 &&
-      video.duration !== null && video.duration > 0
-  );
-  return {
-    ready: mediaReady || (selectors.progress > 0 && selectors.duration > 0),
-    selectors,
-    videos,
-  };
-}
-"""
-
-
 async def _read_video_player_state(page) -> dict[str, object]:
-    try:
-        state = await page.evaluate(_VIDEO_PLAYER_STATE_SCRIPT)
-        if isinstance(state, dict):
-            return state
-        return {"ready": False, "probe_error": "播放器状态探针返回非对象"}
-    except Exception as exc:
-        if is_target_closed_exception(exc):
-            raise
-        return {
-            "ready": False,
-            "probe_error": f"{type(exc).__name__}: {str(exc)[:300]}",
-        }
+    from core.learning.playback import read_playback_snapshot
+    state = await read_playback_snapshot(page)
+    return {**state, 'videos': [{**video,
+        'readyState': video.get('ready_state',video.get('readyState')),
+        'networkState': video.get('network_state',video.get('networkState')),
+        'currentTime': video.get('current_time',video.get('currentTime')),
+        'errorCode': video.get('error_code',video.get('errorCode')),
+        'sourceKind': video.get('source_kind',video.get('sourceKind')),
+    } for video in state.get('videos',[])]}
 
 
 async def _describe_video_target(box) -> dict[str, object]:
@@ -262,93 +218,103 @@ async def _watch_video_playback(page, box, *, watch_seconds: int) -> None:
         return
 
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + watch_seconds
+    from core.learning.course_session import PhaseBudget
+    from core.learning.progress import section_id_from_box
+    budget=PhaseBudget(watch_seconds,"watch:"+str(await section_id_from_box(box)),offline_consumes=False)
+    deadline = loop.time() + budget.remaining
     extended_total = 0.0
     stall_cap_logged = False
     media_ended = False
     last_media_time: float | None = None
 
-    while True:
-        remaining = deadline - loop.time()
-        if remaining <= 0:
-            return
+    try:
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return
 
-        slice_seconds = next_slice(
-            remaining,
-            min_slice=VIDEO_WATCH_SLICE_MIN,
-            max_slice=VIDEO_WATCH_SLICE_MAX,
-        )
-        # 用 page.wait_for_timeout 而非 asyncio.sleep：页面/整窗被关时会直接抛，
-        # 由上层的 TargetClosed 路径接管（保存剩余链接并停止）。
-        await page.wait_for_timeout(int(slice_seconds * 1000))
-
-        if is_learned(await read_section_progress_text(box)):
-            logging.info(
-                "章节进度已提前标记为已学, 剩余 %s 秒不再空等",
-                max(0, round(deadline - loop.time())),
+            slice_seconds = next_slice(
+                remaining,
+                min_slice=VIDEO_WATCH_SLICE_MIN,
+                max_slice=VIDEO_WATCH_SLICE_MAX,
             )
-            return
+            # 用 page.wait_for_timeout 而非 asyncio.sleep：页面/整窗被关时会直接抛，
+            # 由上层的 TargetClosed 路径接管（保存剩余链接并停止）。
+            await page.wait_for_timeout(int(slice_seconds * 1000))
 
-        video = _pick_active_video(await _read_video_player_state(page))
-        if video is None:
-            continue
-
-        media_time = _as_seconds(video.get("currentTime"))
-        duration = _as_seconds(video.get("duration"))
-        paused = bool(video.get("paused"))
-
-        if (
-            media_time is not None
-            and duration is not None
-            and duration > 0
-            and media_time >= duration - _VIDEO_END_TOLERANCE
-        ):
-            # 已播到片尾就不可能再推进了：停止顺延，但原计划时长照等
-            # （剩余时长被向上取整到整分钟，片尾之后仍可能差几十秒才同步）。
-            if not media_ended:
-                media_ended = True
-                logging.info("视频已播放至片尾, 继续等待进度同步")
-            last_media_time = media_time
-            continue
-
-        advanced = (
-            media_time - last_media_time
-            if media_time is not None and last_media_time is not None
-            else None
-        )
-        last_media_time = media_time
-
-        if paused:
-            # 互动练习等弹窗会暂停播放：先处理弹窗再点回播放
-            await check_and_handle_rating_popup(page)
-            await ensure_course_started(page, box)
-            logging.info("检测到视频暂停，已通过课程统一恢复流程确认状态")
-
-        if advanced is None:
-            lag = slice_seconds if paused else 0.0
-        else:
-            lag = max(0.0, slice_seconds - advanced)
-        if lag <= _VIDEO_LAG_TOLERANCE:
-            continue
-
-        extra = min(lag, max(0.0, VIDEO_STALL_MAX_EXTRA_WAIT - extended_total))
-        if extra <= 0:
-            # 只是不再顺延，原计划时长仍要等满
-            if not stall_cap_logged:
-                stall_cap_logged = True
-                logging.warning(
-                    "视频播放持续停滞, 顺延已达上限 %s 秒, 后续不再顺延",
-                    VIDEO_STALL_MAX_EXTRA_WAIT,
+            from core.learning.progress import read_server_section_state, section_completed_on_server
+            if section_completed_on_server(await read_server_section_state(page,box)):
+                logging.info(
+                    "章节进度已提前标记为已学, 剩余 %s 秒不再空等",
+                    max(0, round(deadline - loop.time())),
                 )
-            continue
-        deadline += extra
-        extended_total += extra
-        logging.info(
-            "视频播放落后墙钟 %.0f 秒(暂停/缓冲), 本轮顺延 %.0f 秒, 累计 %.0f 秒",
-            lag,
-            extra,
-            extended_total,
-        )
+                return
+
+            await ensure_course_started(page,box)
+            video = _pick_active_video(await _read_video_player_state(page))
+            if video is None:
+                continue
+
+            media_time = _as_seconds(video.get("currentTime"))
+            duration = _as_seconds(video.get("duration"))
+            paused = bool(video.get("paused"))
+
+            if (
+                media_time is not None
+                and duration is not None
+                and duration > 0
+                and media_time >= duration - _VIDEO_END_TOLERANCE
+            ):
+                # 已播到片尾就不可能再推进了：停止顺延，但原计划时长照等
+                # （剩余时长被向上取整到整分钟，片尾之后仍可能差几十秒才同步）。
+                if not media_ended:
+                    media_ended = True
+                    logging.info("视频已播放至片尾, 继续等待进度同步")
+                last_media_time = media_time
+                continue
+
+            advanced = (
+                media_time - last_media_time
+                if media_time is not None and last_media_time is not None
+                else None
+            )
+            last_media_time = media_time
+
+            if paused:
+                # 互动练习等弹窗会暂停播放：先处理弹窗再点回播放
+                await check_and_handle_rating_popup(page)
+                await ensure_course_started(page, box)
+                logging.info("检测到视频暂停，已通过课程统一恢复流程确认状态")
+
+            if advanced is None:
+                lag = slice_seconds if paused else 0.0
+            else:
+                lag = max(0.0, slice_seconds - advanced)
+            if lag <= _VIDEO_LAG_TOLERANCE:
+                continue
+
+            extra = min(lag, max(0.0, VIDEO_STALL_MAX_EXTRA_WAIT - extended_total))
+            if extra <= 0:
+                # 只是不再顺延，原计划时长仍要等满
+                if not stall_cap_logged:
+                    stall_cap_logged = True
+                    logging.warning(
+                        "视频播放持续停滞, 顺延已达上限 %s 秒, 后续不再顺延",
+                        VIDEO_STALL_MAX_EXTRA_WAIT,
+                    )
+                continue
+            extra=budget.extend(extra,VIDEO_STALL_MAX_EXTRA_WAIT)
+            deadline += extra
+            extended_total += extra
+            budget.save()
+            logging.info(
+                "视频播放落后墙钟 %.0f 秒(暂停/缓冲), 本轮顺延 %.0f 秒, 累计 %.0f 秒",
+                lag,
+                extra,
+                extended_total,
+            )
+    finally:
+        budget.save()
 
 
 async def handle_video(box, page):
@@ -387,13 +353,10 @@ async def handle_video(box, page):
             description="视频学习进度",
         )
     )
-    popup_check_task = asyncio.create_task(
-        check_rating_popup_periodically(page, watch_seconds)
-    )
     try:
         await watch_task
     finally:
-        await _cleanup_background_tasks(watch_task, timer_task, popup_check_task)
+        await _cleanup_background_tasks(watch_task, timer_task)
 
     logging.info("课程学习完毕, 确认课程进度同步状态...")
     await wait_until_learned(

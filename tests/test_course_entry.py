@@ -32,8 +32,10 @@ class SharedCourseEntryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_learning_calls_shared_preparation(self):
         page = SimpleNamespace(url="course", locator=lambda _: SimpleNamespace(inner_text=AsyncMock(return_value="title")))
-        with patch.object(flows, "prepare_course_page", new=AsyncMock()) as prepare, patch.object(flows, "_is_course_completed", new=AsyncMock(return_value=True)):
-            self.assertTrue(await flows.course_learning(page))
+        with patch.object(flows, "prepare_course_page", new=AsyncMock()) as prepare, patch.object(flows, "_collect_chapter_boxes",new=AsyncMock(return_value=[])):
+            from core.abort import PartialCourseFailure
+            with self.assertRaises(PartialCourseFailure):
+                await flows.course_learning(page)
         prepare.assert_awaited_once_with(page)
 
 

@@ -457,6 +457,8 @@ def launch_tui() -> int:
     signal.signal(signal.SIGTERM, lambda *_: app.exit(143))
     try:
         with application_lock(DATA_DIR / "application.lock"):
+            from core.tasks.migration import initialize_store
+            initialize_store()
             protect_application_children()
             result = app.run()
             if app._launcher_thread is not None and app._launcher_thread.is_alive():
@@ -465,5 +467,7 @@ def launch_tui() -> int:
                 os._exit(1)
         return int(app._exit_status or result or 0)
     finally:
+        from core.workflow.host import shutdown_host
+        shutdown_host()
         signal.signal(signal.SIGTERM, previous_term)
         frontend.restore()

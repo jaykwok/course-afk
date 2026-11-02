@@ -48,6 +48,18 @@ DISMISS_TOPMOST_OVERLAY_SCRIPT = """
   const candidates = allElements
     .filter(isVisible)
     .filter(element => {
+      // Preserve recognized business dialogs, including late arriving ones.
+      let current = element;
+      while (current) {
+        if (current.matches?.('.ant-modal-content, [role="dialog"], .dialog, [data-region="modal:modal"]')) {
+          if (current.querySelector('.ant-rate, .preview-list, .answer-input-shot') ||
+              /归档|继续学习|我要交卷|确认交卷|提交试卷|评分|评价/.test(current.textContent || '')) return false;
+        }
+        current = composedParent(current);
+      }
+      return true;
+    })
+    .filter(element => {
       const descriptor = [
         element.id,
         String(element.className?.baseVal || element.className || ""),

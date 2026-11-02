@@ -522,8 +522,8 @@ async def main(
                 timeout=max(1, int(flow_timeout)),
             )
             result["flow"] = {
-                "status": "kept_pending" if keep_pending else "completed",
-                "keep_pending": keep_pending,
+                "status": keep_pending.status,
+                "outcome": keep_pending.to_dict(),
             }
         except asyncio.TimeoutError:
             result["flow"] = {

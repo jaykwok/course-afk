@@ -209,6 +209,12 @@ def _env_int(name: str, default: int) -> int:
 def _default_browser_channel(browser_type: str) -> str | None:
     if browser_type == "chromium" and sys.platform.startswith("win"):
         return "msedge"
+    if browser_type == "chromium" and sys.platform == "darwin":
+        for name, channel in (("Google Chrome", "chrome"), ("Microsoft Edge", "msedge")):
+            if any((base / f"{name}.app").exists() for base in (Path("/Applications"), Path.home() / "Applications")):
+                return channel
+        # Explicit BROWSER_CHANNEL="" opts into installed Playwright Chromium.
+        return "chrome"
     return None
 
 

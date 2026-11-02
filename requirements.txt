@@ -7,3 +7,6 @@ openai
 httpx
 rich
 textual
+# Workflow history compatibility: upgrade only with interrupted-history tests.
+dbos==3.4.0
+psutil>=7.2,<8

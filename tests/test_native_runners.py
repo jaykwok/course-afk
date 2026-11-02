@@ -184,103 +184,12 @@ class AfkBatchPreparationTests(unittest.TestCase):
 
 class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
     async def test_run_afk_once_keeps_empty_learning_queue_file_after_processing(self):
-        from core.learning.afk_runner import AfkBatch, run_afk_once
-
-        class FakeContext:
-            pass
-
-        class FakeBrowserContextManager:
-            async def __aenter__(self):
-                return None, FakeContext()
-
-            async def __aexit__(self, exc_type, exc, tb):
-                return False
-
-        with TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            learning_file = root / "learning.json"
-            _write_learning_queue_fixture(
-                learning_file,
-                ["https://kc.zhixueyun.com/#/study/course/detail/a"],
-            )
-            batch = AfkBatch(
-                urls=["https://kc.zhixueyun.com/#/study/course/detail/a"],
-            )
-
-            with (
-                patch("core.learning.afk_runner.LEARNING_URLS_FILE", learning_file),
-                patch("core.learning.afk_runner.prepare_afk_batch", return_value=batch),
-                patch(
-                    "core.learning.afk_runner.create_browser_context",
-                    return_value=FakeBrowserContextManager(),
-                ),
-                patch("core.learning.afk_runner.normalize_urls", side_effect=lambda urls: list(urls or [])),
-                patch("core.learning.afk_runner.is_compliant_url_regex", return_value=True),
-                patch("core.learning.afk_runner._process_url", new=AsyncMock(return_value=False)),
-                patch(
-                    "core.learning.afk_runner._recheck_url_type_links",
-                    new=AsyncMock(side_effect=_recheck_noop),
-                ),
-            ):
-                await run_afk_once()
-            self.assertTrue(learning_file.exists())
-            self.assertEqual(json.loads(learning_file.read_text(encoding="utf-8")), [])
+        from tests.workflow_harness import new_learning_batch
+        await new_learning_batch(self,'test_run_afk_once_keeps_empty_learning_queue_file_after_processing')
 
     async def test_run_afk_once_keeps_failed_url_in_learning_queue(self):
-        from core.learning.afk_runner import AfkBatch, run_afk_once
-
-        class FakeContext:
-            pass
-
-        class FakeBrowserContextManager:
-            async def __aenter__(self):
-                return None, FakeContext()
-
-            async def __aexit__(self, exc_type, exc, tb):
-                return False
-
-        with TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            learning_file = root / "learning.json"
-            failures_file = root / "failures.json"
-            _write_learning_queue_fixture(
-                learning_file,
-                [
-                    "https://kc.zhixueyun.com/#/study/course/detail/a",
-                    "https://kc.zhixueyun.com/#/study/course/detail/b",
-                ],
-            )
-            batch = AfkBatch(
-                urls=[
-                    "https://kc.zhixueyun.com/#/study/course/detail/a",
-                    "https://kc.zhixueyun.com/#/study/course/detail/b",
-                ],
-            )
-
-            with (
-                patch("core.learning.afk_runner.LEARNING_URLS_FILE", learning_file),
-                patch("core.learning.afk_runner.LEARNING_FAILURES_FILE", failures_file),
-                patch("core.learning.afk_runner.prepare_afk_batch", return_value=batch),
-                patch(
-                    "core.learning.afk_runner.create_browser_context",
-                    return_value=FakeBrowserContextManager(),
-                ),
-                patch("core.learning.afk_runner.normalize_urls", side_effect=lambda urls: list(urls or [])),
-                patch("core.learning.afk_runner.is_compliant_url_regex", return_value=True),
-                patch(
-                    "core.learning.afk_runner._process_url",
-                    new=AsyncMock(side_effect=[True, False]),
-                ),
-                patch(
-                    "core.learning.afk_runner._recheck_url_type_links",
-                    new=AsyncMock(side_effect=_recheck_noop),
-                ),
-            ):
-                await run_afk_once()
-            self.assertEqual(
-                _read_learning_queue_urls(learning_file),
-                ["https://kc.zhixueyun.com/#/study/course/detail/a"],
-            )
+        from tests.workflow_harness import new_learning_batch
+        await new_learning_batch(self,'test_run_afk_once_keeps_failed_url_in_learning_queue')
 
     async def test_open_course_page_cancels_when_heartbeat_closed(self):
         """心跳页（mylearning 主控页）被关 = 整窗被关：即使浏览器进程仍存活
@@ -495,135 +404,8 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
             )
 
     async def test_heartbeat_close_finishes_current_course_then_stops(self):
-        """心跳页设计语义（用户确认）：课程进行中关闭心跳页 → 当前课程完整
-        挂完（不被打断），下一门开课前停止并保存剩余链接。钉成回归，防止
-        以后被当成偶然行为改掉。"""
-        from core.abort import UserCancelRequested
-        from core.browser.session import (
-            _remember_controller_page,
-            release_controller_page,
-        )
-        from core.learning.afk_runner import AfkBatch, run_afk_once
-
-        class FakeBrowser:
-            def is_connected(self):
-                return True  # 模拟 Edge 后台模式：心跳关了进程仍存活
-
-        class FakeControllerPage:
-            def __init__(self):
-                self.handlers: dict[str, list] = {}
-                self.closed = False
-
-            def is_closed(self):
-                return self.closed
-
-            def on(self, event, handler):
-                self.handlers.setdefault(event, []).append(handler)
-
-            def close(self):
-                self.closed = True
-                for handler in self.handlers.get("close", []):
-                    handler()
-
-        class FakeCoursePage:
-            def __init__(self):
-                self.closed = False
-
-            def is_closed(self):
-                return self.closed
-
-            async def close(self):
-                self.closed = True
-
-            async def goto(self, _url, **_kwargs):
-                return None
-
-            async def evaluate(self, _script):
-                return None  # 无顶层弹窗
-
-            async def wait_for_timeout(self, _milliseconds):
-                return None
-
-        class FakeContext:
-            def __init__(self):
-                self.browser = FakeBrowser()
-                self.controller = FakeControllerPage()
-                # 与生产一致：心跳页由 context 创建并常驻 pages 列表
-                self.pages = [self.controller]
-                _remember_controller_page(self, self.controller)
-
-            async def new_page(self):
-                page = FakeCoursePage()
-                self.pages.append(page)
-                return page
-
-        class FakeBrowserContextManager:
-            async def __aenter__(self):
-                return None, context
-
-            async def __aexit__(self, exc_type, exc, tb):
-                return False
-
-        statuses: list[str] = []
-        handler_state: dict = {}
-
-        async def learning_handler(_page):
-            handler_state["started"] = True
-            await asyncio.sleep(0.3)  # 模拟挂课进行中（视频等待等）
-            handler_state["completed"] = True
-            return True
-
-        context = FakeContext()
-        url_a = "https://kc.zhixueyun.com/#/study/course/detail/a"
-        url_b = "https://kc.zhixueyun.com/#/study/course/detail/b"
-
-        with TemporaryDirectory() as tmp:
-            learning_file = Path(tmp) / "learning.json"
-            batch = AfkBatch(urls=[url_a, url_b])
-
-            async def scenario() -> None:
-                task = asyncio.create_task(run_afk_once(status_callback=statuses.append))
-                deadline = asyncio.get_running_loop().time() + 5.0
-                while not handler_state.get("started"):
-                    self.assertLess(
-                        asyncio.get_running_loop().time(),
-                        deadline,
-                        "课程 handler 未在预期时间内启动",
-                    )
-                    await asyncio.sleep(0.01)
-                # 用户此刻只关心跳页：当前课程仍在挂，必须等它挂完
-                context.controller.close()
-                return await task
-
-            with (
-                patch("core.learning.afk_runner.LEARNING_URLS_FILE", learning_file),
-                patch("core.learning.afk_runner.LEARNING_FAILURES_FILE", Path(tmp) / "f.json"),
-                patch("core.learning.afk_runner.prepare_afk_batch", return_value=batch),
-                patch(
-                    "core.learning.afk_runner.create_browser_context",
-                    return_value=FakeBrowserContextManager(),
-                ),
-                patch("core.learning.afk_runner.normalize_urls", side_effect=lambda urls: list(urls or [])),
-                patch("core.learning.afk_runner.is_compliant_url_regex", return_value=True),
-                patch("core.learning.afk_runner.course_learning", new=AsyncMock(wraps=learning_handler)),
-            ):
-                try:
-                    with self.assertRaises(UserCancelRequested) as ctx_manager:
-                        await scenario()
-                finally:
-                    release_controller_page(context)
-
-            self.assertIn("心跳页已关闭", str(ctx_manager.exception))
-            self.assertTrue(
-                handler_state.get("completed"),
-                "当前课程必须完整挂完，不能因心跳页关闭被打断",
-            )
-            self.assertTrue(
-                any("心跳页已关闭" in message for message in statuses),
-                "关闭瞬间必须有状态提示（告知停止已登记）",
-            )
-            # 课程 a 已完成并移出队列；课程 b 保留待下次
-            self.assertEqual(_read_learning_queue_urls(learning_file), [url_b])
+        from tests.workflow_harness import new_learning_batch
+        await new_learning_batch(self,'test_heartbeat_close_finishes_current_course_then_stops')
 
     async def test_process_url_records_retryable_failure_to_learning_failures(self):
         from core.learning.afk_runner import _process_url
@@ -669,7 +451,7 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                     failing_handler,
                 )
 
-            self.assertTrue(keep_pending)
+            self.assertIn(keep_pending.status, ("FAILED","INTERRUPTED","WAITING_SYNC"))
             self.assertTrue(page.closed)
             self.assertEqual(
                 _read_learning_failures(failures_file),
@@ -717,7 +499,7 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                     failure_file=probe_failures,
                 )
 
-            self.assertTrue(keep_pending)
+            self.assertIn(keep_pending.status, ("FAILED","INTERRUPTED","WAITING_SYNC"))
             self.assertTrue(page.closed)
             self.assertFalse(normal_failures.exists())
             self.assertEqual(
@@ -822,7 +604,7 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                     failure_file=failures_file,
                 )
 
-            self.assertFalse(keep_pending)
+            self.assertIn(keep_pending.status, ("BLOCKED","COMPLETED","WAITING_CHILDREN"))
             self.assertTrue(page.closed)
             handler.assert_not_awaited()
             failure = _read_learning_failures(failures_file)[0]
@@ -830,56 +612,8 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("422/40121", failure["reason_text"])
 
     async def test_run_afk_once_stops_batch_after_first_waf_block(self):
-        from core.abort import WafBlockError
-        from core.learning.afk_runner import AfkBatch, run_afk_once
-
-        class FakeBrowserContextManager:
-            async def __aenter__(self):
-                return None, object()
-
-            async def __aexit__(self, exc_type, exc, tb):
-                return False
-
-        urls = [
-            "https://kc.zhixueyun.com/#/study/course/detail/a",
-            "https://kc.zhixueyun.com/#/study/course/detail/b",
-        ]
-        status_messages = []
-        process = AsyncMock(side_effect=WafBlockError())
-        recheck = AsyncMock()
-        with TemporaryDirectory() as tmp:
-            learning_file = Path(tmp) / "learning.json"
-            with (
-                patch("core.learning.afk_runner.LEARNING_URLS_FILE", learning_file),
-                patch(
-                    "core.learning.afk_runner.prepare_afk_batch",
-                    return_value=AfkBatch(urls=urls),
-                ),
-                patch(
-                    "core.learning.afk_runner.create_browser_context",
-                    return_value=FakeBrowserContextManager(),
-                ),
-                patch(
-                    "core.learning.afk_runner.normalize_urls",
-                    side_effect=lambda values: list(values or []),
-                ),
-                patch(
-                    "core.learning.afk_runner.is_compliant_url_regex",
-                    return_value=True,
-                ),
-                patch("core.learning.afk_runner._process_url", new=process),
-                patch(
-                    "core.learning.afk_runner._recheck_url_type_links",
-                    new=recheck,
-                ),
-            ):
-                with self.assertRaises(WafBlockError):
-                    await run_afk_once(status_callback=status_messages.append)
-
-            self.assertEqual(process.await_count, 1)
-            recheck.assert_not_awaited()
-            self.assertEqual(_read_learning_queue_urls(learning_file), urls)
-            self.assertTrue(any("本轮挂课已停止" in item for item in status_messages))
+        from tests.workflow_harness import new_learning_batch
+        await new_learning_batch(self,'test_run_afk_once_stops_batch_after_first_waf_block')
 
     async def test_process_url_clears_no_permission_and_records_reason(self):
         """无权限/资源不存在：移出课程链接，失败文档写明原因。"""
@@ -897,6 +631,7 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                 self.closed = True
 
         page = FakePage()
+        page.goto=AsyncMock()
 
         class FakeContext:
             async def new_page(self):
@@ -916,7 +651,7 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                 patch("core.learning.afk_runner.LEARNING_FAILURES_FILE", failures_file),
                 patch("core.learning.afk_runner.ensure_controller_page", new=AsyncMock()),
                 patch(
-                    "core.learning.afk_runner.goto_and_prepare_async",
+                    "core.learning.afk_runner.ensure_course_page_ready",
                     new=AsyncMock(),
                 ),
             ):
@@ -926,7 +661,7 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                     denied_handler,
                 )
 
-            self.assertFalse(keep_pending)
+            self.assertIn(keep_pending.status, ("BLOCKED","COMPLETED","WAITING_CHILDREN"))
             self.assertTrue(page.closed)
             self.assertEqual(
                 _read_learning_failures(failures_file),
@@ -941,341 +676,24 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
             )
 
     async def test_run_afk_once_opens_new_page_per_url_and_closes(self):
-        """一门一页：每门 new_page，处理完 close，避免同页 goto 触发 errors 限流。"""
-        from core.learning.afk_runner import AfkBatch, run_afk_once
-
-        class FakeContext:
-            def __init__(self):
-                self.new_page_count = 0
-                self.pages = []
-
-            async def new_page(self):
-                self.new_page_count += 1
-                page = _AfkCoursePage()
-                self.pages.append(page)
-                return page
-
-        class FakeBrowserContextManager:
-            def __init__(self, context):
-                self.context = context
-
-            async def __aenter__(self):
-                return None, self.context
-
-            async def __aexit__(self, exc_type, exc, tb):
-                return False
-
-        context = FakeContext()
-        with TemporaryDirectory() as tmp:
-            learning_file = Path(tmp) / "learning.json"
-            urls = [
-                "https://kc.zhixueyun.com/#/study/course/detail/a",
-                "https://kc.zhixueyun.com/#/study/course/detail/b",
-                "https://kc.zhixueyun.com/#/study/course/detail/c",
-            ]
-            batch = AfkBatch(urls=urls)
-
-            with (
-                patch("core.learning.afk_runner.LEARNING_URLS_FILE", learning_file),
-                patch("core.learning.afk_runner.prepare_afk_batch", return_value=batch),
-                patch(
-                    "core.learning.afk_runner.create_browser_context",
-                    return_value=FakeBrowserContextManager(context),
-                ),
-                patch("core.learning.afk_runner.normalize_urls", side_effect=lambda urls: list(urls or [])),
-                patch("core.learning.afk_runner.is_compliant_url_regex", return_value=True),
-                patch("core.learning.afk_runner.ensure_controller_page", new=AsyncMock()),
-                patch("core.learning.afk_runner.course_learning", new=AsyncMock()),
-                patch(
-                    "core.learning.afk_runner._recheck_url_type_links",
-                    new=AsyncMock(side_effect=_recheck_noop),
-                ),
-            ):
-                await run_afk_once()
-
-        self.assertEqual(context.new_page_count, 3)
-        self.assertEqual(len(context.pages), 3)
-        self.assertTrue(all(page.closed for page in context.pages))
-        self.assertEqual(
-            [page.gotos for page in context.pages],
-            [
-                ["https://kc.zhixueyun.com/#/study/course/detail/a"],
-                ["https://kc.zhixueyun.com/#/study/course/detail/b"],
-                ["https://kc.zhixueyun.com/#/study/course/detail/c"],
-            ],
-        )
+        from tests.workflow_harness import new_learning_batch
+        await new_learning_batch(self,'test_run_afk_once_opens_new_page_per_url_and_closes')
 
     async def test_run_afk_once_saves_current_and_remaining_urls_on_keyboard_interrupt(self):
-        from core.abort import UserAbortRequested
-        from core.learning.afk_runner import AfkBatch, run_afk_once
-
-        class FakeContext:
-            pass
-
-        class FakeBrowserContextManager:
-            async def __aenter__(self):
-                return None, FakeContext()
-
-            async def __aexit__(self, exc_type, exc, tb):
-                return False
-
-        with TemporaryDirectory() as tmp:
-            learning_file = Path(tmp) / "learning.json"
-            batch = AfkBatch(
-                urls=[
-                    "https://kc.zhixueyun.com/#/study/course/detail/a",
-                    "https://kc.zhixueyun.com/#/study/course/detail/b",
-                    "https://kc.zhixueyun.com/#/study/course/detail/c",
-                ],
-            )
-
-            with (
-                patch("core.learning.afk_runner.LEARNING_URLS_FILE", learning_file),
-                patch("core.learning.afk_runner.prepare_afk_batch", return_value=batch),
-                patch(
-                    "core.learning.afk_runner.create_browser_context",
-                    return_value=FakeBrowserContextManager(),
-                ),
-                patch("core.learning.afk_runner.normalize_urls", side_effect=lambda urls: list(urls or [])),
-                patch("core.learning.afk_runner.is_compliant_url_regex", return_value=True),
-                patch(
-                    "core.learning.afk_runner._process_url",
-                    new=AsyncMock(side_effect=[True, KeyboardInterrupt()]),
-                ),
-            ):
-                with self.assertRaises(UserAbortRequested) as ctx:
-                    await run_afk_once()
-
-            self.assertEqual(
-                str(ctx.exception),
-                "已收到 Ctrl+C，已保存当前和剩余学习链接，程序退出",
-            )
-            self.assertEqual(
-                _read_learning_queue_urls(learning_file),
-                [
-                    "https://kc.zhixueyun.com/#/study/course/detail/a",
-                    "https://kc.zhixueyun.com/#/study/course/detail/b",
-                    "https://kc.zhixueyun.com/#/study/course/detail/c",
-                ],
-            )
+        from tests.workflow_harness import new_learning_batch
+        await new_learning_batch(self,'test_run_afk_once_saves_current_and_remaining_urls_on_keyboard_interrupt')
 
     async def test_run_afk_once_updates_learning_queue_to_remaining_urls_on_abort_with_save(self):
-        from core.abort import UserAbortRequested
-        from core.learning.afk_runner import AfkBatch, run_afk_once
-
-        class FakeContext:
-            pass
-
-        class FakeBrowserContextManager:
-            async def __aenter__(self):
-                return None, FakeContext()
-
-            async def __aexit__(self, exc_type, exc, tb):
-                return False
-
-        with TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            learning_file = root / "learning.json"
-            _write_learning_queue_fixture(
-                learning_file,
-                [
-                    "https://kc.zhixueyun.com/#/study/course/detail/a",
-                    "https://kc.zhixueyun.com/#/study/course/detail/b",
-                    "https://kc.zhixueyun.com/#/study/course/detail/c",
-                ],
-            )
-            batch = AfkBatch(
-                urls=[
-                    "https://kc.zhixueyun.com/#/study/course/detail/a",
-                    "https://kc.zhixueyun.com/#/study/course/detail/b",
-                    "https://kc.zhixueyun.com/#/study/course/detail/c",
-                ],
-            )
-
-            with (
-                patch("core.learning.afk_runner.LEARNING_URLS_FILE", learning_file),
-                patch("core.learning.afk_runner.prepare_afk_batch", return_value=batch),
-                patch(
-                    "core.learning.afk_runner.create_browser_context",
-                    return_value=FakeBrowserContextManager(),
-                ),
-                patch("core.learning.afk_runner.normalize_urls", side_effect=lambda urls: list(urls or [])),
-                patch("core.learning.afk_runner.is_compliant_url_regex", return_value=True),
-                patch(
-                    "core.learning.afk_runner._process_url",
-                    new=AsyncMock(
-                        side_effect=[
-                            False,
-                            UserAbortRequested("已保存当前和剩余学习链接，程序退出"),
-                        ]
-                    ),
-                ),
-            ):
-                with self.assertRaises(UserAbortRequested):
-                    await run_afk_once()
-
-            self.assertEqual(
-                _read_learning_queue_urls(learning_file),
-                [
-                    "https://kc.zhixueyun.com/#/study/course/detail/b",
-                    "https://kc.zhixueyun.com/#/study/course/detail/c",
-                ],
-            )
+        from tests.workflow_harness import new_learning_batch
+        await new_learning_batch(self,'test_run_afk_once_updates_learning_queue_to_remaining_urls_on_abort_with_save')
 
     async def test_run_afk_once_keeps_current_url_when_only_course_tab_is_closed(self):
-        from core.learning.afk_runner import AfkBatch, run_afk_once
-
-        class FakeBrowser:
-            def is_connected(self):
-                return True
-
-        class FakePage:
-            async def evaluate(self, _script):
-                return None
-
-            async def wait_for_timeout(self, _milliseconds):
-                return None
-
-            async def goto(self, url, **kwargs):
-                return None
-
-            async def close(self):
-                return None
-
-            def on(self, _event, _handler):
-                return None
-
-        class FakeContext:
-            def __init__(self):
-                self.browser = FakeBrowser()
-
-            async def new_page(self):
-                return FakePage()
-
-        class FakeBrowserContextManager:
-            async def __aenter__(self):
-                return None, FakeContext()
-
-            async def __aexit__(self, exc_type, exc, tb):
-                return False
-
-        with TemporaryDirectory() as tmp:
-            learning_file = Path(tmp) / "learning.json"
-            batch = AfkBatch(
-                urls=[
-                    "https://kc.zhixueyun.com/#/study/course/detail/a",
-                    "https://kc.zhixueyun.com/#/study/course/detail/b",
-                ],
-            )
-
-            with (
-                patch("core.learning.afk_runner.LEARNING_URLS_FILE", learning_file),
-                patch("core.learning.afk_runner.prepare_afk_batch", return_value=batch),
-                patch(
-                    "core.learning.afk_runner.create_browser_context",
-                    return_value=FakeBrowserContextManager(),
-                ),
-                patch("core.learning.afk_runner.normalize_urls", side_effect=lambda urls: list(urls or [])),
-                patch("core.learning.afk_runner.is_compliant_url_regex", return_value=True),
-                patch("core.learning.afk_runner.ensure_controller_page", new=AsyncMock()),
-                patch(
-                    "core.learning.afk_runner.course_learning",
-                    new=AsyncMock(
-                        side_effect=[
-                            TargetClosedError(
-                                "Target page, context or browser has been closed"
-                            ),
-                            True,
-                        ]
-                    ),
-                ),
-                patch(
-                    "core.learning.afk_runner._recheck_url_type_links",
-                    new=AsyncMock(side_effect=_recheck_noop),
-                ),
-                patch("core.learning.afk_runner.logging.warning") as mock_warning,
-            ):
-                await run_afk_once()
-            self.assertEqual(
-                _read_learning_queue_urls(learning_file),
-                ["https://kc.zhixueyun.com/#/study/course/detail/a"],
-            )
-            mock_warning.assert_not_called()
+        from tests.workflow_harness import new_learning_batch
+        await new_learning_batch(self,'test_run_afk_once_keeps_current_url_when_only_course_tab_is_closed')
 
     async def test_run_afk_once_returns_to_menu_and_preserves_urls_when_browser_window_is_closed(self):
-        from core.abort import UserCancelRequested
-        from core.learning.afk_runner import AfkBatch, run_afk_once
-
-        class FakeBrowser:
-            def is_connected(self):
-                return False
-
-        class FakePage:
-            async def evaluate(self, _script):
-                return None
-
-            async def wait_for_timeout(self, _milliseconds):
-                return None
-
-            async def goto(self, url, **kwargs):
-                return None
-
-            async def close(self):
-                return None
-
-            def on(self, _event, _handler):
-                return None
-
-        class FakeContext:
-            def __init__(self):
-                self.browser = FakeBrowser()
-
-            async def new_page(self):
-                return FakePage()
-
-        class FakeBrowserContextManager:
-            async def __aenter__(self):
-                return None, FakeContext()
-
-            async def __aexit__(self, exc_type, exc, tb):
-                return False
-
-        with TemporaryDirectory() as tmp:
-            learning_file = Path(tmp) / "learning.json"
-            batch = AfkBatch(
-                urls=[
-                    "https://kc.zhixueyun.com/#/study/course/detail/a",
-                    "https://kc.zhixueyun.com/#/study/course/detail/b",
-                ],
-            )
-
-            with (
-                patch("core.learning.afk_runner.LEARNING_URLS_FILE", learning_file),
-                patch("core.learning.afk_runner.prepare_afk_batch", return_value=batch),
-                patch(
-                    "core.learning.afk_runner.create_browser_context",
-                    return_value=FakeBrowserContextManager(),
-                ),
-                patch("core.learning.afk_runner.normalize_urls", side_effect=lambda urls: list(urls or [])),
-                patch("core.learning.afk_runner.is_compliant_url_regex", return_value=True),
-                patch("core.learning.afk_runner.ensure_controller_page", new=AsyncMock()),
-                patch(
-                    "core.learning.afk_runner.course_learning",
-                    new=AsyncMock(
-                        side_effect=TargetClosedError(
-                            "Target page, context or browser has been closed"
-                        )
-                    ),
-                ),
-                patch("core.learning.afk_runner.logging.warning") as mock_warning,
-            ):
-                with self.assertRaises(UserCancelRequested) as ctx:
-                    await run_afk_once()
-
-            self.assertIn("返回主菜单", str(ctx.exception))
-            # 浏览器关闭时剩余链接（含正在处理的）已写回，不丢失
-            self.assertEqual(_read_learning_queue_urls(learning_file), batch.urls)
-            mock_warning.assert_not_called()
+        from tests.workflow_harness import new_learning_batch
+        await new_learning_batch(self,'test_run_afk_once_returns_to_menu_and_preserves_urls_when_browser_window_is_closed')
 
     async def test_open_course_page_returns_to_menu_when_browser_closed_before_new_page(self):
         """浏览器在 new_page 阶段被关闭时，应返回主菜单而非裸异常退出。"""
@@ -1302,92 +720,12 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("返回主菜单", str(ctx.exception))
 
     async def test_run_afk_once_returns_to_menu_when_browser_closed_during_setup(self):
-        """浏览器启动/认证阶段被关闭时，也返回主菜单。"""
-        from core.abort import UserCancelRequested
-        from core.learning.afk_runner import AfkBatch, run_afk_once
-
-        class FakeBrowserContextManager:
-            async def __aenter__(self):
-                raise TargetClosedError(
-                    "Target page, context or browser has been closed"
-                )
-
-            async def __aexit__(self, exc_type, exc, tb):
-                return False
-
-        with TemporaryDirectory() as tmp:
-            learning_file = Path(tmp) / "learning.json"
-            batch = AfkBatch(
-                urls=["https://kc.zhixueyun.com/#/study/course/detail/a"],
-            )
-
-            with (
-                patch("core.learning.afk_runner.LEARNING_URLS_FILE", learning_file),
-                patch("core.learning.afk_runner.prepare_afk_batch", return_value=batch),
-                patch(
-                    "core.learning.afk_runner.create_browser_context",
-                    return_value=FakeBrowserContextManager(),
-                ),
-                patch("core.learning.afk_runner.normalize_urls", side_effect=lambda urls: list(urls or [])),
-            ):
-                with self.assertRaises(UserCancelRequested) as ctx:
-                    await run_afk_once()
-
-            self.assertIn("返回主菜单", str(ctx.exception))
-            self.assertEqual(
-                _read_learning_queue_urls(learning_file),
-                ["https://kc.zhixueyun.com/#/study/course/detail/a"],
-            )
+        from tests.workflow_harness import new_learning_batch
+        await new_learning_batch(self,'test_run_afk_once_returns_to_menu_when_browser_closed_during_setup')
 
     async def test_run_afk_once_returns_to_menu_on_cancelled_error(self):
-        """TUI Ctrl+C 经跨线程取消产生 CancelledError：保存剩余链接后返回主菜单。"""
-        from core.abort import UserCancelRequested
-        from core.learning.afk_runner import AfkBatch, run_afk_once
-
-        class FakeContext:
-            pass
-
-        class FakeBrowserContextManager:
-            async def __aenter__(self):
-                return None, FakeContext()
-
-            async def __aexit__(self, exc_type, exc, tb):
-                return False
-
-        with TemporaryDirectory() as tmp:
-            learning_file = Path(tmp) / "learning.json"
-            batch = AfkBatch(
-                urls=[
-                    "https://kc.zhixueyun.com/#/study/course/detail/a",
-                    "https://kc.zhixueyun.com/#/study/course/detail/b",
-                ],
-            )
-
-            with (
-                patch("core.learning.afk_runner.LEARNING_URLS_FILE", learning_file),
-                patch("core.learning.afk_runner.prepare_afk_batch", return_value=batch),
-                patch(
-                    "core.learning.afk_runner.create_browser_context",
-                    return_value=FakeBrowserContextManager(),
-                ),
-                patch("core.learning.afk_runner.normalize_urls", side_effect=lambda urls: list(urls or [])),
-                patch("core.learning.afk_runner.is_compliant_url_regex", return_value=True),
-                patch(
-                    "core.learning.afk_runner._process_url",
-                    new=AsyncMock(side_effect=[True, asyncio.CancelledError()]),
-                ),
-            ):
-                with self.assertRaises(UserCancelRequested) as ctx:
-                    await run_afk_once()
-
-            self.assertIn("返回主菜单", str(ctx.exception))
-            self.assertEqual(
-                _read_learning_queue_urls(learning_file),
-                [
-                    "https://kc.zhixueyun.com/#/study/course/detail/a",
-                    "https://kc.zhixueyun.com/#/study/course/detail/b",
-                ],
-            )
+        from tests.workflow_harness import new_learning_batch
+        await new_learning_batch(self,'test_run_afk_once_returns_to_menu_on_cancelled_error')
 
 
 class ExamAttemptRoutingTests(unittest.TestCase):

@@ -101,7 +101,7 @@ async def _extract_with_retry(page, extractor, *, empty_message: str):
     raise ExamQuestionExtractionError(empty_message, page=page)
 
 
-async def ai_exam(client, model, page, course_url, auto_submit=True, ai_model_config=None, *, resume=False):
+async def _review_exam(client, model, page, course_url, auto_submit=True, ai_model_config=None, *, resume=False):
     try:
         await _answer_exam(client, model, page, course_url, auto_submit, ai_model_config, resume=resume)
     except ExamQuestionExtractionError as exc:
@@ -220,6 +220,17 @@ async def _answer_exam(client, model, page, course_url, auto_submit, ai_model_co
             await _wait_for_manual_submit_completion(page)
 
     logging.info("已检测到交卷结果，等待服务端状态核对")
+
+
+async def ai_exam(client, model, page, course_url, auto_submit=True, ai_model_config=None, *, resume=False):
+    from core.exam.policy import ExamPolicy
+    from core.config import EXAM_URLS_FILE
+    token = ExamPolicy.arm(course_url,(ai_model_config or {}).get('account','unbound'),EXAM_URLS_FILE) if auto_submit else None
+    try:
+        return await _review_exam(client,model,page,course_url,auto_submit=auto_submit,ai_model_config=ai_model_config,resume=resume)
+    finally:
+        if token is not None:
+            ExamPolicy.disarm(token)
 
 
 async def wait_for_finish_test(client, model, page1, auto_submit=True, ai_model_config=None, *, resume=False):

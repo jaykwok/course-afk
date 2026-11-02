@@ -120,9 +120,10 @@ class SyncConfirmationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("需再学", caught.exception.detail["last_progress_text"])
                 self.assertEqual(caught.exception.detail["server_progress"], server_state)
 
-    async def test_completed_dom_uses_fallback_when_server_is_unavailable(self):
+    async def test_completed_dom_remains_unconfirmed_when_server_is_unavailable(self):
         with patch.object(common, "read_server_section_state", new=AsyncMock(return_value=None)) as verify:
-            await common.wait_until_learned(Box(text="必修 视频 15:00"), object(), max_wait=0, poll_interval=1)
+            with self.assertRaises(SyncTimeoutError):
+                await common.wait_until_learned(Box(text="必修 视频 15:00"), object(), max_wait=0, poll_interval=1)
         verify.assert_awaited_once()
 
     async def test_server_completion_during_poll_exits_before_five_minute_cap(self):
@@ -180,7 +181,6 @@ class CourseFinalRecheckTests(unittest.IsolatedAsyncioTestCase):
         self.page = SimpleNamespace(url=COURSE_URL, wait_for_load_state=AsyncMock())
         for name in ("handle_rating_popup", "handle_archive_continue_popup", "ensure_course_page_ready", "_ensure_course_learning_view", "_activate_course_section"):
             self.enterContext(patch.object(flows, name, new=AsyncMock(return_value=False)))
-        self.enterContext(patch.object(flows, "_is_course_completed", new=AsyncMock(return_value=False)))
         self.enterContext(patch.object(flows, "_collect_chapter_boxes", new=AsyncMock(return_value=[("required", box) for box in self.boxes])))
         self.enterContext(patch.object(flows, "queue_course_exams_from_api", new=AsyncMock(return_value=None)))
         self.enterContext(patch.object(flows, "handle_video", new=AsyncMock(side_effect=SyncTimeoutError(detail={"last_progress_text": self.boxes[0].text}))))
@@ -189,18 +189,19 @@ class CourseFinalRecheckTests(unittest.IsolatedAsyncioTestCase):
         async def finish_document(*args):
             self.boxes[1].text = "必修 文档 05:00"
         self.enterContext(patch.object(flows, "handle_document", new=finish_document))
-        self.verify = self.enterContext(patch.object(flows, "read_server_section_states", new=AsyncMock(return_value={SECTION_ID: state(), DOCUMENT_ID: state(DOCUMENT_ID)})))
+        self.verify = self.enterContext(patch.object(flows, "read_server_section_states", new=AsyncMock(side_effect=[{SECTION_ID: state(status=1), DOCUMENT_ID: state(DOCUMENT_ID,status=1)}, {SECTION_ID: state(), DOCUMENT_ID: state(DOCUMENT_ID)}, {SECTION_ID: state(), DOCUMENT_ID: state(DOCUMENT_ID)}])))
 
     async def test_late_server_completion_clears_only_sync_failure_despite_stale_dom(self):
         self.assertTrue(await flows.course_learning(self.page))
-        self.verify.assert_awaited_once()
+        self.assertEqual(self.verify.await_count,3)
         self.record.assert_not_called()
 
     async def test_missing_document_completion_is_retained_with_section_identity(self):
         self.boxes[0].section_type = "1"
         self.boxes[0].text = "必修 文档 05:00\n需学 00:05"
         self.boxes[1].text = "必修 视频 15:00"
-        self.verify.return_value[SECTION_ID] = {"record_found": False, "finish_status": None}
+        self.verify.side_effect = None
+        self.verify.return_value = {SECTION_ID: {"record_found": False, "finish_status": None}, DOCUMENT_ID: state(DOCUMENT_ID)}
         with patch.object(flows, "handle_document", new=AsyncMock(side_effect=SyncTimeoutError())):
             with self.assertRaises(PartialCourseFailure) as caught:
                 await flows.course_learning(self.page)
@@ -210,6 +211,7 @@ class CourseFinalRecheckTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_failed_api_recheck_keeps_original_timeout(self):
         self.verify.return_value = None
+        self.verify.side_effect = None
         with self.assertRaises(PartialCourseFailure) as caught:
             await flows.course_learning(self.page)
         self.assertEqual(caught.exception.detail["chapter_failures"][0]["reason"], "sync_timeout")
@@ -219,7 +221,7 @@ class CourseFinalRecheckTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(PartialCourseFailure) as caught:
                 await flows.course_learning(self.page)
         self.assertEqual(caught.exception.detail["chapter_failures"][0]["reason"], "video_player_not_ready")
-        self.verify.assert_not_awaited()
+        self.assertEqual(self.verify.await_count,1)
 
 
 if __name__ == "__main__":

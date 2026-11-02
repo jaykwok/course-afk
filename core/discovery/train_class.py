@@ -95,11 +95,20 @@ async def ensure_class_enrolled(
 ) -> None:
     """对齐页面报名接口；提交一次，并以重新查询的 registerStatus=5 确认成功。"""
     progress = await _registration_progress(page, class_id, headers)
+    from core.workflow.host import activity_context, current_host
+    activity = activity_context.get()
+    repository = current_host().repository if activity else None
+    task_id = activity["task_id"] if activity else None
+    pending = repository.pending_intents(task_id, "enroll") if repository else []
     if str(progress["registerStatus"]) == "5":
+        for intent in pending:
+            repository.confirm_intent(intent["action_id"], "verified", {"registerStatus": "5", "classInfoId": class_id})
         if status_callback:
             status_callback("培训班已报名，继续收集课程链接")
         return
     _check_pending_registration(progress)
+    if pending:
+        raise ClassEnrollmentError("上次报名结果未确认；已重新查询，禁止重复报名，请在平台核实")
     options = progress.get("classInfoVo")
     if not isinstance(options, dict) or str(options.get("payType")) != "0":
         raise ClassEnrollmentError("培训班报名涉及付费或报名条件不完整，请在平台处理后重试入口")
@@ -110,6 +119,9 @@ async def ensure_class_enrolled(
 
     if status_callback:
         status_callback("培训班尚未报名，正在报名后再获取课程链接")
+    if activity:
+        current_host().authorize(activity)
+    intent = repository.intent(task_id, "enroll", {"classInfoId": class_id, "registerStatus": progress["registerStatus"]}) if repository else None
     payload = await fetch_json(
         page,
         f"{_REGISTRATION_API}/register",
@@ -126,6 +138,8 @@ async def ensure_class_enrolled(
             await page.wait_for_timeout(500)
         progress = await _registration_progress(page, class_id, headers)
         if str(progress["registerStatus"]) == "5":
+            if intent:
+                repository.confirm_intent(intent["action_id"], "verified", {"registerStatus": "5", "classInfoId": class_id})
             if status_callback:
                 status_callback("培训班报名成功，开始收集课程链接")
             return
@@ -467,6 +481,10 @@ async def collect_learning_links_from_train_class_urls(
                 record_learning_failure(url, reason="discovery_incomplete", reason_text=reason_text, detail={"source": "train_class"})
                 if not isinstance(exc, Exception):
                     raise
+                if isinstance(exc, ClassEnrollmentError):
+                    if status_callback:
+                        status_callback(str(exc))
+                    continue
                 logging.error(f"解析培训班失败 {url}: {exc}")
                 if status_callback:
                     status_callback(f"解析培训班失败: {exc}")

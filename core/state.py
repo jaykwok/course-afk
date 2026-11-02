@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
+import math
 
 from core.config import (
     EXAM_URLS_FILE,
@@ -33,12 +35,44 @@ class ProjectState:
     learning_failure_count: int
     exam_count: int
     manual_exam_count: int
+    unbound_count: int = 0
+
+
+@dataclass(frozen=True)
+class CredentialView:
+    status: str
+    expires_on: str | None = None
+    days_left: int | None = None
+
+
+def credential_view(state, metadata, *, clock=None) -> CredentialView:
+    clock = clock or datetime
+    if not state.has_credential:
+        return CredentialView("missing")
+    if state.credential_expired:
+        return CredentialView("expired")
+    if metadata and getattr(metadata, "expires_at", None):
+        try:
+            expires = clock.fromisoformat(metadata.expires_at)
+            now = clock.now(tz=expires.tzinfo)
+            if now.date() >= expires.date():
+                return CredentialView("expired")
+            return CredentialView(
+                "valid",
+                f"{expires:%Y-%m-%d}",
+                max(1, math.ceil((expires - now).total_seconds() / 86400)),
+            )
+        except ValueError:
+            pass
+    return CredentialView("valid")
 
 
 def has_valid_credential() -> tuple[bool, bool]:
     try:
         cookies = load_cookies(COOKIES_FILE)
-        if not cookies or not any(isinstance(cookie, dict) and cookie.get("value") for cookie in cookies):
+        if not cookies or not any(
+            isinstance(cookie, dict) and cookie.get("value") for cookie in cookies
+        ):
             return False, True
     except (OSError, ValueError):
         return False, True
@@ -54,6 +88,13 @@ def has_valid_credential() -> tuple[bool, bool]:
 
 def collect_project_state() -> ProjectState:
     has_credential, credential_expired = has_valid_credential()
+    from core.config import DATA_DIR
+    from core.tasks.repository import TaskRepository
+
+    with TaskRepository(DATA_DIR / "workflows" / "state.sqlite").connect() as db:
+        unbound = db.execute(
+            "SELECT count(DISTINCT task_id) FROM queue_items JOIN tasks USING(task_id) WHERE account='unbound'"
+        ).fetchone()[0]
     return ProjectState(
         has_credential=has_credential,
         credential_expired=credential_expired,
@@ -61,6 +102,7 @@ def collect_project_state() -> ProjectState:
         learning_failure_count=count_learning_failures(LEARNING_FAILURES_FILE),
         exam_count=count_exam_urls(EXAM_URLS_FILE),
         manual_exam_count=count_manual_exam_urls(MANUAL_EXAM_FILE),
+        unbound_count=unbound,
     )
 
 

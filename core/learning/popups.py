@@ -182,20 +182,3 @@ async def check_and_handle_rating_popup(page):
         logging.warning(f"处理评价弹窗时出错: {str(exc)}")
 
     return False
-
-
-async def check_rating_popup_periodically(page, duration, interval=30):
-    """定期检查视频内评价弹窗, 持续指定时间。
-
-    间隔在 ``interval`` 附近抖动：整段挂机里每 30 秒一次的整点巡检本身就是
-    一条固定节拍, 抖开后总时长不变、也不会漏检（弹窗不会自己消失）。
-    """
-    elapsed = 0.0
-    duration = max(0.0, float(duration))
-    while elapsed < duration:
-        wait_time = min(jitter(interval, ratio=0.35, minimum=5), duration - elapsed)
-        if wait_time <= 0.05:
-            break
-        await asyncio.sleep(wait_time)
-        await check_and_handle_rating_popup(page)
-        elapsed += wait_time

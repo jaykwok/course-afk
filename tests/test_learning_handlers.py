@@ -75,10 +75,6 @@ class LearningHandlerTests(unittest.IsolatedAsyncioTestCase):
             ),
             patch("core.learning.handlers.timer", new=never_finishing_timer),
             patch(
-                "core.learning.handlers.check_rating_popup_periodically",
-                new=never_finishing_popup_check,
-            ),
-            patch(
                 "core.learning.handlers.check_and_handle_rating_popup",
                 new=AsyncMock(return_value=False),
             ),
@@ -98,8 +94,8 @@ class LearningHandlerTests(unittest.IsolatedAsyncioTestCase):
             # （timer 与 popup 是永不结束的假实现，只能靠取消收尾）
             task_states_after_cleanup = [task.done() for task in created_tasks]
 
-        self.assertEqual(len(created_tasks), 3)
-        self.assertEqual(task_states_after_cleanup, [True, True, True])
+        self.assertEqual(len(created_tasks), 2)
+        self.assertEqual(task_states_after_cleanup, [True, True])
 
     async def test_handle_document_reports_sync_timeout(self):
         """文档到点未同步：向课程流程报告失败，保留待办。"""
@@ -185,7 +181,7 @@ class _SleepingPage:
         self.waits.append(milliseconds)
         await asyncio.sleep(milliseconds / 1000)
 
-    async def evaluate(self, script):
+    async def evaluate(self, script, *_args):
         if "video.play()" in script:
             self.resume_calls += 1
             return True
@@ -202,6 +198,7 @@ class VideoWatchLoopTests(unittest.IsolatedAsyncioTestCase):
         page = _SleepingPage(_video_state())
 
         with (
+            patch("core.learning.progress.read_server_section_state",new=AsyncMock(return_value={"finish_status":2})),
             patch.object(handlers, "VIDEO_WATCH_SLICE_MIN", 0.1),
             patch.object(handlers, "VIDEO_WATCH_SLICE_MAX", 0.1),
             patch.object(
@@ -277,7 +274,7 @@ class VideoWatchLoopTests(unittest.IsolatedAsyncioTestCase):
         from core.learning import handlers
 
         class AdvancingPage(_SleepingPage):
-            async def evaluate(self, script):
+            async def evaluate(self, script, *_args):
                 if "video.play()" in script:
                     self.resume_calls += 1
                     return True
@@ -346,9 +343,6 @@ class VideoHandlerPacingTests(unittest.IsolatedAsyncioTestCase):
             patch.object(handlers, "_watch_video_playback", new=fake_watch),
             patch.object(handlers, "timer", new=never_finishing),
             patch.object(
-                handlers, "check_rating_popup_periodically", new=never_finishing
-            ),
-            patch.object(
                 handlers, "wait_until_learned", new=AsyncMock(return_value=None)
             ) as mock_sync,
             patch.object(
@@ -361,7 +355,7 @@ class VideoHandlerPacingTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(watch_calls["watch_seconds"], 60)
         self.assertLessEqual(watch_calls["watch_seconds"], 105)
         # 巡检提前结束时，进度条与弹窗巡检必须被取消
-        self.assertEqual(len(created_tasks), 3)
+        self.assertEqual(len(created_tasks), 2)
         self.assertTrue(all(task.done() for task in created_tasks))
         mock_sync.assert_awaited_once()
 

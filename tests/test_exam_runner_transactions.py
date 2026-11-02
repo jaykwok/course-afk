@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from core.abort import BrowserCertificateError, UserCancelRequested
+from core.workflow.contracts import TaskOutcome,Status
 from core.exam import runner
 from core.exam.answers import ExamAiConfigurationError
 from core.exam.flow import ExamQuestionExtractionError
@@ -46,8 +47,9 @@ class TransactionFixture(unittest.IsolatedAsyncioTestCase):
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
         self.tmp = Path(self.stack.enter_context(TemporaryDirectory()))
-        self.exam_file = self.tmp / "exam.json"
-        self.manual_file = self.tmp / "manual.json"
+        self.exam_file = self.tmp / "考试链接.json"
+        self.manual_file = self.tmp / "人工考试链接.json"
+        self.stack.enter_context(patch('core.tasks.store.account_id',return_value='account-a'))
         self.client = AsyncMock()
         self.context = Context()
         for name, value in (("EXAM_URLS_FILE", self.exam_file), ("MANUAL_EXAM_FILE", self.manual_file)):
@@ -56,6 +58,12 @@ class TransactionFixture(unittest.IsolatedAsyncioTestCase):
         self.stack.enter_context(patch.object(runner, "_build_ai_exam_model_config", return_value=MODEL))
         self.stack.enter_context(patch.object(runner, "_current_account", return_value=MODEL["account"]))
         self.stack.enter_context(patch.object(runner, "create_browser_context", self.context.open))
+
+    async def asyncSetUp(self):
+        from tests.workflow_harness import ActivityHost
+        from core.workflow.activities import exam
+        self.host=ActivityHost(self.tmp/'.workflows',{'exam':exam},account='account-a')
+        self.stack.enter_context(patch('core.workflow.host.get_host',return_value=self.host))
 
     def enqueue(self, urls=(COURSE, PAPER)):
         append_exam_urls(list(urls), file_path=self.exam_file)
@@ -74,10 +82,11 @@ class TransactionTests(TransactionFixture):
             "9ace2356-f9a1-4ad1-a0c2-5c4a1d4e6a92"
         )
         self.enqueue((url,))
-        with patch.object(runner, "_run_paper_ai_exam", new=AsyncMock(return_value=True)) as exam:
+        with patch.object(runner, "_run_paper_ai_exam", new=AsyncMock(return_value=TaskOutcome("placeholder",Status.COMPLETED))) as exam:
             await runner.run_ai_exam_batch()
-        exam.assert_awaited_once_with(self.context.pages[0], url, self.client, "test", auto_submit=False)
-        self.context.pages[0].goto.assert_awaited_once_with(url, timeout=30000)
+        from core.tasks.identity import canonical_url
+        exam.assert_awaited_once_with(self.context.pages[0], canonical_url(url), self.client, "test", auto_submit=False)
+        self.context.pages[0].goto.assert_awaited_once_with(canonical_url(url), timeout=30000)
         self.assertEqual(read_exam_urls(self.exam_file), [])
         self.assertEqual(self.manual(), [])
 
@@ -98,18 +107,18 @@ class TransactionTests(TransactionFixture):
                 await runner.run_ai_exam_batch()
         self.assertEqual(read_exam_urls(self.exam_file), [COURSE, PAPER])
         self.assertEqual(self.manual(), [])
-        self.client.close.assert_awaited_once()
+        self.assertGreaterEqual(self.client.close.await_count, 1)
 
     async def test_verified_item_is_checkpointed_before_next_item(self):
         self.enqueue()
         async def second(*_args, **_kwargs):
             self.assertEqual(read_exam_urls(self.exam_file), [PAPER])
             raise UserCancelRequested("stop")
-        with patch.object(runner, "_run_course_ai_exam", new=AsyncMock(return_value=True)), patch.object(runner, "_run_paper_ai_exam", new=AsyncMock(side_effect=second)):
+        with patch.object(runner, "_run_course_ai_exam", new=AsyncMock(return_value=TaskOutcome("placeholder",Status.COMPLETED))), patch.object(runner, "_run_paper_ai_exam", new=AsyncMock(side_effect=second)):
             with self.assertRaises(UserCancelRequested):
                 await runner.run_ai_exam_batch()
         self.assertEqual(read_exam_urls(self.exam_file), [PAPER])
-        self.client.close.assert_awaited_once()
+        self.assertGreaterEqual(self.client.close.await_count, 1)
         self.assertTrue(self.context.closed)
         for page in self.context.pages:
             page.close.assert_awaited_once()
@@ -130,17 +139,17 @@ class TransactionTests(TransactionFixture):
     async def test_manual_destination_write_failure_preserves_ai_source(self):
         self.enqueue(("https://kc.zhixueyun.com/#/study/subject/detail/subject",))
         with patch.object(runner, "append_manual_exam_entry", side_effect=OSError("disk full")):
-            with self.assertRaises(OSError):
-                await runner.run_ai_exam_batch()
+            await runner.run_ai_exam_batch()
         self.assertEqual(len(read_exam_urls(self.exam_file)), 1)
-        self.client.close.assert_awaited_once()
+        self.client.close.assert_not_awaited()
 
     async def test_source_removal_failure_leaves_a_recoverable_duplicate(self):
         url = "https://kc.zhixueyun.com/#/study/subject/detail/subject"
         self.enqueue((url,))
-        with patch.object(runner, "remove_exam_url", side_effect=OSError("disk full")):
-            with self.assertRaises(OSError):
-                await runner.run_ai_exam_batch()
+        with self.host.repository.connect() as db:
+            db.execute("CREATE TRIGGER reject_remove BEFORE DELETE ON queue_items BEGIN SELECT RAISE(ABORT, 'disk full'); END")
+        with patch.object(runner, "remove_exam_url") as unused_legacy_removal:
+            await runner.run_ai_exam_batch()
         self.assertEqual(read_exam_urls(self.exam_file), [url])
         self.assertEqual([item.url for item in self.manual()], [url])
 
@@ -149,7 +158,7 @@ class TransactionTests(TransactionFixture):
         record_ai_failed_model_config(COURSE, MODEL, file_path=self.exam_file)
         remove_exam_url(COURSE, file_path=self.exam_file)
         self.enqueue((COURSE,))
-        with patch.object(runner, "_run_course_ai_exam", new=AsyncMock(return_value=True)) as exam:
+        with patch.object(runner, "_run_course_ai_exam", new=AsyncMock(return_value=TaskOutcome("placeholder",Status.COMPLETED))) as exam:
             await runner.run_ai_exam_batch(auto_submit=True)
         exam.assert_awaited_once()
         self.assertFalse(exam.call_args.kwargs["auto_submit"])

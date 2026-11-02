@@ -7,6 +7,7 @@ from playwright.async_api import async_playwright, Error
 from core.exam.actions import read_existing_answers, select_answers
 from core.exam.parsing import extract_multi_questions_data
 from core.runtime import close_safely, own_playwright_driver
+from core.browser.session import launch_async_browser
 
 
 class BrowserDomTests(unittest.IsolatedAsyncioTestCase):
@@ -17,19 +18,13 @@ class BrowserDomTests(unittest.IsolatedAsyncioTestCase):
         try:
             playwright = await manager.start()
             job = own_playwright_driver(playwright)
-            if os.name == "nt":
-                self.assertIsNotNone(job, "pinned Playwright driver adapter must expose a pid")
-            try:
-                browser = await playwright.chromium.launch(headless=True, channel="msedge" if os.name == "nt" else None)
-            except Error as exc:
-                if "executable" in str(exc).lower() and ("exist" in str(exc).lower() or "distribution" in str(exc).lower()):
-                    self.skipTest("Install Edge/Playwright Chromium for offline DOM integration")
-                raise
+            self.assertIsNotNone(job, "pinned Playwright driver adapter must expose an owned pid")
+            browser = await launch_async_browser(playwright, headless=False)
             page = await browser.new_page()
             await page.route("**/*", lambda route: route.abort())
             await page.set_content('''<dl class="preview-list">
-                <dd onclick="this.querySelector('input').checked = !this.querySelector('input').checked"><input type="checkbox" checked>A. 甲</dd>
-                <dd onclick="this.querySelector('input').checked = !this.querySelector('input').checked"><input type="checkbox">B. 乙</dd>
+                <dd onclick="if(event.target.tagName !== 'INPUT') this.querySelector('input').checked = !this.querySelector('input').checked"><input type="checkbox" checked>A. 甲</dd>
+                <dd onclick="if(event.target.tagName !== 'INPUT') this.querySelector('input').checked = !this.querySelector('input').checked"><input type="checkbox">B. 乙</dd>
             </dl>''')
             question = {"type": "multiple", "text": "题干", "options": [{"label": "A", "text": "甲"}, {"label": "B", "text": "乙"}]}
             with patch("core.exam.actions.pause_between", new=AsyncMock()):

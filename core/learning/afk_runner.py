@@ -48,7 +48,6 @@ from core.queues.learning import (
     remove_learning_failure,
     write_learning_urls,
 )
-from core.browser.overlays import goto_and_prepare_async
 
 
 StatusCallback = Callable[[str], None]
@@ -294,321 +293,69 @@ async def _open_course_page(context):
         raise
 
 
-async def _process_url(
-    context,
-    url: str,
-    handler,
-    *,
-    capture_callback: CaptureCallback | None = None,
-    failure_file: Path | None = None,
-) -> bool:
-    """
-    新开标签处理单条学习链接，结束（成功/失败）后关闭该页。
-
-    返回是否需要保留在待学习队列。
-    """
+async def _process_url(context, url, handler, *, capture_callback=None, failure_file=None):
+    """One fresh page activity. A typed outcome never implies queue deletion."""
+    from core.workflow.contracts import TaskOutcome, Status
+    from core.workflow.errors import error_outcome
+    from core.workflow.host import activity_context
+    from core.tasks.identity import parse_entry, account_id
+    from core.browser.session import raise_for_certificate_error
     page = None
-    course_monitor: _CourseInfoMonitor | None = None
+    monitor = None
     failure_path = failure_file or LEARNING_FAILURES_FILE
+    current = activity_context.get()
+    task_id = current['task_id'] if current else parse_entry(url,account_id()).key.task_id
 
-    async def _capture(stage: str) -> None:
-        if capture_callback is None or page is None:
-            return
-        try:
-            await capture_callback(page, stage)
-        except Exception as exc:
-            # 诊断捕获不能改变正式挂课结果。
-            logging.debug(f"保存页面探针数据失败 ({stage}): {exc}")
-
+    async def capture(stage):
+        if capture_callback is not None and page is not None:
+            try:
+                await capture_callback(page,stage)
+            except Exception:
+                logging.debug('页面探针捕获失败',exc_info=True)
     try:
         page = await _open_course_page(context)
         if is_course_detail_url(url):
-            course_monitor = _install_course_info_monitor(page)
-        # 探针需要在第一次导航前安装网络/控制台监听器。
-        await _capture("page_created")
-        await goto_and_prepare_async(page, url)
-        await _capture("after_navigation")
-        await _wait_for_course_bootstrap(page, course_monitor)
+            monitor = _install_course_info_monitor(page)
+        await capture('page_created')
+        # Business dialogs precede generic overlay cleanup in CourseSession.
+        await page.goto(url, wait_until='load')
+        await capture('after_navigation')
+        await _wait_for_course_bootstrap(page,monitor)
+        await ensure_course_page_ready(page)
         completed = await handler(page)
-        await _capture("after_handler")
+        await capture('after_handler')
         if completed is True:
-            remove_learning_failure(url, file_path=failure_path, keep_file=True)
-        # False means deliberately routed to a durable manual/recheck destination.
-        return completed is not True and completed is not False
-    except (UserCancelRequested, UserAbortRequested):
-        # 浏览器整窗关闭等取消信号必须原样上抛；落进下面的通用分支会被
-        # 记成「可重试失败」，循环继续下一门——窗口关了却停不下来的根源。
+            for reason in ('sync_timeout','retryable_error','partial_course_failure','playback_not_started','section_activation_failed','video_player_not_ready'):
+                remove_learning_failure(url,reason=reason,file_path=failure_path)
+        issues = [e for e in read_learning_failures(failure_path) if e.url == url]
+        status = Status.COMPLETED if completed is True and not issues else Status.WAITING_CHILDREN if completed is False or issues else Status.WAITING_SYNC
+        return TaskOutcome(task_id,status,[e.reason for e in issues],evidence_refs=['server_section_progress'] if completed is True else [])
+    except WafBlockError as exc:
+        record_learning_failure(url,reason=exc.reason,reason_text=exc.reason_text,file_path=failure_path)
+        raise
+    except (UserCancelRequested,UserAbortRequested):
         raise
     except Exception as exc:
-        await _capture("error")
+        await capture('error')
+        raise_for_certificate_error(exc)
         if is_target_closed_exception(exc):
-            # 仅关课程标签/窗口（心跳页仍在）→ 保留链接继续；整窗关闭 → 回主菜单。
-            # 注意先经 browser_still_usable 落定再判（见其 docstring）。
-            if await browser_still_usable(context):
-                logging.info(f"当前课程标签页已关闭，保留当前学习链接: {url}")
-                return True
-            raise UserCancelRequested(
-                "浏览器窗口已关闭，已保留剩余学习链接，返回主菜单"
-            ) from None
-        if isinstance(exc, NoPermissionError):
-            # 无权限 / 资源不存在 / 下架：移出课程链接，失败文档写明原因（不自动重试）
-            reason = getattr(exc, "reason", None) or "no_permission"
-            reason_text = (
-                getattr(exc, "reason_text", None)
-                or str(exc)
-                or "无权限访问该学习资源，已从课程链接清理"
-            )
-            logging.warning(f"不可访问资源: {url} [{reason}] {reason_text}")
-            record_learning_failure(
-                url,
-                reason=reason,
-                reason_text=reason_text,
-                file_path=failure_path,
-            )
-            logging.info(
-                f"不可访问资源已清理并记入失败链接: {url} [{reason}] {reason_text}"
-            )
-            return False
-        if isinstance(exc, LearningFlowError):
-            logging.warning(f"挂课流程失败: {url} [{exc.reason}] {exc.reason_text}")
-            logging.debug(traceback.format_exc())
-            record_learning_failure(
-                url,
-                reason=exc.reason,
-                reason_text=exc.reason_text,
-                detail=getattr(exc, "detail", None) or {},
-                file_path=failure_path,
-            )
-            if isinstance(exc, WafBlockError):
-                raise
-            return bool(exc.keep_pending)
-        # Edge 整窗关闭后 Playwright 偶尔从内部连接层抛出 AttributeError
-        # （例如 "'dict' object has no attribute '_object'"），不属于标准的
-        # TargetClosedError。未知异常落盘前再做一次组合存活判定：整窗已关就
-        # 按用户取消处理，避免误记失败、输出大段堆栈并短暂进入下一条链接。
-        if not await browser_still_usable(context):
-            raise UserCancelRequested(
-                "浏览器窗口已关闭，已保留剩余学习链接，返回主菜单"
-            ) from None
-        logging.error(f"发生错误: {exc}")
-        logging.error(traceback.format_exc())
-        record_learning_failure(
-            url,
-            reason="retryable_error",
-            reason_text=f"挂课处理失败，后续可重新加入课程链接: {exc}",
-            file_path=failure_path,
-        )
-        return True
+            if not await browser_still_usable(context):
+                raise UserCancelRequested('浏览器窗口已关闭，当前及剩余任务保留') from None
+            return TaskOutcome(task_id,Status.INTERRUPTED,['course_page_closed'],retry_policy='next_operation')
+        if not isinstance(exc,(NoPermissionError,LearningFlowError)) and not await browser_still_usable(context):
+            raise UserCancelRequested('浏览器窗口已关闭，当前及剩余任务保留') from None
+        result = error_outcome(task_id,exc)
+        reason = getattr(exc,'reason','retryable_error')
+        record_learning_failure(url,reason=reason,reason_text=getattr(exc,'reason_text',f"挂课处理失败，后续可重新加入课程链接: {exc}"),detail=getattr(exc,'detail',{}),file_path=failure_path)
+        return result
     finally:
+        if monitor:
+            for task in tuple(getattr(monitor,'tasks',())):
+                task.cancel()
+            await asyncio.gather(*tuple(getattr(monitor,'tasks',())),return_exceptions=True)
         await _close_page_quiet(page)
 
 
-async def _recheck_url_type_links(context) -> None:
-    """复查 url_type_pending：每条独立开页再关，避免同页互斥。"""
-    url_type_links = [
-        entry
-        for entry in read_learning_failures(file_path=LEARNING_FAILURES_FILE)
-        if entry.reason == "url_type_pending"
-    ]
-    if not url_type_links:
-        return
-
-    for entry in url_type_links:
-        url = entry.url
-        page = None
-        try:
-            page = await _open_course_page(context)
-        except UserCancelRequested:
-            raise
-        except Exception as exc:
-            if is_target_closed_exception(exc) and not await browser_still_usable(
-                context
-            ):
-                raise UserCancelRequested(
-                    "浏览器窗口已关闭，已保留剩余学习链接，返回主菜单"
-                ) from None
-            logging.error(f"复查 URL 类型链接无法打开页面: {exc}")
-            continue
-
-        try:
-            await goto_and_prepare_async(page, url)
-            from core.learning.common import ensure_no_waf_block
-            await ensure_no_waf_block(page)
-            if await is_subject_url_completed(page):
-                logging.info(f"URL类型链接学习完成: {url}")
-                remove_learning_failure(
-                    url,
-                    file_path=LEARNING_FAILURES_FILE,
-                    keep_file=True,
-                )
-            else:
-                logging.info(f"URL类型链接学习未完成: {url}")
-                record_learning_failure(
-                    url,
-                    reason="url_type_pending",
-                    reason_text="URL 类型学习未确认完成，等待后续复查",
-                    detail=entry.detail,
-                    file_path=LEARNING_FAILURES_FILE,
-                )
-        except (WafBlockError, UserCancelRequested, UserAbortRequested):
-            raise
-        except Exception as exc:
-            if is_target_closed_exception(exc) and not await browser_still_usable(
-                context
-            ):
-                raise UserCancelRequested(
-                    "浏览器窗口已关闭，已保留剩余学习链接，返回主菜单"
-                ) from None
-            logging.error(f"复查 URL 类型链接失败: {exc}")
-            logging.error(traceback.format_exc())
-            record_learning_failure(
-                url,
-                reason="url_type_pending",
-                reason_text=f"URL 类型学习复查失败: {exc}",
-                detail=entry.detail,
-                file_path=LEARNING_FAILURES_FILE,
-            )
-        finally:
-            await _close_page_quiet(page)
-
-
-async def run_afk_once(status_callback: StatusCallback | None = None) -> None:
-    batch = prepare_afk_batch()
-    if not batch.urls and not any(entry.reason == "url_type_pending" for entry in read_learning_failures(LEARNING_FAILURES_FILE)):
-        if status_callback:
-            status_callback("未检测到可处理的学习链接")
-        return
-
-    # prepare 已去重；此处再 normalize 一次以防外部注入 batch
-    normalized_urls = normalize_urls(batch.urls)
-    pending_learning_urls = list(normalized_urls)
-    _write_learning_queue(pending_learning_urls)
-
-    try:
-        async with create_browser_context(slow_mo=sample_afk_slow_mo()) as (_, context):
-            # 心跳页（mylearning 主控页）关闭通知：只提示、不打断——
-            # 「当前课程挂完后停止」是用户确认的设计语义（确定性：课程主路径
-            # 不查连接状态，停止点固定在下一门开课前的 browser_still_usable）。
-            heartbeat_announced = False
-            watched_controllers: set[int] = set()
-
-            def _announce_heartbeat_closed() -> None:
-                nonlocal heartbeat_announced
-                if heartbeat_announced:
-                    return
-                heartbeat_announced = True
-                logging.info("心跳页已关闭：当前课程完成后将停止本轮挂课")
-                if status_callback:
-                    status_callback("心跳页已关闭，当前课程完成后将停止本轮挂课")
-
-            def _watch_heartbeat() -> None:
-                controller = get_controller_page(context)
-                if controller is None or id(controller) in watched_controllers:
-                    return
-                watched_controllers.add(id(controller))
-                on = getattr(controller, "on", None)
-                if callable(on):
-                    on("close", _announce_heartbeat_closed)
-
-            # 一门一页 + 处理完 close，避免同页 goto 触发 /study/errors 限流页
-            processed_any = False
-            for index, url in enumerate(normalized_urls, start=1):
-                _watch_heartbeat()  # 控制器页极少被重建，重建后补挂通知
-                if status_callback:
-                    status_callback(
-                        f"挂课 {index}/{len(normalized_urls)}: {url}"
-                    )
-                logging.info(
-                    f"({index}/{len(normalized_urls)})当前学习链接为: {url}"
-                )
-
-                if not is_compliant_url_regex(url):
-                    logging.info("不合规链接，已记录到挂课失败链接")
-                    record_learning_failure(
-                        url,
-                        reason="non_compliant_url",
-                        reason_text="学习链接不符合课程或主题链接格式",
-                        file_path=LEARNING_FAILURES_FILE,
-                    )
-                    if url in pending_learning_urls:
-                        pending_learning_urls.remove(url)
-                        _write_learning_queue(pending_learning_urls)
-                    continue
-
-                if is_subject_detail_url(url) or "/study/subject/detail/" in url:
-                    handler = subject_learning
-                elif is_course_detail_url(url) or "/study/course/detail/" in url:
-                    handler = course_learning
-                else:
-                    logging.info(f"无法识别的学习链接类型: {url}")
-                    record_learning_failure(
-                        url,
-                        reason="unknown_learning_type",
-                        reason_text="无法识别该学习链接类型",
-                        file_path=LEARNING_FAILURES_FILE,
-                    )
-                    if url in pending_learning_urls:
-                        pending_learning_urls.remove(url)
-                        _write_learning_queue(pending_learning_urls)
-                    continue
-
-                # 只在「真的刚学完一门」之后歇，跳过的无效链接不算
-                if processed_any:
-                    await _pause_between_courses(status_callback)
-
-                keep_pending = await _process_url(context, url, handler)
-                processed_any = True
-
-                if not keep_pending and url in pending_learning_urls:
-                    pending_learning_urls.remove(url)
-                    _write_learning_queue(pending_learning_urls)
-
-            if heartbeat_announced:
-                raise UserCancelRequested("心跳页已关闭，已保留剩余待办并停止后续流程")
-            await _recheck_url_type_links(context)
-            _write_learning_queue(pending_learning_urls)
-    except BaseException as exc:
-        if isinstance(exc, (SystemExit, GeneratorExit)):
-            raise
-        if isinstance(exc, asyncio.CancelledError):
-            _write_learning_queue(pending_learning_urls)
-            logging.debug("挂课流程被取消，已保存剩余学习链接，返回主菜单")
-            raise UserCancelRequested(
-                "已中断挂课，已保存剩余学习链接，返回主菜单"
-            ) from None
-        if isinstance(exc, KeyboardInterrupt):
-            _write_learning_queue(pending_learning_urls)
-            logging.debug("收到 Ctrl+C，已保存当前和剩余学习链接，程序退出")
-            raise UserAbortRequested(
-                "已收到 Ctrl+C，已保存当前和剩余学习链接，程序退出"
-            ) from None
-        if is_target_closed_exception(exc):
-            _write_learning_queue(pending_learning_urls)
-            logging.debug("浏览器窗口已关闭，已保存剩余学习链接，返回主菜单")
-            raise UserCancelRequested(
-                "浏览器窗口已关闭，已保留剩余学习链接，返回主菜单"
-            ) from None
-        if isinstance(exc, UserCancelRequested):
-            _write_learning_queue(pending_learning_urls)
-            logging.debug("挂课流程被取消，已保存剩余学习链接，返回主菜单")
-            raise
-        if isinstance(exc, UserAbortRequested):
-            save_pending_urls = getattr(exc, "save_pending_urls", True)
-            message = str(exc) or "已保存当前和剩余学习链接，程序退出"
-            if save_pending_urls:
-                _write_learning_queue(pending_learning_urls)
-            logging.debug(f"用户主动终止挂课流程: {message}")
-            raise UserAbortRequested(
-                message,
-                save_pending_urls=save_pending_urls,
-            ) from None
-        if isinstance(exc, WafBlockError):
-            _write_learning_queue(pending_learning_urls)
-            message = exc.reason_text or str(exc)
-            logging.warning(f"{message}，本轮挂课已停止")
-            if status_callback:
-                status_callback(f"{message}，本轮挂课已停止")
-            raise
-        raise
-
-    logging.info("本轮自动挂课完成")
+async def run_afk_once(status_callback=None):
+    from core.app.service import ApplicationService
+    return await ApplicationService().learn(status_callback=status_callback)

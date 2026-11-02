@@ -348,11 +348,10 @@ async def subject_learning(page):
     subject_course_failures: list[dict[str, object]] = []
     for i in range(learn_count):
         learn_item = learn_locator.nth(i)
-        if await is_subject_item_completed(learn_item):
+        section_type = await learn_item.locator(".section-type").inner_text()
+        if section_type != "课程" and await is_subject_item_completed(learn_item):
             logging.info("主题小节已完成（重新学习），跳过")
             continue
-
-        section_type = await learn_item.locator(".section-type").inner_text()
 
         if section_type == "课程":
             page_detail = await _open_subject_item_popup(page, learn_item)
@@ -516,42 +515,24 @@ async def _collect_chapter_boxes(page_detail) -> list[tuple[str, object]]:
 
 
 async def prepare_course_page(page_detail) -> None:
-    """挂课与课程内考试共用入口：先处理评分，再准备课程学习视图。"""
-    await page_detail.wait_for_load_state("load")
-
-    # 评分弹窗会遮住课程页上的其它控件，必须作为页面加载后的首项交互处理。
-    if await handle_rating_popup(page_detail):
-        logging.info("五星评价完成")
-
-    # 归档课弹窗会挡住章节列表，须在任何章节 wait 之前点「继续学习」
-    if await handle_archive_continue_popup(page_detail):
-        logging.info("已确认继续学习归档课程")
-
-    # 访问权限 / 资源不存在 / 并发限流：须在等进度条与章节列表之前
-    await ensure_course_page_ready(page_detail)
-
-    # 新版详情页可能默认落在 AI 伴学；必须先回到原课程学习视图，
-    # 后续章节文案才包含剩余时长，且播放进度会进入原同步链路。
-    await _ensure_course_learning_view(page_detail)
+    from core.learning.course_session import CourseSession
+    await CourseSession(page_detail).prepare()
 
 
 async def course_learning(page_detail, learn_item=None):
     """课程内容学习：必修章节优先，再挂选修。"""
     await prepare_course_page(page_detail)
 
-    if await _is_course_completed(page_detail):
-        try:
-            title = await page_detail.locator("span.course-title-text").inner_text(
-                timeout=3000
-            )
-        except Exception:
-            title = page_detail.url
-        logging.info(f"<{title}>已学习完毕, 跳过该课程\n")
-        return True
-
     chapters = await _collect_chapter_boxes(page_detail)
     if not chapters:
         raise PartialCourseFailure("未找到完整章节列表，保留课程待办")
+    from core.learning.course_session import CompletionPolicy
+    server_precheck = await read_server_section_states(page_detail)
+    CompletionPolicy.record(server_precheck)
+
+    async def confirmed(box):
+        section_id = await section_id_from_box(box)
+        return CompletionPolicy.complete(server_precheck.get(section_id) if server_precheck is not None else None)
 
     course_exam_api_result = await queue_course_exams_from_api(page_detail)
     course_exams_handled_by_api = bool(
@@ -572,8 +553,7 @@ async def course_learning(page_detail, learn_item=None):
     for track, box in chapters:
         section_type = await box.get_attribute("data-sectiontype")
         if section_type in ["1", "2", "3", "5", "6"]:
-            progress_text = await box.locator(".section-item-wrapper").inner_text()
-            if not is_learned(progress_text):
+            if not await confirmed(box):
                 all_learned = False
                 break
         else:
@@ -595,13 +575,12 @@ async def course_learning(page_detail, learn_item=None):
         logging.info(f"课程信息[{track_label}]: \n{box_text}\n")
 
         if section_type in ["1", "2", "3", "5", "6"]:
-            progress_text = await box.locator(".section-item-wrapper").inner_text()
-            if is_learned(progress_text):
+            if await confirmed(box):
                 logging.info(f"课程第{index + 1}节({track_label})已学习, 跳过该节\n")
                 continue
 
         if section_type == "9" and course_exams_handled_by_api:
-            deferred = True
+            deferred = deferred or course_exam_api_result.completed < course_exam_api_result.discovered
             logging.info("课程内考试已由接口完成状态判断与入队，跳过页面解析")
             continue
 
@@ -733,31 +712,10 @@ async def course_learning(page_detail, learn_item=None):
 
     if deferred:
         return False
-    if await _is_course_completed(page_detail):
-        return True
+    server_states = await read_server_section_states(page_detail)
+    CompletionPolicy.record(server_states)
     for _, box in chapters:
-        if not is_learned(await box.locator(".section-item-wrapper").inner_text()):
-            if server_states is None:
-                server_states = await read_server_section_states(page_detail)
-            section_id = await section_id_from_box(box)
-            if server_states is not None and section_completed_on_server(server_states.get(section_id)):
-                continue
-            raise SyncTimeoutError("课程章节处理结束，但完成状态仍未确认")
+        section_id = await section_id_from_box(box)
+        if not CompletionPolicy.complete(server_states.get(section_id) if server_states is not None else None):
+            raise SyncTimeoutError("课程章节处理结束，但服务器完成状态仍未确认")
     return True
-
-
-async def _is_course_completed(page) -> bool:
-    """课程进度 100% 则视为整课完成。
-
-    超时故意短于 Playwright 默认 30s，避免错误页/限流页空等；
-    又略放宽以照顾云电脑/弱单核（渲染进度条偏慢）。读不到则当未完成。
-    """
-    progress_element = page.locator("div.course-progress div.progress")
-    try:
-        # 可见：12s；读文案：5s（合计仍远小于默认 30s）
-        await progress_element.first.wait_for(state="visible", timeout=12000)
-        progress_text = await progress_element.inner_text(timeout=5000)
-    except Exception:
-        return False
-    import re
-    return bool(re.search(r"(?<![\d.])100(?:\.0+)?\s*%", progress_text or ""))

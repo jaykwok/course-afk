@@ -256,7 +256,10 @@ async def wait_until_learned(
     max_wait = max(0, int(max_wait))
     poll_interval = max(1, int(poll_interval))
     started = monotonic()
-    deadline = started + max_wait
+    from core.learning.course_session import PhaseBudget, CompletionPolicy
+    from core.learning.progress import section_id_from_box
+    budget = PhaseBudget(max_wait, "sync:" + str(await section_id_from_box(box)))
+    deadline = started + budget.remaining
     current_text = ""
     server_state = None
 
@@ -265,11 +268,9 @@ async def wait_until_learned(
         while True:
             current_text = await read_section_progress_text(box)
             server_state = await read_server_section_state(page, box)
-            if section_completed_on_server(server_state):
+            if CompletionPolicy.complete(server_state):
+                CompletionPolicy.record({str(await section_id_from_box(box)): server_state})
                 logging.info("服务器已确认该章节完成，额外等待 %s 秒", round(monotonic() - started))
-                return True
-            if server_state is None and is_learned(current_text):
-                logging.info("服务器复核暂不可用，页面已确认该章节完成")
                 return True
             remaining = deadline - monotonic()
             if remaining <= 0:
@@ -290,11 +291,13 @@ async def wait_until_learned(
 
     try:
         # 零等待仍允许一次只读确认；正常等待窗则是严格的总耗时上限。
-        async with asyncio.timeout(max_wait or 15):
+        async with asyncio.timeout(budget.remaining or 0.001):
             if await poll():
                 return
     except TimeoutError:
         pass
+    finally:
+        budget.save()
     progress_text = _compact_progress_text(current_text, limit=300)
     logging.info("等待 %s 秒后仍未确认章节完成（页面: %s，服务器: %s）", max_wait, progress_text, server_state)
     raise SyncTimeoutError(

@@ -7,9 +7,14 @@
 # 配置读取时环境变量优先于 .env，因此这里的测试设置不会被文件覆盖。
 import os
 import atexit
+from pathlib import Path
+import tempfile
 from tempfile import TemporaryDirectory
 
 # 每个测试进程独享数据目录，回归不能改用户凭证、待办或历史。
+_test_temp = Path(__file__).resolve().parents[1] / "build" / "test-temp"
+_test_temp.mkdir(parents=True, exist_ok=True)
+tempfile.tempdir = str(_test_temp)
 _test_data = TemporaryDirectory(prefix="course-afk-tests-")
 atexit.register(_test_data.cleanup)
 os.environ["COURSE_AFK_DATA_DIR"] = _test_data.name

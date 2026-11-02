@@ -60,30 +60,23 @@ def _tile_gap(g) -> Text:
 # 账号 / 有效期（与 CLI 的 core.ui._credential_display 同源数据）
 # ------------------------------------------------------------------
 def validity_parts(state: ProjectState, metadata: Any) -> tuple[Text, str]:
-    """账号有效期 → (带图标文本, 语义色)。语义色恒伴随图标，不只靠颜色。"""
+    from core.state import credential_view
+
+    view = credential_view(state, metadata, clock=datetime)
     g = _g()
-    if not state.has_credential:
+    if view.status == "missing":
         return Text(f"{g.icon_failure} 未登录", style=f"bold {ERROR}"), "error"
-    if state.credential_expired:
+    if view.status == "expired":
         return Text(f"{g.icon_warning} 已过期", style=f"bold {WARNING}"), "warning"
-    if metadata and getattr(metadata, "expires_at", None):
-        try:
-            expires_dt = datetime.fromisoformat(metadata.expires_at)
-            now = datetime.now(tz=expires_dt.tzinfo)
-            if now.date() >= expires_dt.date():
-                return (
-                    Text(f"{g.icon_warning} 已过期", style=f"bold {WARNING}"),
-                    "warning",
-                )
-            days_left = max(
-                1, math.ceil((expires_dt - now).total_seconds() / 86400)
-            )
-            text = Text(f"{g.icon_success} 有效至 {expires_dt:%Y-%m-%d}", style=f"bold {SUCCESS}")
-            text.append(f"（还有 {days_left} 天）", style=TEXT_MUTED)
-            return text, "ok"
-        except ValueError:
-            pass
-    return Text(f"{g.icon_success} 有效", style=f"bold {SUCCESS}"), "ok"
+    text = Text(
+        f"{g.icon_success} 有效至 {view.expires_on}"
+        if view.expires_on
+        else f"{g.icon_success} 有效",
+        style=f"bold {SUCCESS}",
+    )
+    if view.days_left is not None:
+        text.append(f"（还有 {view.days_left} 天）", style=TEXT_MUTED)
+    return text, "ok"
 
 
 def _severity_color(severity: str) -> str:
@@ -119,9 +112,7 @@ def build_account_chip(state: ProjectState, metadata: Any) -> Text:
     """
     dot = "●" if _g().name == "unicode" else "*"
     if not state.has_credential:
-        return Text.assemble(
-            (f"{dot} ", f"bold {ERROR}"), ("未登录", TEXT_MUTED)
-        )
+        return Text.assemble((f"{dot} ", f"bold {ERROR}"), ("未登录", TEXT_MUTED))
     label = getattr(metadata, "account_label", None) or "已登录"
     validity, severity = validity_parts(state, metadata)
     chip = Text()
@@ -149,9 +140,7 @@ def _tile_specs(state: ProjectState) -> list[tuple[str, Text]]:
         ("考试复查", state.manual_exam_count),
     ):
         if label == "挂课失败" and count > 0:
-            value = Text(
-                f"{count} {g.icon_warning}", style=f"bold {WARNING}"
-            )
+            value = Text(f"{count} {g.icon_warning}", style=f"bold {WARNING}")
         elif count > 0:
             value = Text(str(count), style=f"bold {TEXT_PRIMARY}")
         else:
@@ -164,10 +153,7 @@ def build_stat_tiles(state: ProjectState) -> Text:
     """双行 KPI 磁贴行：上标签（弱化）下数值（亮），列间细竖线分隔。"""
     g = _g()
     specs = _tile_specs(state)
-    widths = [
-        max(cell_len(label), cell_len(value.plain)) + 1
-        for label, value in specs
-    ]
+    widths = [max(cell_len(label), cell_len(value.plain)) + 1 for label, value in specs]
     label_row = Text()
     value_row = Text()
     for index, ((label, value), width) in enumerate(zip(specs, widths)):
@@ -214,10 +200,15 @@ def build_action_line(recommended: str) -> Text:
     )
 
 
-def build_menu_status(state: ProjectState, metadata: Any, recommended: str, *, compact: bool = False) -> Text:
+def build_menu_status(
+    state: ProjectState, metadata: Any, recommended: str, *, compact: bool = False
+) -> Text:
     """主菜单状态区三行：账号 meta / 紧凑磁贴 / 建议操作。"""
     if compact:
-        counts = Text(f"课程 {state.learning_count}  失败 {state.learning_failure_count}  考试 {state.exam_count}  复查 {state.manual_exam_count}", style=TEXT_MUTED)
+        counts = Text(
+            f"课程 {state.learning_count}  失败 {state.learning_failure_count}  考试 {state.exam_count}  复查 {state.manual_exam_count}",
+            style=TEXT_MUTED,
+        )
         return Text.join(Text("\n"), [build_account_chip(state, metadata), counts])
     lines = [
         build_dashboard_meta(state, metadata),
@@ -258,8 +249,7 @@ def build_summary(title: str, rows: list[tuple[str, str]]) -> Text:
     g = _g()
     key_width = max((cell_len(key) for key, _ in rows), default=0)
     content_width = max(
-        [key_width + 2 + cell_len(value) for _, value in rows]
-        + [cell_len(title) + 4],
+        [key_width + 2 + cell_len(value) for _, value in rows] + [cell_len(title) + 4],
         default=0,
     )
     rule_width = max(20, min(64, content_width))
