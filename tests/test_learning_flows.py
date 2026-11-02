@@ -15,9 +15,13 @@ class SubjectLearningFlowTests(unittest.IsolatedAsyncioTestCase):
                 return True
 
         class FakePopupPage:
-            def __init__(self, context):
+            def __init__(self, context, course_index):
                 self.context = context
                 self.closed = False
+                self.url = (
+                    "https://kc.zhixueyun.com/#/study/course/detail/"
+                    f"{course_index:08d}-1111-4111-8111-111111111111"
+                )
 
             async def close(self):
                 self.closed = True
@@ -117,7 +121,7 @@ class SubjectLearningFlowTests(unittest.IsolatedAsyncioTestCase):
                 return FakePopupContextManager(popup_page)
 
         fake_context = type("FakeContext", (), {"browser": FakeBrowser()})()
-        popup_pages = [FakePopupPage(fake_context), FakePopupPage(fake_context)]
+        popup_pages = [FakePopupPage(fake_context, index) for index in (1, 2)]
         subject_page = FakeSubjectPage(popup_pages)
 
         with (
@@ -158,9 +162,13 @@ class SubjectLearningFlowTests(unittest.IsolatedAsyncioTestCase):
                 return True
 
         class FakePopupPage:
-            def __init__(self, context):
+            def __init__(self, context, course_index):
                 self.context = context
                 self.closed = False
+                self.url = (
+                    "https://kc.zhixueyun.com/#/study/course/detail/"
+                    f"{course_index:08d}-1111-4111-8111-111111111111"
+                )
 
             async def close(self):
                 self.closed = True
@@ -270,7 +278,7 @@ class SubjectLearningFlowTests(unittest.IsolatedAsyncioTestCase):
                 return FakePopupContextManager(popup_page)
 
         fake_context = type("FakeContext", (), {"browser": FakeBrowser()})()
-        popup_pages = [FakePopupPage(fake_context), FakePopupPage(fake_context)]
+        popup_pages = [FakePopupPage(fake_context, index) for index in (1, 2)]
         subject_page = FakeSubjectPage(popup_pages)
 
         with (
@@ -306,7 +314,7 @@ class SubjectLearningFlowTests(unittest.IsolatedAsyncioTestCase):
 
         # 无权限失败不计入 has_failed_course 的「统一抛错」？当前实现：无权限只记失败不 raise 汇总
         # 上面是 retryable，应汇总抛错；无权限路径单独覆盖：
-        popup_pages2 = [FakePopupPage(fake_context), FakePopupPage(fake_context)]
+        popup_pages2 = [FakePopupPage(fake_context, index) for index in (1, 2)]
         subject_page2 = FakeSubjectPage(popup_pages2)
         with (
             patch(

@@ -408,22 +408,30 @@ async def subject_learning(page):
                 learning = LearningResult.from_value(
                     await course_learning(page_detail, learn_item)
                 )
-                if course_url:
-                    if learning.local_work_complete:
-                        from core.queues.learning import resolve_automatic_learning_failures
-
-                        resolve_automatic_learning_failures(course_url)
-                    record_local_outcome(
-                        course_url,
-                        Status.COMPLETED
-                        if learning.completed
-                        else Status.WAITING_CHILDREN,
-                        source="subject_course_page",
-                        evidence_refs=learning.evidence_refs,
-                        details={"local_work_complete": learning.local_work_complete},
+                # Popup navigation/route parameters may only become available
+                # during preparation. Attach the final result to that identity.
+                course_url = await resolve_course_page_url(page_detail) or course_url
+                if not course_url:
+                    raise PartialCourseFailure(
+                        "主题内课程链接尚未确认，保留主题入口供重试",
+                        reason_text="课程页面加载后仍无法识别链接，请重试主题入口",
                     )
-                elif not learning.completed:
-                    local_work_complete = False
+                record_discovered_tasks(
+                    [course_url], parent_url=page.url, source="subject_course_page"
+                )
+                if learning.local_work_complete:
+                    from core.queues.learning import resolve_automatic_learning_failures
+
+                    resolve_automatic_learning_failures(course_url)
+                record_local_outcome(
+                    course_url,
+                    Status.COMPLETED
+                    if learning.completed
+                    else Status.WAITING_CHILDREN,
+                    source="subject_course_page",
+                    evidence_refs=learning.evidence_refs,
+                    details={"local_work_complete": learning.local_work_complete},
+                )
                 if not learning.completed:
                     deferred = True
             except (WafBlockError, UserCancelRequested, UserAbortRequested):
@@ -631,6 +639,9 @@ async def course_learning(page_detail, learn_item=None):
     chapters = await _collect_chapter_boxes(page_detail)
     if not chapters:
         raise PartialCourseFailure("未找到完整章节列表，保留课程待办")
+    # Temporary detailInfo URLs are navigation aliases, not course identities.
+    # Use the same resolved identity as the subject's completion record.
+    course_url = await resolve_course_page_url(page_detail)
     from core.learning.course_session import CompletionPolicy
 
     media_sections = set()
@@ -645,7 +656,7 @@ async def course_learning(page_detail, learn_item=None):
                 for key, value in (states or {}).items()
                 if key in media_sections
             },
-            course_url=page_detail.url,
+            course_url=course_url,
         )
 
     async def record_exam(box):
@@ -653,7 +664,7 @@ async def course_learning(page_detail, learn_item=None):
         if section_id:
             CompletionPolicy.record(
                 {section_id: {"finish_status": 2, "source": "exam_passed"}},
-                course_url=page_detail.url,
+                course_url=course_url,
                 source="exam_section",
             )
 
