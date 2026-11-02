@@ -12,7 +12,7 @@ Copy-Item .env.example .env
 uv run launcher.py
 ```
 
-Windows 可双击 `run.bat`，macOS 可运行 `sh run.command`，或在已激活虚拟环境中运行 `python launcher.py`。Windows 默认使用系统 Edge；macOS 优先已安装 Chrome，再选 Edge。使用 Playwright 自带浏览器时，在 `.env` 设置 `BROWSER_CHANNEL=""`，并执行 `python -m playwright install chromium`。支持 Windows x64、macOS 15 arm64 和 Intel x64，CI 在这三个环境运行验证。
+Windows 可双击 `run.bat`，macOS 可运行 `sh run.command`，或在已激活虚拟环境中运行 `python launcher.py`。Windows 默认使用系统 Edge；macOS 优先已安装 Chrome，再选 Edge。使用 Playwright 自带浏览器时，在 `.env` 设置 `BROWSER_CHANNEL=""`，并执行 `python -m playwright install chromium`。CI 在 Windows x64 和 macOS 15 arm64 环境运行验证。
 
 一级菜单直接提供开始挂课、AI 考试、添加课程 / 考试链接和课程资料；任务管理与账号登录使用二级菜单；`0` 退出，二级菜单 `0` 返回。常规窗口显示功能说明，窄窗口只显示简短标题。任务管理可查看统计、重试失败课程、查看链接，以及清空课程与失败/复查记录，或清空全部待办（含考试与复查）。清空前展示数量并确认，原文件备份到 `data/backups/clear-links-时间/`；登录凭证、考试提交历史和已保存资料不在清空范围内。
 
