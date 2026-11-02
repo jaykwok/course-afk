@@ -80,7 +80,7 @@ Runner 标签复核依据：[GitHub runner 文档](https://docs.github.com/en/ac
 
 ## 证据范围
 
-2026-11-02 首轮提交 `e0c630e` 的 [三平台 CI 回执](https://github.com/jaykwok/course-afk/actions/runs/41380121563) 全部通过：每个环境运行 573 项测试，Windows 的两项 POSIX 专属测试和 macOS 的一项 Job Object 专属测试互为补充。后续提交须查看对应的 [CI 运行记录](https://github.com/jaykwok/course-afk/actions/workflows/ci.yml)，不能沿用旧提交结果。
+2026-11-02 功能与故障边界提交 `0bae9b4` 的 [三平台 CI 回执](https://github.com/jaykwok/course-afk/actions/runs/41381198422) 全部通过：每个环境运行 576 项测试，Windows 的两项 POSIX 专属测试和 macOS 的一项 Job Object 专属测试互为补充。后续提交须查看对应的 [CI 运行记录](https://github.com/jaykwok/course-afk/actions/workflows/ci.yml)，不能沿用旧提交结果。
 
 本地 Windows 合成回归、远端 CI、真实平台只读探针分别记录。真实只读探针确认两个指定培训班已报名，一门已有课程的三个章节由服务器确认完成；没有发送新报名、学习启动或真实交卷。指定历史失败课程没有取得有效完成证据。真实平台的暂停恢复、从未完成到完成的学习同步、macOS Terminal 完整人工交互及实际媒体编码兼容性，不能用合成测试替代。
 

@@ -7,6 +7,22 @@ import asyncio
 from core.abort import UserCancelRequested
 from core.workflow.contracts import Status
 
+_OPERATION_LABELS = {
+    "learn": "挂课",
+    "discover": "解析入口",
+    "exam": "AI 考试",
+    "references": "保存资料",
+}
+_STATUS_LABELS = {
+    Status.COMPLETED: "已完成",
+    Status.WAITING_CHILDREN: "仍有子事项待处理",
+    Status.WAITING_SYNC: "等待平台确认",
+    Status.BLOCKED: "当前条件暂不允许继续",
+    Status.NEEDS_REVIEW: "需要复查",
+    Status.FAILED: "处理失败，待办已保留",
+    Status.INTERRUPTED: "操作已中断，待办已保留",
+}
+
 
 class ApplicationService:
     def __init__(self, host=None):
@@ -43,7 +59,9 @@ class ApplicationService:
         results = []
         for url in selected:
             if status_callback:
-                status_callback(f"{kind} {len(results) + 1}/{len(urls)}: {url}")
+                status_callback(
+                    f"{_OPERATION_LABELS[kind]} {len(results) + 1}/{len(selected)}: {url}"
+                )
             try:
                 result = await self.host.execute(
                     url, kind, options=options, status_callback=status_callback
@@ -54,9 +72,16 @@ class ApplicationService:
                 ) from None
             results.append(result)
             if status_callback and result["status"] != Status.COMPLETED:
-                status_callback(
-                    f"{result['status']}: {', '.join(result['reason_codes'])}"
-                )
+                from core.queues.learning import LEARNING_FAILURE_REASON_LABELS
+
+                reasons = [
+                    LEARNING_FAILURE_REASON_LABELS[r]
+                    for r in result["reason_codes"]
+                    if r in LEARNING_FAILURE_REASON_LABELS
+                ]
+                message = result.get("details", {}).get("message") or "，".join(reasons)
+                label = _STATUS_LABELS.get(result["status"], "任务状态需要复查")
+                status_callback(f"{label}：{message}" if message else label)
             if result["stop_scope"] == "batch":
                 if "certificate_error" in result["reason_codes"]:
                     from core.abort import BrowserCertificateError
