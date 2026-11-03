@@ -82,7 +82,6 @@ from core.palette import (
 from core.ui.terminal_compat import ui_glyphs
 from core.ui.tui_render import build_hint_line, build_progress_text
 
-
 # Esc / Ctrl+C 强制取消当前模态提示时使用；桥接层识别后抛
 # UserCancelRequested，让控制流正常返回主菜单（而非直接退出）。
 _PROMPT_CANCELLED: Any = object()
@@ -155,7 +154,7 @@ _MENU_ICONS: dict[str, str] = {
     "课程资料": "📦",
     "任务管理": "📊",
     "账号与登录": "🔐",
-    "退出": "×",
+    "退出": "❌",
     # 账号菜单
     "更换登录账号": "🔄",
     "重新登录 / 刷新凭据": "🔑",
@@ -1092,9 +1091,11 @@ class CourseTuiApp(App):
             ),
             Static(id="progress"),
             Static(
-                "📋 活动日志 / Execution Log"
-                if g.name == "unicode"
-                else f"{g.bullet} 活动日志",
+                (
+                    "📋 活动日志 / Execution Log"
+                    if g.name == "unicode"
+                    else f"{g.bullet} 活动日志"
+                ),
                 id="log-caption",
             ),
             RichLog(id="log", markup=True, auto_scroll=True, max_lines=1500),
@@ -1452,10 +1453,14 @@ class CourseTuiApp(App):
             if feedback:
                 from core.config import LOGS_DIR
 
-                details = ([screen._details_renderable]
-                           if screen._details_renderable is not None else [])
+                details = (
+                    [screen._details_renderable]
+                    if screen._details_renderable is not None
+                    else []
+                )
                 screen._details_renderable = Group(
-                    *details, *feedback,
+                    *details,
+                    *feedback,
                     Text(f"完整日志：{LOGS_DIR.resolve()}", style="dim"),
                 )
                 screen.add_class("with-details")
