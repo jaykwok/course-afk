@@ -155,7 +155,7 @@ _MENU_ICONS: dict[str, str] = {
     "课程资料": "📦",
     "任务管理": "📊",
     "账号与登录": "🔐",
-    "退出": "⏻",
+    "退出": "×",
     # 账号菜单
     "更换登录账号": "🔄",
     "重新登录 / 刷新凭据": "🔑",
@@ -1063,6 +1063,7 @@ class CourseTuiApp(App):
         # 满了丢最旧并计数，UI 侧补一条「已丢弃 N 条」提示。
         self._log_buffer: deque = deque(maxlen=512)
         self._log_dropped = 0
+        self._operation_feedback: deque = deque(maxlen=20)
 
     def compose(self) -> ComposeResult:
         g = ui_glyphs()
@@ -1154,6 +1155,11 @@ class CourseTuiApp(App):
             if len(self._log_buffer) == self._log_buffer.maxlen:
                 self._log_dropped += 1
             self._log_buffer.append(renderable)
+
+    def record_operation_feedback(self, renderable: Any) -> None:
+        """Keep results separate from verbose logs until the next menu action."""
+        with self._ui_lock:
+            self._operation_feedback.append(renderable)
 
     def on_course_tui_ui_update(self, event: UiUpdate) -> None:
         """信号到达：取走缓冲中的全部待应用更新，按序号归并执行。
@@ -1440,6 +1446,19 @@ class CourseTuiApp(App):
         # UiUpdate 信号；不先冲刷缓冲，迟到的 status 快照会在模态挂载后点亮
         # 状态条（旧时序下 show_info 先于 pause 完成故无此问题）。
         self.flush_ui_updates()
+        if isinstance(screen, PauseScreen):
+            with self._ui_lock:
+                feedback = list(self._operation_feedback)
+            if feedback:
+                from core.config import LOGS_DIR
+
+                details = ([screen._details_renderable]
+                           if screen._details_renderable is not None else [])
+                screen._details_renderable = Group(
+                    *details, *feedback,
+                    Text(f"完整日志：{LOGS_DIR.resolve()}", style="dim"),
+                )
+                screen.add_class("with-details")
         # 挂载任何模态（菜单 / 确认 / 结果）前收起操作状态条：模态会遮住 #main，
         # 状态条无须再显示；下一次 begin_operation 会重新点亮。
         self.clear_operation_status()
@@ -1476,4 +1495,7 @@ class CourseTuiApp(App):
         if self._cancellable_prompt_queue is queue:
             self._cancellable_prompt_queue = None
         self._held_prompt_screen = screen
+        if isinstance(screen, OptionScreen):
+            with self._ui_lock:
+                self._operation_feedback.clear()
         queue.put(result)

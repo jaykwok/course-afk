@@ -9,7 +9,6 @@ from core.config import (
     AUTO_LOGIN_DATA_TIME,
     COOKIES_FILE,
     MYLEARNING_HOME,
-    MYLEARNING_SSO_PATTERN,
 )
 from core.browser.session import (
     create_browser_context,
@@ -164,11 +163,14 @@ async def login_and_save_credential() -> AccountProfile:
         context,
     ):
         page = await context.new_page()
+        stage = "等待扫码登录完成"
         try:
-            await page.goto(MYLEARNING_HOME)
-            await page.wait_for_url(MYLEARNING_SSO_PATTERN, timeout=120000)
-
-            iframe = page.locator("#esurfingloginiframe").content_frame
+            # SSO's third-party iframe can keep the load event pending until
+            # after the user signs in. Observe its DOM before that redirect.
+            await page.goto(MYLEARNING_HOME, wait_until="domcontentloaded")
+            login_frame = page.locator("#esurfingloginiframe")
+            await login_frame.wait_for(state="attached", timeout=120000)
+            iframe = login_frame.content_frame
             preferences = await install_login_preferences_watcher(iframe)
             logging.info(
                 "已开启登录页偏好自动保持："
@@ -177,14 +179,20 @@ async def login_and_save_credential() -> AccountProfile:
             )
 
             # Human login may wait indefinitely, but remains cancellable.
-            await page.wait_for_url(MYLEARNING_HOME, timeout=0)
+            await page.wait_for_url(
+                MYLEARNING_HOME, timeout=0, wait_until="domcontentloaded"
+            )
+            stage = "获取账号资料"
+            logging.info("扫码登录已返回主页，正在获取稳定账号标识")
             await prepare_page_after_navigation_async(page)
             profile = await extract_account_profile_from_context(context)
             if not profile.account_name.strip():
                 raise LoginNotCompletedError(
                     "账号资料未返回稳定账号标识，登录凭证未更新；请确认中心站账号资料后重试"
                 )
+            stage = "核对待办账号归属"
             _validate_pending_account(profile)
+            stage = "保存登录凭证"
             cookies = await context.cookies()
             if COOKIES_FILE.exists():
                 _clear_readonly(COOKIES_FILE)
@@ -194,6 +202,7 @@ async def login_and_save_credential() -> AccountProfile:
             logging.info(f"已更新登录凭证元数据，当前账号：{profile.label}")
             return profile
         except Exception as exc:
+            logging.exception("登录未完成（%s），原凭证未更新", stage)
             if isinstance(exc, LoginNotCompletedError):
                 raise
             if isinstance(exc, AccountIdentityUnavailableError):
@@ -203,7 +212,7 @@ async def login_and_save_credential() -> AccountProfile:
                     "已手动关闭浏览器，未完成登录，登录凭证未更新"
                 ) from None
             raise LoginNotCompletedError(
-                f"登录信息未完整取得或保存失败（{type(exc).__name__}），原凭证未更新"
+                f"登录未完成：{stage}失败（{type(exc).__name__}），原凭证未更新；请查看错误日志"
             ) from exc
 
 

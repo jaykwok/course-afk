@@ -20,7 +20,7 @@ class LoginTests(unittest.IsolatedAsyncioTestCase):
         self.page = NS(
             goto=AsyncMock(),
             wait_for_url=AsyncMock(),
-            locator=Mock(return_value=NS(content_frame=object())),
+            locator=Mock(return_value=NS(content_frame=object(), wait_for=AsyncMock())),
         )
         self.context = NS(
             new_page=AsyncMock(return_value=self.page),
@@ -71,6 +71,20 @@ class LoginTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bundle["metadata"]["account_name"], profile.account_name)
         self.assertEqual(bundle["cookies"][0]["value"], "test")
         self.assertTrue(self.closed)
+
+    async def test_login_observes_dom_before_sso_load_can_finish(self):
+        async def goto(url, **kwargs):
+            if kwargs.get("wait_until") != "domcontentloaded":
+                raise TimeoutError("SSO subframe keeps the load event pending")
+
+        self.page.goto.side_effect = goto
+        await login.login_and_save_credential()
+        self.page.wait_for_url.assert_awaited_once_with(
+            login.MYLEARNING_HOME, timeout=0, wait_until="domcontentloaded"
+        )
+        self.page.locator.return_value.wait_for.assert_awaited_once_with(
+            state="attached", timeout=120000
+        )
 
     async def test_profile_failure_preserves_old_credential(self):
         self.profile.side_effect = TimeoutError("profile unavailable")

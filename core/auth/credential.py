@@ -84,9 +84,15 @@ async def extract_account_profile_from_context(
 
     page = await context.new_page()
     try:
-        await page.goto(MYLEARNING_CENTER_HOME, timeout=navigation_timeout)
+        await page.goto(
+            MYLEARNING_CENTER_HOME,
+            timeout=navigation_timeout,
+            wait_until="domcontentloaded",
+        )
         await page.wait_for_url(
-            re.compile(MYLEARNING_CENTER_HOME_PATTERN), timeout=navigation_timeout
+            re.compile(MYLEARNING_CENTER_HOME_PATTERN),
+            timeout=navigation_timeout,
+            wait_until="domcontentloaded",
         )
         await prepare_page_after_navigation_async(page)
         await page.wait_for_function(

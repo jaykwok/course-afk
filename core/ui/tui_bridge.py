@@ -66,6 +66,10 @@ class TextualLogHandler(logging.Handler):
             else:
                 style = "dim"
             self._app.enqueue_log(Text(message, style=style))
+            if record.levelno >= logging.WARNING:
+                self._app.record_operation_feedback(
+                    Text(redact_text(record.getMessage()), style=style)
+                )
         except Exception:  # noqa: BLE001 - app 未运行 / 已退出时安静丢弃
             pass
 
@@ -152,6 +156,7 @@ class TuiFrontend:
         self.app.enqueue_log(_icon_text(ui_glyphs().icon_info, message, style=GREEN))
 
     def show_success(self, message: str) -> None:
+        self.app.record_operation_feedback(Text(redact_text(message), style=SUCCESS))
         self._refresh_dashboard()
         self._post(status=message)
         self.app.enqueue_log(
@@ -159,6 +164,7 @@ class TuiFrontend:
         )
 
     def show_warning(self, message: str) -> None:
+        self.app.record_operation_feedback(Text(redact_text(message), style=WARNING))
         self._refresh_dashboard()
         self._post(status=message)
         self.app.enqueue_log(
@@ -166,6 +172,7 @@ class TuiFrontend:
         )
 
     def show_error(self, message: str) -> None:
+        self.app.record_operation_feedback(Text(redact_text(message), style=ERROR))
         self._refresh_dashboard()
         self._post(status=message)
         self.app.enqueue_log(_icon_text(ui_glyphs().icon_failure, message, style=ERROR))
@@ -180,7 +187,11 @@ class TuiFrontend:
         self._post(end_operation=True)
 
     def show_summary(self, title: str, rows: list[tuple[str, str]]) -> None:
-        self.app.enqueue_log(tui_render.build_summary(title, rows))
+        summary = tui_render.build_summary(
+            redact_text(title), [(redact_text(k), redact_text(v)) for k, v in rows]
+        )
+        self.app.record_operation_feedback(summary)
+        self.app.enqueue_log(summary)
 
     def render_dashboard(self, state: Any) -> None:
         self._latest_state = state
