@@ -156,6 +156,7 @@ class WorkflowHost:
         self, url: str, kind: str, *, options=None, status_callback=None
     ) -> dict:
         from core.workflow.definitions import WORKFLOWS
+        from core.ui.frontend import current_frontend
 
         async with self.dispatch_lock:
             account = self.identity_provider()
@@ -174,7 +175,12 @@ class WorkflowHost:
                 ).to_dict()
                 return self.repository.incompatible(run["run_id"], outcome)
             payload = json.loads(run["payload"])
-            self.scopes[run["run_id"]] = {**payload, "options": options or {}}
+            # UI objects belong to this dispatch only, never durable payloads.
+            self.scopes[run["run_id"]] = {
+                **payload,
+                "options": options or {},
+                "frontend": current_frontend(),
+            }
             self.status_callback = status_callback
             try:
                 status = await DBOS.get_workflow_status_async(run["run_id"])
@@ -228,7 +234,12 @@ class WorkflowHost:
                     payload["options"].get("auto_submit")
                     and scope["options"].get("auto_submit")
                 )
-            result = await activity(self, effective)
+            from core.ui.frontend import use_frontend
+
+            # DBOS recovery runs in a fresh context. Bind the frontend selected
+            # by the current caller, including None for headless operations.
+            with use_frontend(scope.get("frontend")):
+                result = await activity(self, effective)
             if isinstance(result, TaskOutcome):
                 result = result.to_dict()
             return self.repository.save_outcome(run_id, result)

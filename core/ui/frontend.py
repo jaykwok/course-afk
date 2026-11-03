@@ -42,8 +42,12 @@ class Frontend(Protocol):
 _frontend = ContextVar("operation_frontend", default=None)
 
 
+def current_frontend() -> Frontend | None:
+    return _frontend.get()
+
+
 @contextmanager
-def use_frontend(frontend: Frontend):
+def use_frontend(frontend: Frontend | None):
     token = _frontend.set(frontend)
     try:
         yield frontend

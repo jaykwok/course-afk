@@ -26,6 +26,57 @@ def event(value):
         os.fsync(out.fileno())
 
 
+def exercise_progress_resume(host):
+    import threading
+    from types import SimpleNamespace
+    from core.ui.frontend import use_frontend, wait_with_progress
+
+    ready = threading.Event()
+    attempts = 0
+
+    async def progress_activity(host, payload):
+        nonlocal attempts
+        attempts += 1
+        await wait_with_progress(0, "chapter")
+        if attempts == 1 and MODE != "progress-recover":
+            ready.set()
+            try:
+                await asyncio.sleep(300)
+            finally:
+                event("progress_cleanup")
+        return TaskOutcome(payload["task_id"], Status.COMPLETED)
+
+    def frontend(label):
+        async def progress(duration, description):
+            assert description == "chapter"
+            event(label)
+        return SimpleNamespace(wait_with_progress=progress)
+
+    host.activities = {"learn": progress_activity}
+    if MODE != "progress-recover":
+        with use_frontend(frontend("first_frontend")):
+            future = host.submit(host.execute(URL, "learn"))
+        assert ready.wait(10), "activity did not start"
+        run = host.repository.export()["runs"][0]
+        host.submit(host.cancel(run["run_id"])).result(10)
+        try:
+            future.result(5)
+        except Exception:
+            pass
+        assert not host.scopes
+        if MODE == "progress-cancel":
+            return
+    with use_frontend(frontend("resumed_frontend")):
+        result = host.submit(host.execute(URL, "learn")).result(20)
+    assert result["status"] == "COMPLETED"
+    assert not host.scopes
+    # A following headless operation must not reuse the previous UI.
+    result = host.submit(host.execute(URL.replace("11111111", "33333333"), "learn")).result(20)
+    assert result["status"] == "COMPLETED"
+    assert not host.scopes
+    event("progress_finished")
+
+
 async def synthetic(host, payload):
     assert asyncio.get_running_loop() is host.loop
     event("activity_entered")
@@ -59,6 +110,9 @@ def main():
     )
     host.start()
     try:
+        if MODE.startswith("progress-"):
+            exercise_progress_resume(host)
+            return
         if MODE == "crash-plan":
             task = host.repository.upsert(parse_entry(URL, "test-account"))
             host.repository.plan(task, "learn", {}, "course-afk-v1")

@@ -65,6 +65,21 @@ class DurableWorkflowTests(unittest.TestCase):
             self.assertEqual(self.events(path)["cleanup"], 1)
             self.assertEqual(self.events(path)["cancel_drained"], 1)
 
+    def test_resumed_progress_uses_current_frontend_and_does_not_leak(self):
+        for restart in (False, True):
+            with self.subTest(restart=restart), TemporaryDirectory() as tmp:
+                path = Path(tmp)
+                if restart:
+                    self.worker("progress-cancel", path)
+                    self.worker("progress-recover", path)
+                else:
+                    self.worker("progress-resume", path)
+                counts = self.events(path)
+                self.assertEqual(counts["first_frontend"], 1)
+                self.assertEqual(counts["resumed_frontend"], 1)
+                self.assertEqual(counts["progress_cleanup"], 1)
+                self.assertEqual(counts["progress_finished"], 1)
+
     def test_account_switch_rejects_old_activity_scope(self):
         with TemporaryDirectory() as tmp:
             path = Path(tmp)
