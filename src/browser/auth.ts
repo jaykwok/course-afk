@@ -224,10 +224,16 @@ export class Authentication {
     )
       throw new AuthenticationError("凭证或账号已变化，本轮操作已停止");
   }
-  async navigate(scope: TabScope, url: string, lease: Lease): Promise<Tab> {
+  async navigate(
+    scope: TabScope,
+    url: string,
+    lease: Lease,
+    existing?: Tab,
+  ): Promise<Tab> {
     this.assert(lease);
     const wanted = entry(url, lease.account);
-    const tab = await scope.open(wanted.url);
+    const tab = existing || (await scope.open(wanted.url));
+    if (existing) await navigateDocument(tab, wanted.url, lease.signal);
     if (isCasePoolUrl(wanted.url)) {
       try {
         await waitForCasePoolSession(tab, lease.signal, () =>

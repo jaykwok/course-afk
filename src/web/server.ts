@@ -59,7 +59,7 @@ export class WebServer {
       }
     });
   }
-  async start(port = 10000) {
+  async start(port = 9999) {
     await new Promise<void>((resolve, reject) => {
       this.server.once("error", reject);
       this.server.listen(port, "127.0.0.1", () => resolve());

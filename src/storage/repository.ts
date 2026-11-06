@@ -1,7 +1,12 @@
 import { DatabaseSync, backup } from "node:sqlite";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { entry, type Entry } from "../domain/identity.ts";
+import {
+  entry,
+  isPlaceholderEntry,
+  isPlatformHome,
+  type Entry,
+} from "../domain/identity.ts";
 import { token } from "../utils.ts";
 
 export type Queue = "learn" | "exam" | "review" | "failure" | "discover";
@@ -139,6 +144,75 @@ export class Repository {
       .prepare("DELETE FROM queues WHERE task_id=? AND queue=?")
       .run(id, queue);
   }
+  discardNonCatalogEntries(account: string) {
+    const rows = this.db
+      .prepare(
+        "SELECT id,url FROM tasks t WHERE account=? AND kind='entry' AND (EXISTS(SELECT 1 FROM queues WHERE task_id=t.id) OR EXISTS(SELECT 1 FROM edges WHERE parent=t.id OR child=t.id))",
+      )
+      .all(account);
+    const ignored = rows.filter(
+      (row) =>
+        isPlaceholderEntry(String(row.url)) || isPlatformHome(String(row.url)),
+    );
+    for (const row of ignored)
+      this.discardEntry(this.task(String(row.id)), "平台占位或错误页，已跳过");
+    return ignored.map((row) => String(row.url));
+  }
+  discardEntry(task: Task, message: string) {
+    if (task.kind !== "entry") throw new Error("只能忽略非学习入口");
+    const parents = this.db
+      .prepare("SELECT parent FROM edges WHERE child=?")
+      .all(task.id);
+    this.transaction(() => {
+      this.db.prepare("DELETE FROM queues WHERE task_id=?").run(task.id);
+      this.db
+        .prepare("DELETE FROM edges WHERE parent=? OR child=?")
+        .run(task.id, task.id);
+      this.outcome(task.id, "READY", {
+        ignored: true,
+        reason: "ignored_entry",
+        message,
+        discoveryComplete: false,
+        ownDiscoveryComplete: false,
+      });
+    });
+    for (const row of parents) this.reconcile(String(row.parent));
+  }
+  /** Retain historical runs while moving active references off old URL aliases. */
+  canonicalizeEntries(account: string) {
+    const rows = this.db
+      .prepare(
+        "SELECT id,url FROM tasks t WHERE account=? AND kind='entry' AND (EXISTS(SELECT 1 FROM queues WHERE task_id=t.id) OR EXISTS(SELECT 1 FROM edges WHERE parent=t.id OR child=t.id))",
+      )
+      .all(account);
+    this.transaction(() => {
+      for (const row of rows) {
+        const id = String(row.id),
+          normalized = entry(String(row.url), account);
+        if (id === normalized.id) continue;
+        const target = this.upsert(normalized.url, account);
+        const edges = this.db
+          .prepare("SELECT * FROM edges WHERE parent=? OR child=?")
+          .all(id, id);
+        this.db
+          .prepare("DELETE FROM edges WHERE parent=? OR child=?")
+          .run(id, id);
+        for (const edge of edges)
+          this.link(
+            this.task(edge.parent === id ? target.id : String(edge.parent)),
+            this.task(edge.child === id ? target.id : String(edge.child)),
+            !!edge.required,
+          );
+        this.db
+          .prepare(
+            "INSERT OR IGNORE INTO queues SELECT ?,queue,reason,position FROM queues WHERE task_id=?",
+          )
+          .run(target.id, id);
+        this.db.prepare("DELETE FROM queues WHERE task_id=?").run(id);
+        this.outcome(id, "READY", { ignored: true, canonicalId: target.id });
+      }
+    });
+  }
   outcome(id: string, status: Status, details: Record<string, any> = {}) {
     const merged = { ...this.task(id).details, ...details };
     if (status === "COMPLETED") {
@@ -190,6 +264,11 @@ export class Repository {
       .run(parent.id, child.id, required ? 1 : 0);
     return true;
   }
+  unlink(parent: string, child: string) {
+    this.db
+      .prepare("DELETE FROM edges WHERE parent=? AND child=?")
+      .run(parent, child);
+  }
   refreshParents(id: string, seen = new Set<string>()) {
     if (seen.has(id)) return;
     seen.add(id);
@@ -207,14 +286,33 @@ export class Repository {
   }
   private refreshContainer(id: string) {
     const task = this.task(id);
-    if (!task.details.discoveryComplete || task.details.residual) return;
+    if (!task.details.discoveryComplete && !task.details.ownDiscoveryComplete)
+      return;
+    const undiscovered = this.db
+      .prepare(
+        "SELECT 1 FROM edges e JOIN tasks t ON t.id=e.child WHERE e.parent=? AND t.kind IN ('entry','subject','class') AND coalesce(json_extract(t.details,'$.discoveryComplete'),0)!=1 LIMIT 1",
+      )
+      .get(id);
+    if (undiscovered) return;
+    if (task.details.residual) {
+      this.outcome(id, "WAITING_SYNC", {
+        discoveryComplete: true,
+        reason: undefined,
+        message: undefined,
+      });
+      return;
+    }
     const unfinished = this.db
       .prepare(
         "SELECT 1 FROM edges e JOIN tasks t ON t.id=e.child WHERE e.parent=? AND e.required=1 AND t.status!='COMPLETED' LIMIT 1",
       )
       .get(id);
     this.transaction(() => {
-      this.outcome(id, unfinished ? "WAITING_CHILDREN" : "COMPLETED");
+      this.outcome(id, unfinished ? "WAITING_CHILDREN" : "COMPLETED", {
+        discoveryComplete: true,
+        reason: undefined,
+        message: undefined,
+      });
       if (!unfinished)
         this.db.prepare("DELETE FROM queues WHERE task_id=?").run(id);
     });
@@ -301,13 +399,19 @@ export class Repository {
     await backup(this.db, path);
     return path;
   }
-  async clear(account: string, includeExams: boolean) {
+  async clear(account: string, scope: "courses" | "exams" | "all") {
     await this.snapshot("queues");
+    const queues: Queue[] =
+      scope === "courses"
+        ? ["learn", "failure", "discover"]
+        : scope === "exams"
+          ? ["exam", "review"]
+          : ["learn", "failure", "discover", "exam", "review"];
     this.db
       .prepare(
-        `DELETE FROM queues WHERE task_id IN (SELECT id FROM tasks WHERE account=?) ${includeExams ? "" : "AND queue IN ('learn','failure','discover')"}`,
+        `DELETE FROM queues WHERE task_id IN (SELECT id FROM tasks WHERE account=?) AND queue IN (${queues.map(() => "?").join(",")})`,
       )
-      .run(account);
+      .run(account, ...queues);
     // Exam history and uncertain intents survive queue clearing.
   }
   export() {

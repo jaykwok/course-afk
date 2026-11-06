@@ -55,7 +55,9 @@ test(
       app = new Application(repo, runtime, config, logger);
       server = new WebServer(app);
       const execute = app.execute.bind(app);
+      let receivedKind = "";
       app.execute = async (kind, payload) => {
+        receivedKind = kind;
         if (kind === "settings") return execute(kind, payload);
         await app!.prompt("confirm", {
           title: "测试操作",
@@ -66,7 +68,10 @@ test(
       const url = await server.start(0),
         page = await runtime.openManagement(url);
       assert.equal(page.id, startup.id);
-      assert.deepEqual(runtime.context.tabs.map((tab) => tab.id), [page.id]);
+      assert.deepEqual(
+        runtime.context.tabs.map((tab) => tab.id),
+        [page.id],
+      );
       await page.waitForFunction(
         () =>
           document
@@ -90,6 +95,27 @@ test(
           false,
         );
       }
+      const clearExams = await page.query('[data-kind="clear_exams"]');
+      assert.ok(clearExams);
+      await clearExams.click();
+      await page.waitForFunction(
+        () => !document.getElementById("prompt")!.hidden,
+        undefined,
+        { timeout: 5000 },
+      );
+      assert.equal(receivedKind, "clear_exams");
+      await (await page.query("#cancel"))!.click();
+      await until(async () => !app!.operationId, 5000);
+      await page.waitForFunction(
+        () =>
+          !(
+            document.querySelector(
+              '[data-kind="clear_exams"]',
+            ) as HTMLButtonElement
+          ).disabled,
+        undefined,
+        { timeout: 5000 },
+      );
       await page.cdp.send("Emulation.setEmulatedMedia", {
         features: [{ name: "forced-colors", value: "active" }],
       });

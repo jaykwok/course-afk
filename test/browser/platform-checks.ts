@@ -9,6 +9,13 @@ import {
   startRegisteredCourse,
 } from "../../src/platform/dom.ts";
 import { AuthenticationError, ReviewRequired } from "../../src/utils.ts";
+import {
+  catalogSnapshot,
+  extractLinks,
+  catalogPageState,
+  catalogManifest,
+  type DiscoveryContext,
+} from "../../src/platform/discovery.ts";
 
 /** Reuses the caller's Browser; all pages here are synthetic and local. */
 export async function platformChecks(runtime: BrowserRuntime) {
@@ -41,6 +48,44 @@ export async function platformChecks(runtime: BrowserRuntime) {
       undefined,
       { timeout: 5000, signal },
     );
+    const course =
+      "https://kc.zhixueyun.com/#/study/course/detail/11111111-1111-4111-8111-111111111111";
+    const topic = "https://cms.mylearning.cn/topic/catalog.html";
+    const article = "https://cms.mylearning.cn/topic/site.html";
+    for (const className of ["venues", "arbitrary-layout", ""]) {
+      await tab.setContent(
+        `<h1>学习专区</h1><a href="${topic}">专题</a><div class="${className}"><a href="${article}">遗址介绍</a><div onclick="window.open('${course}')">课程</div></div>`,
+      );
+      const catalog = await tab.evaluate(catalogSnapshot);
+      assert.deepEqual(extractLinks(catalog.values, catalog.url), [
+        topic,
+        article,
+        course,
+      ]);
+      await tab.setContent(
+        `<title>历史介绍</title><div class="${className}"><h2>历史介绍</h2><p>${"这里是一段历史事件的具体介绍。".repeat(12)}</p></div>`,
+      );
+      assert.equal(
+        catalogPageState(await tab.evaluate(catalogSnapshot)),
+        "article",
+      );
+    }
+    await tab.setContent(
+      `<title>专题</title><a href="${topic}" onclick="document.body.dataset.navigation='clicked';return false"><span>更多</span></a><a href="${course}">课程</a><button onclick="document.body.dataset.expanded=String(event.isTrusted);this.remove()">加载更多</button>`,
+    );
+    const manifest = await catalogManifest(tab, {
+      lease: { signal },
+      auth: {
+        assert() {
+          signal.throwIfAborted();
+        },
+      },
+    } as unknown as DiscoveryContext);
+    assert.equal(manifest.complete, true);
+    assert.deepEqual(manifest.links, [topic, course]);
+    assert.deepEqual(await tab.evaluate(() => ({ ...document.body.dataset })), {
+      expanded: "true",
+    });
     await tab.setContent(
       '<title>安全知识考试</title><h1>考试</h1><div class="question-type-item"><h2>请完成验证是什么意思？</h2><div class="stem-content-main">短信验证码、安全验证、同时学习、课程已下架</div></div><p>人机验证与短信验证码课程说明</p>',
     );

@@ -1,4 +1,4 @@
-import { PLATFORM } from "../config.ts";
+import { PLATFORM, HOME, CENTER } from "../config.ts";
 import { digest } from "../utils.ts";
 export const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -26,6 +26,76 @@ export function platformHost(host: string) {
     (d) => host === d || host.endsWith(`.${d}`),
   );
 }
+export function isPlaceholderEntry(raw: string): boolean {
+  try {
+    const url = new URL(raw);
+    return (
+      platformHost(url.hostname) &&
+      /\/topic\//i.test(url.pathname) &&
+      /\/(?:null|none|undefined)(?:\.html?)?\/?$/i.test(
+        decodeURIComponent(url.pathname),
+      )
+    );
+  } catch {
+    return false;
+  }
+}
+/** Platform landing routes are session entry points, not course catalogs. */
+export function isPlatformHome(raw: string): boolean {
+  try {
+    const url = new URL(raw);
+    const path = url.pathname
+      .replace(/\/{2,}/g, "/")
+      .replace(/\/$/, "")
+      .toLowerCase();
+    if (!platformHost(url.hostname)) return false;
+    if (
+      url.hostname === new URL(HOME).hostname &&
+      path === new URL(HOME).pathname.toLowerCase()
+    )
+      return true;
+    if (url.hostname === new URL(CENTER).hostname && path === "/pc/home")
+      return true;
+    return (
+      /^(?:\/(?:index|home)(?:\.html?)?)?$/.test(path) &&
+      /^(?:#?\/?(?:home|index)?\/?)$/.test(url.hash.split("?")[0])
+    );
+  } catch {
+    return false;
+  }
+}
+/** Explicit roots define static topic directories; business resources keep their own identities. */
+export function discoveryBoundary(roots: string[]) {
+  const entries = roots.map((url) => entry(url, "scope"));
+  const explicit = new Set(entries.map((item) => item.url));
+  const directories = entries
+    .filter(
+      (item) =>
+        item.kind === "entry" &&
+        !isCasePoolUrl(item.url) &&
+        !isPlatformHome(item.url),
+    )
+    .map((item) => {
+      const url = new URL(item.url);
+      return {
+        host: url.host,
+        path: url.pathname.slice(0, url.pathname.lastIndexOf("/") + 1),
+      };
+    });
+  return (raw: string) => {
+    const item = entry(raw, "scope");
+    if (isPlatformHome(item.url)) return false;
+    if (item.kind !== "entry" || explicit.has(item.url)) return true;
+    const url = new URL(item.url);
+    return (
+      !isCasePoolUrl(url) &&
+      directories.some(
+        (scope) =>
+          scope.host === url.host && url.pathname.startsWith(scope.path),
+      )
+    );
+  };
+}
 export function safeUrl(raw: string): URL {
   const url = new URL(raw);
   if (
@@ -47,6 +117,11 @@ export function normalize(raw: string): string {
   for (let n = 0; n < 3; n++) {
     // Discard callback codes and mobile aliases before storing an entry identity.
     if (isCasePoolUrl(url)) return CASE_POOL;
+    // Static topic documents may link back through duplicate slashes or anchors.
+    if (/\/topic\//i.test(url.pathname) && /\.html?\/?$/i.test(url.pathname)) {
+      url.pathname = url.pathname.replace(/\/{2,}/g, "/");
+      url.hash = "";
+    }
     const params = new URLSearchParams(url.search);
     const append = (query: string) => {
       for (const [key, value] of new URLSearchParams(query))

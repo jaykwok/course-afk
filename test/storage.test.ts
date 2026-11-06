@@ -91,7 +91,7 @@ test("SQLite preserves queues, history, uncertain intent and interrupts crashed 
     assert.equal(repo.pending(a, "submit")[0].id, intent);
     assert.deepEqual(repo.history(a).failedModels, ["model1"]);
     assert.equal(repo.queue("b", "exam").length, 1);
-    await repo.clear("a", true);
+    await repo.clear("a", "all");
     assert.equal(repo.queue("a", "exam").length, 0);
     assert.equal(repo.queue("b", "exam").length, 1);
     assert.equal(repo.pending(a, "submit").length, 1);

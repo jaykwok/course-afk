@@ -2,6 +2,66 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { application, COURSE, EXAM } from "./helpers.ts";
 import { token } from "../src/utils.ts";
+import type { Queue } from "../src/storage/repository.ts";
+
+test("queue clearing respects exam/course scope, cancellation, accounts and submission records", async (t) => {
+  const queues: Queue[] = ["learn", "failure", "discover", "exam", "review"];
+  for (const [kind, confirmed, removed] of [
+    ["clear_exams", false, []],
+    ["clear_exams", true, ["exam", "review"]],
+    ["clear_courses", true, ["learn", "failure", "discover"]],
+    ["clear_all", true, queues],
+  ] as const) {
+    const f = await application();
+    try {
+      t.mock.method(f.app.auth, "lease", async (scope: any) => ({
+        account: "a",
+        generation: 0,
+        fingerprint: "fixture",
+        signal: scope.signal,
+      }));
+      t.mock.method(f.app.auth, "assert", () => {});
+      t.mock.method(
+        f.app,
+        "prompt",
+        async (_type: string, fields: { message: string }) => {
+          if (kind === "clear_exams")
+            assert.match(fields.message, /待考科目和考试复查/);
+          return confirmed;
+        },
+      );
+      for (const account of ["a", "b"])
+        for (const queue of queues)
+          f.repo.enqueue(
+            f.repo.upsert(
+              queue === "exam" || queue === "review" ? EXAM : COURSE,
+              account,
+            ),
+            queue,
+          );
+      const exam = f.repo.upsert(EXAM, "a");
+      const intent = f.repo.intent(exam, "submit", { recordId: "before" });
+      f.repo.saveHistory(exam, { failedModels: ["existing-model"] });
+      f.repo.db
+        .prepare("UPDATE tasks SET manual_submit=1 WHERE id=?")
+        .run(exam.id);
+      f.app.command(token(), "operation", { kind });
+      await f.app.settled();
+      for (const queue of queues) {
+        assert.equal(
+          f.repo.queue("a", queue).length,
+          (removed as readonly string[]).includes(queue) ? 0 : 1,
+        );
+        assert.equal(f.repo.queue("b", queue).length, 1);
+      }
+      assert.equal(f.repo.pending(exam, "submit")[0].id, intent);
+      assert.deepEqual(f.repo.history(exam).failedModels, ["existing-model"]);
+      assert.equal(f.repo.task(exam.id).manualSubmit, true);
+    } finally {
+      await f.close();
+    }
+  }
+});
 
 test("link input, manual selection and reference download accept prose and report invalid URLs without dropping valid ones", async (t) => {
   const f = await application();
@@ -46,6 +106,10 @@ test("link input, manual selection and reference download accept prose and repor
         assert.deepEqual(f.app.view.summary.rows, [
           ["已发现任务", 2],
           ["待复查入口", 0],
+          ["待继续解析", 0],
+          ["已解析入口", 0],
+          ["已跳过占位或内容页", 0],
+          ["延伸专题（未展开）", 0],
           ["已忽略无效链接", 1],
         ]);
       } else {

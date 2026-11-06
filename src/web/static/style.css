@@ -534,6 +534,13 @@ progress::-webkit-progress-value {
   gap: 10px;
 }
 
+.module-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 .module-title {
   display: flex;
   align-items: flex-start;

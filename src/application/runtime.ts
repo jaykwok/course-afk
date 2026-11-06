@@ -44,6 +44,7 @@ export const OPERATIONS = [
   "switch_account",
   "clear_credentials",
   "clear_courses",
+  "clear_exams",
   "clear_all",
 ] as const;
 type Operation = (typeof OPERATIONS)[number];
@@ -395,16 +396,29 @@ export class Application extends EventEmitter {
         confirm: (message) =>
           this.prompt("confirm", { title: "请确认", message, default: false }),
       };
-      if (kind === "clear_courses" || kind === "clear_all") {
+      if (
+        kind === "clear_courses" ||
+        kind === "clear_exams" ||
+        kind === "clear_all"
+      ) {
         if (
           await ctx.confirm(
             kind === "clear_all"
               ? "清空当前账号的全部待办？"
-              : "清空当前账号的学习队列和学习异常？",
+              : kind === "clear_exams"
+                ? "清空当前账号的待考科目和考试复查队列？考试历史与提交记录会保留。"
+                : "清空当前账号的学习队列和学习异常？",
           )
         ) {
           this.auth.assert(lease);
-          await this.repo.clear(lease.account, kind === "clear_all");
+          await this.repo.clear(
+            lease.account,
+            kind === "clear_all"
+              ? "all"
+              : kind === "clear_exams"
+                ? "exams"
+                : "courses",
+          );
           report("队列已备份并清空");
         }
         return;
@@ -537,6 +551,10 @@ export class Application extends EventEmitter {
               rows: [
                 ["已发现任务", result.found.length],
                 ["待复查入口", result.issues.length],
+                ["待继续解析", result.pending.length],
+                ["已解析入口", result.expanded],
+                ["已跳过占位或内容页", result.ignored],
+                ["延伸专题（未展开）", result.related.length],
                 ["已忽略无效链接", rejected],
               ],
             },
