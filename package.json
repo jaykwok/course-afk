@@ -1,0 +1,31 @@
+{
+  "name": "course-afk",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.22.0"
+  },
+  "scripts": {
+    "prestart": "npm run build",
+    "start": "node dist/src/main.js",
+    "check": "tsc --noEmit",
+    "build": "tsc && node tools/copy-assets.ts",
+    "test": "node --test --test-concurrency=1 test/*.test.ts",
+    "test:browser": "node --test --test-concurrency=1 test/browser/*.test.ts",
+    "check-startup": "node src/main.ts --check-startup",
+    "state": "node tools/state.ts"
+  },
+  "dependencies": {
+    "nodriver-ts": "0.7.0",
+    "openai": "^6.0.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/ws": "^8.18.0",
+    "devtools-protocol": "0.0.1718299",
+    "prettier": "3.9.10",
+    "typescript": "^5.9.0"
+  }
+}

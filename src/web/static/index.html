@@ -1,0 +1,601 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>网上大学 · 自动化挂课工作台</title>
+    <link rel="stylesheet" href="/style.css" />
+    <script src="/app.js" type="module"></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <!-- Top Application Bar -->
+      <header class="app-header">
+        <div class="brand-group">
+          <img
+            src="/logo.svg"
+            class="brand-logo"
+            alt="中国电信"
+            width="112"
+            height="32"
+          />
+          <div class="brand-divider" aria-hidden="true"></div>
+          <div class="brand-title">
+            <h1>网上大学</h1>
+            <span>自动化挂课工作台</span>
+          </div>
+          <span
+            id="connection"
+            role="status"
+            class="pill"
+            data-state="connecting"
+            >正在连接</span
+          >
+        </div>
+
+        <div class="header-right">
+          <div class="account-bar" id="account-card" data-status="missing">
+            <div class="account-meta">
+              <div class="account-line">
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                  <circle cx="12" cy="7" r="4" />
+                </svg>
+                <strong id="account">未登录</strong>
+                <span class="status-tag" id="credential-tag">待登录</span>
+              </div>
+              <small id="credential">正在读取登录状态</small>
+            </div>
+            <div class="account-actions">
+              <button type="button" data-kind="login" class="btn-sm">
+                登录 / 更新凭证
+              </button>
+              <button
+                type="button"
+                data-kind="switch_account"
+                class="btn-sm subtle"
+              >
+                切换账号
+              </button>
+              <button
+                type="button"
+                data-kind="clear_credentials"
+                class="btn-sm subtle"
+                id="clear-cred-btn"
+              >
+                清除凭证
+              </button>
+            </div>
+          </div>
+
+          <div class="header-divider" aria-hidden="true"></div>
+          <button
+            type="button"
+            id="settings-open"
+            class="btn-sm subtle"
+            disabled
+          >
+            设置
+          </button>
+
+          <button
+            type="button"
+            id="exit"
+            class="btn-sm subtle exit-btn"
+            title="安全停止任务并关闭后台服务"
+          >
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M18.36 6.64a9 9 0 1 1-12.73 0" />
+              <line x1="12" y1="2" x2="12" y2="12" />
+            </svg>
+            <span>关闭服务</span>
+          </button>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <!-- Dynamic Status & Active Task Control Bar -->
+        <section class="task-banner" id="task-banner" data-active="false">
+          <div class="task-banner-main">
+            <div class="task-status-group">
+              <span id="phase" class="pill" data-phase="idle">空闲</span>
+              <h2 id="operation-title">系统就绪</h2>
+              <span class="task-sep" aria-hidden="true">·</span>
+              <p id="status" role="status">等待连接</p>
+            </div>
+
+            <div class="task-right">
+              <div class="recommended-box" id="recommended-box">
+                <small>下一步建议</small>
+                <button type="button" id="recommended" class="btn-sm" disabled>
+                  等待连接
+                </button>
+              </div>
+
+              <div class="task-controls" id="task-controls" hidden>
+                <button type="button" id="stop" class="btn-sm">
+                  <svg
+                    width="13"
+                    height="13"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <rect x="6" y="4" width="4" height="16" />
+                    <rect x="14" y="4" width="4" height="16" />
+                  </svg>
+                  本课后停止
+                </button>
+                <button type="button" id="cancel" class="btn-sm danger">
+                  <svg
+                    width="13"
+                    height="13"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <circle cx="12" cy="12" r="10" />
+                    <line x1="15" y1="9" x2="9" y2="15" />
+                    <line x1="9" y1="9" x2="15" y2="15" />
+                  </svg>
+                  取消任务
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div id="progress-area" hidden>
+            <label id="progress-label" for="progress"></label>
+            <progress id="progress" max="1" value="0"></progress>
+          </div>
+        </section>
+
+        <!-- Error Alert -->
+        <p id="error" role="alert"></p>
+
+        <!-- Interactive Confirmation Card (Only visible when backend awaits human confirmation) -->
+        <section
+          id="prompt"
+          class="panel prompt-card"
+          hidden
+          aria-live="polite"
+        ></section>
+
+        <!-- Core Bento Workbench Grid -->
+        <div class="workbench-grid" aria-label="业务工作台">
+          <!-- Card 1: Course Learning -->
+          <section class="panel module-card">
+            <div class="module-head">
+              <div class="module-title">
+                <span class="module-icon" aria-hidden="true">
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <polygon points="5 3 19 12 5 21 5 3" />
+                  </svg>
+                </span>
+                <div>
+                  <h2>课程学习</h2>
+                  <small>自动按队列完成视频播放与文档章节</small>
+                </div>
+              </div>
+              <button
+                type="button"
+                data-kind="clear_courses"
+                class="btn-sm subtle"
+              >
+                清空队列
+              </button>
+            </div>
+
+            <div class="metric-pair" aria-label="课程队列统计">
+              <article class="metric-box" data-tone="info">
+                <small>待学课程</small>
+                <strong id="learning_count">—</strong>
+                <span class="metric-note">等待学习的队列</span>
+              </article>
+              <article class="metric-box" data-tone="warn">
+                <small>学习异常</small>
+                <strong id="learning_failure_count">—</strong>
+                <span class="metric-note" id="failure-note"
+                  >挂课失败或待重试</span
+                >
+              </article>
+            </div>
+
+            <div class="module-note">
+              <span
+                >学习进行中可随时点击顶部「本课后停止」，当前课程完成后将安全停机。</span
+              >
+            </div>
+
+            <div class="module-actions">
+              <button type="button" data-kind="learn" class="primary">
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <polygon points="5 3 19 12 5 21 5 3" />
+                </svg>
+                开始学习
+              </button>
+              <button type="button" data-kind="tasks">异常统计与重试</button>
+            </div>
+          </section>
+
+          <!-- Card 2: AI Exam -->
+          <section class="panel module-card">
+            <div class="module-head">
+              <div class="module-title">
+                <span class="module-icon" aria-hidden="true">
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <path d="M9 11l3 3L22 4" />
+                    <path
+                      d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"
+                    />
+                  </svg>
+                </span>
+                <div>
+                  <h2>自动考试</h2>
+                  <small>AI 辅助解析试题并自动填写答案</small>
+                </div>
+              </div>
+              <span class="status-tag" id="ai-badge">AI 待检测</span>
+            </div>
+
+            <div class="metric-pair" aria-label="考试队列统计">
+              <article class="metric-box" data-tone="info">
+                <small>待考科目</small>
+                <strong id="exam_count">—</strong>
+                <span class="metric-note">等待答题的队列</span>
+              </article>
+              <article class="metric-box" data-tone="warn">
+                <small>考试复查</small>
+                <strong id="manual_exam_count">—</strong>
+                <span class="metric-note">需人工确认或交卷</span>
+              </article>
+            </div>
+
+            <label class="switch-row" for="auto-submit">
+              <div class="switch-text">
+                <span>答题后自动交卷</span>
+                <small>关闭时仅保存已答题目，留待人工复查交卷</small>
+              </div>
+              <input type="checkbox" id="auto-submit" />
+            </label>
+
+            <div class="module-actions">
+              <button type="button" data-kind="exam" class="primary">
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M9 11l3 3L22 4" />
+                  <path
+                    d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"
+                  />
+                </svg>
+                开始考试
+              </button>
+            </div>
+          </section>
+
+          <!-- Card 3: Link Discovery & Course Material Workbench -->
+          <section class="panel module-card workbench-card">
+            <div class="module-head">
+              <div class="module-title">
+                <span class="module-icon" aria-hidden="true">
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <path
+                      d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"
+                    />
+                    <path
+                      d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"
+                    />
+                  </svg>
+                </span>
+                <div>
+                  <h2>链接录入与资料下载</h2>
+                  <small
+                    >粘贴课程、专区、培训班或考试链接，支持批量解析入队或下载课件</small
+                  >
+                </div>
+              </div>
+              <button type="button" id="clear-workbench" class="btn-sm subtle">
+                清空输入
+              </button>
+            </div>
+
+            <textarea
+              id="workbench-input"
+              aria-label="链接输入框"
+              placeholder="在此粘贴 HTTP/HTTPS 链接（每行一条）&#10;· 解析入队：支持课程、主题、考试、培训班及学习专区链接&#10;· 资料下载：支持知学云主题详情链接，自动保存 PDF/课件与 AI 导学总结"
+            ></textarea>
+
+            <div class="module-actions">
+              <button type="button" data-kind="links" class="primary">
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <line x1="12" y1="5" x2="12" y2="19" />
+                  <line x1="5" y1="12" x2="19" y2="12" />
+                </svg>
+                解析并加入队列
+              </button>
+              <button type="button" data-kind="select">在平台选择课程</button>
+              <button type="button" data-kind="references">
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <polyline points="7 10 12 15 17 10" />
+                  <line x1="12" y1="15" x2="12" y2="3" />
+                </svg>
+                下载课件与导学
+              </button>
+            </div>
+          </section>
+        </div>
+
+        <!-- Summary Result Panel (Shown when an operation outputs summary rows) -->
+        <section id="summary" class="panel summary-card" hidden></section>
+
+        <!-- Live Logs & Global Maintenance -->
+        <section class="panel logs-panel">
+          <div class="section-head">
+            <div class="section-title-group">
+              <svg
+                width="15"
+                height="15"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <polyline points="4 17 10 11 4 5" />
+                <line x1="12" y1="19" x2="20" y2="19" />
+              </svg>
+              <h2>运行日志</h2>
+              <small id="log-meta">最近 400 条</small>
+            </div>
+            <button
+              type="button"
+              data-kind="clear_all"
+              class="btn-sm danger-subtle"
+            >
+              清空全部待办（含考试）
+            </button>
+          </div>
+          <div id="logs" role="log" aria-label="活动日志"></div>
+        </section>
+
+        <footer class="app-footer">
+          <span>统一管理课程学习、考试与资料下载</span>
+          <span
+            >最小化或切换标签页不影响后台执行；直接关闭此窗口即可安全保存进度并退出</span
+          >
+        </footer>
+      </main>
+    </div>
+    <dialog
+      id="settings-dialog"
+      class="settings-dialog"
+      aria-labelledby="settings-title"
+    >
+      <form id="settings-form">
+        <div class="section-head">
+          <h2 id="settings-title">工作台设置</h2>
+          <button type="button" id="settings-close" aria-label="关闭设置">
+            关闭
+          </button>
+        </div>
+        <p class="settings-note">
+          保存后自动记住配置。AI
+          和学习参数在下次任务生效，浏览器路径在重启后生效。
+        </p>
+        <fieldset>
+          <legend>AI 自动考试</legend>
+          <div class="settings-grid">
+            <label class="settings-field"
+              >协议<select data-setting="openai.protocol">
+                <option value="responses">Responses</option>
+                <option value="chat">Chat Completions</option>
+              </select></label
+            >
+            <label class="settings-field"
+              >模型名称<input
+                data-setting="openai.model"
+                maxlength="256"
+                placeholder="填写服务提供的模型名称"
+            /></label>
+            <label class="settings-field settings-wide"
+              >接口地址<input
+                data-setting="openai.baseURL"
+                type="url"
+                required
+                maxlength="2048"
+            /></label>
+            <label class="settings-field settings-wide"
+              >API Key<input
+                data-setting="openai.apiKey"
+                type="password"
+                autocomplete="new-password"
+                maxlength="4096"
+                placeholder="未配置"
+              /><small>留空保留已有密钥。</small></label
+            >
+            <label class="settings-wide settings-key-clear"
+              ><input id="settings-clear-key" type="checkbox" /> 清除已保存的
+              API Key</label
+            >
+          </div>
+        </fieldset>
+        <details>
+          <summary>高级设置</summary>
+          <fieldset>
+            <legend>请求与答案</legend>
+            <div class="settings-grid">
+              <label class="settings-field"
+                >输出格式<select data-setting="openai.output">
+                  <option value="prompt_json">JSON 提示词</option>
+                  <option value="json_schema">JSON Schema</option>
+                </select></label
+              >
+              <label class="settings-field"
+                >失败重试次数<input
+                  data-setting="openai.retries"
+                  type="number"
+                  min="0"
+                  max="5"
+                  required
+              /></label>
+              <label class="settings-field"
+                >单次请求超时（秒）<input
+                  data-setting="openai.timeout"
+                  type="number"
+                  min="1"
+                  max="3600"
+                  required
+              /></label>
+              <label class="settings-field"
+                >每题总期限（秒）<input
+                  data-setting="openai.totalTimeout"
+                  type="number"
+                  min="1"
+                  max="3600"
+                  required
+              /></label>
+            </div>
+          </fieldset>
+          <fieldset>
+            <legend>课程学习</legend>
+            <div class="settings-grid">
+              <label class="settings-field"
+                >进度检查间隔（秒）<input
+                  data-setting="learning.watchSlice"
+                  type="number"
+                  min="1"
+                  max="120"
+                  required
+              /></label>
+              <label class="settings-field"
+                >播放停滞期限（秒）<input
+                  data-setting="learning.stallLimit"
+                  type="number"
+                  min="30"
+                  max="3600"
+                  required
+              /></label>
+              <label class="settings-field"
+                >单章节期限（秒）<input
+                  data-setting="learning.sectionTimeout"
+                  type="number"
+                  min="60"
+                  max="86400"
+                  required
+              /></label>
+            </div>
+          </fieldset>
+          <label class="settings-field"
+            >浏览器可执行文件路径<input
+              data-setting="browser.executable"
+              maxlength="4096"
+              placeholder="留空自动查找 Edge / Chrome"
+          /></label>
+        </details>
+        <p id="settings-error" role="alert"></p>
+        <div class="settings-footer">
+          <button type="submit" id="settings-save" class="primary">
+            保存设置
+          </button>
+        </div>
+      </form>
+    </dialog>
+  </body>
+</html>

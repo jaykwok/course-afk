@@ -1,2 +1,0 @@
-# Dependencies are maintained only in pyproject.toml.
-.

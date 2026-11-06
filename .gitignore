@@ -29,6 +29,7 @@ build/
 *.egg-info/
 /build-*.txt
 dist/
+node_modules/
 
 # Local capture / reverse-engineering experiments (do not upload)
 tools/capture/
