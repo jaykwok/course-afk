@@ -17,6 +17,7 @@ import {
 import { until } from "../../src/utils.ts";
 import type { DiscoveryContext } from "../../src/platform/discovery.ts";
 import { platformChecks } from "./platform-checks.ts";
+import { loginChecks } from "./login-checks.ts";
 import { acquireInstance } from "../../src/application/instance.ts";
 
 test(
@@ -50,6 +51,7 @@ test(
       );
       assert.ok(startup);
       await platformChecks(runtime);
+      await loginChecks(runtime);
       app = new Application(repo, runtime, config, logger);
       server = new WebServer(app);
       const execute = app.execute.bind(app);

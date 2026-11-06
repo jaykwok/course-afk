@@ -8,6 +8,7 @@ import { atomicJson } from "../storage/files.ts";
 import { AuthenticationError, digest, until } from "../utils.ts";
 import type { BrowserRuntime, TabScope } from "./runtime.ts";
 import { navigateDocument } from "./navigation.ts";
+import { waitForLoginReturn } from "./login.ts";
 
 interface Credential {
   version: 2;
@@ -93,11 +94,11 @@ export class Authentication {
   async profile(
     scope: TabScope,
     timeout = 30000,
-    foreground?: Tab,
+    existing?: Tab,
   ): Promise<{ account: string; name: string }> {
-    const tab = await scope.open(`${CENTER}/PC/home`, timeout);
+    const tab = existing || (await scope.open());
     try {
-      if (foreground && !foreground.closed) await foreground.bringToFront();
+      await navigateDocument(tab, `${CENTER}/PC/home`, scope.signal, timeout);
       await tab.waitForFunction(
         () =>
           location.origin === "https://center.mylearning.cn" &&
@@ -134,7 +135,7 @@ export class Authentication {
       );
       return result;
     } finally {
-      await tab.close();
+      if (!existing) await tab.close();
     }
   }
   async login(scope: TabScope, report: (text: string) => void) {
@@ -142,24 +143,9 @@ export class Authentication {
     const tab = await scope.open(HOME);
     await tab.bringToFront();
     report("请在浏览器平台页完成登录，登录成功后将自动核验账号");
-    const profile = await until(
-      async () => {
-        if (tab.closed) throw new AuthenticationError("登录窗口已关闭");
-        const cookies = await this.runtime.context.cookies();
-        if (!cookies.some((c) => platformHost(c.domain.replace(/^\./, ""))))
-          return false;
-        try {
-          return await this.profile(scope, 10000, tab);
-        } catch (e) {
-          scope.signal.throwIfAborted();
-          if (tab.closed) throw new AuthenticationError("登录窗口已关闭");
-          return false;
-        }
-      },
-      300000,
-      scope.signal,
-      1000,
-    );
+    await waitForLoginReturn(tab, scope.signal);
+    report("登录已返回平台，正在核验账号");
+    const profile = await this.profile(scope, 30000, tab);
     const cookies = (await this.runtime.context.cookies())
       .filter((c) => platformHost(c.domain.replace(/^\./, "")))
       .map(cookieParam);
@@ -170,6 +156,7 @@ export class Authentication {
       expires: new Date(Date.now() + 28 * 86400000).toISOString(),
       cookies,
     };
+    scope.signal.throwIfAborted();
     await atomicJson(this.path, c);
     this.current = c;
     this.fingerprint = this.fileFingerprint();
@@ -199,8 +186,12 @@ export class Authentication {
         ),
       );
       const home = await scope.open(HOME);
-      const profile = await this.profile(scope);
-      await home.close();
+      let profile;
+      try {
+        profile = await this.profile(scope, 30000, home);
+      } finally {
+        await home.close();
+      }
       if (profile.account !== c.account)
         throw new AuthenticationError("浏览器账号与凭证不一致，请重新登录");
       if (this.fileFingerprint() !== fingerprint)
