@@ -7,7 +7,7 @@ import { application } from "./helpers.ts";
 async function fixture() {
   const f = await application(),
     server = new WebServer(f.app),
-    url = await server.start(),
+    url = await server.start(0),
     bootstrap = new URL(url).hash.slice("#bootstrap=".length),
     origin = server.origin;
   const exchange = await fetch(`${origin}/api/session`, {

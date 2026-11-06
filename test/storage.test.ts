@@ -64,6 +64,46 @@ test("SQLite preserves queues, history, uncertain intent and interrupts crashed 
     await t.close();
   }
 });
+
+test("query and path course sources share identity without merging other subjects or bare courses", async () => {
+  const temp = await temporary(),
+    repo = new Repository(temp.dir);
+  try {
+    const subject = entry(SUBJECT, "a").businessId;
+    const query = `${COURSE}?type=6&required=1&sourceId=${subject}`;
+    const path = `${COURSE}/6/1/${subject}`;
+    assert.equal(normalize(query), path);
+    assert.equal(repo.upsert(query, "a").id, repo.upsert(path, "a").id);
+    assert.equal(repo.upsert(query, "a").url, path);
+    assert.notEqual(repo.upsert(query, "a").id, repo.upsert(COURSE, "a").id);
+    assert.notEqual(
+      entry(query, "a").id,
+      entry(query.replace(subject, entry(EXAM, "a").businessId), "a").id,
+    );
+    assert.equal(
+      normalize(
+        `${COURSE}?TYPE=6&isRequired=1&sourceId=${subject.toUpperCase()}`,
+      ),
+      path,
+    );
+    const qr = `https://kc.zhixueyun.com/app/wechat/#/qrScan?businessType=1&businessId=${entry(COURSE, "a").businessId}&type=6&require=1&sourceId=${subject}`;
+    assert.equal(normalize(qr), path);
+    for (const invalid of [
+      `${COURSE}?sourceId=${subject}`,
+      `${COURSE}?type=6&required=1`,
+      `${COURSE}?type=6&required=2&sourceId=${subject}`,
+      `${query}&sourceId=${entry(EXAM, "a").businessId}`,
+      `${path}?required=0`,
+      `${path}?type=7`,
+    ])
+      assert.throws(() => normalize(invalid));
+    const nested = `https://www.mylearning.cn/#/paas-container?paasurl=${encodeURIComponent(`https://kc.zhixueyun.com/#/train?classId=${subject}`)}`;
+    assert.equal(normalize(nested), resource("class", subject));
+  } finally {
+    repo.close();
+    await temp.close();
+  }
+});
 test("transactions roll back; graph rejects cycles and cross-account dependencies", async () => {
   const t = await temporary(),
     r = new Repository(t.dir);
@@ -85,8 +125,13 @@ test("transactions roll back; graph rejects cycles and cross-account dependencie
       discoveryComplete: true,
       residual: false,
     });
+    r.enqueue(a, "learn");
+    r.review(a, "subject_residual");
     r.complete(b, { finishStatus: 2 });
     assert.equal(r.task(a.id).status, "COMPLETED");
+    assert.equal(r.task(a.id).details.reason, undefined);
+    assert.equal(r.queue("a", "learn").length, 0);
+    assert.equal(r.queue("a", "failure").length, 0);
     const path = await r.snapshot(),
       backup = new DatabaseSync(path, { readOnly: true });
     assert.equal(backup.prepare("SELECT count(*) n FROM tasks").get()?.n, 3);
@@ -119,7 +164,14 @@ test("reference runs leave learning completion and queues unchanged", async () =
     repo = new Repository(temp.dir);
   try {
     const task = repo.upsert(COURSE, "a");
+    repo.review(task, "partial_course_failure", {
+      message: "上次播放失败",
+      sections: [{ section: "s", message: "stalled" }],
+    });
     repo.complete(task, { source: "server" });
+    assert.deepEqual(repo.task(task.id).details, {
+      evidence: { source: "server" },
+    });
     const run = repo.begin(repo.task(task.id), "references");
     assert.equal(repo.task(task.id).status, "COMPLETED");
     repo.end(run, "FAILED", { reason: "download failed" });

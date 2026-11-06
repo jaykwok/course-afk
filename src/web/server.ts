@@ -59,10 +59,10 @@ export class WebServer {
       }
     });
   }
-  async start() {
+  async start(port = 10000) {
     await new Promise<void>((resolve, reject) => {
       this.server.once("error", reject);
-      this.server.listen(0, "127.0.0.1", () => resolve());
+      this.server.listen(port, "127.0.0.1", () => resolve());
     });
     const address = this.server.address();
     if (!address || typeof address === "string")

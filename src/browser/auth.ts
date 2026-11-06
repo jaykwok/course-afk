@@ -7,6 +7,7 @@ import { accountId, entry, platformHost } from "../domain/identity.ts";
 import { atomicJson } from "../storage/files.ts";
 import { AuthenticationError, digest, until } from "../utils.ts";
 import type { BrowserRuntime, TabScope } from "./runtime.ts";
+import { navigateDocument } from "./navigation.ts";
 
 interface Credential {
   version: 2;
@@ -94,7 +95,7 @@ export class Authentication {
     timeout = 30000,
     foreground?: Tab,
   ): Promise<{ account: string; name: string }> {
-    const tab = await scope.open(`${CENTER}/PC/home`);
+    const tab = await scope.open(`${CENTER}/PC/home`, timeout);
     try {
       if (foreground && !foreground.closed) await foreground.bringToFront();
       await tab.waitForFunction(
@@ -272,11 +273,7 @@ export class Authentication {
           if (accountId(profile.account) !== lease.account)
             throw new AuthenticationError("认证回跳账号不一致");
           this.assert(lease);
-          await tab.goto(url, {
-            waitUntil: "domcontentloaded",
-            timeout: 30000,
-            signal: lease.signal,
-          });
+          await navigateDocument(tab, url, lease.signal);
           reopened = true;
         }
         return false;

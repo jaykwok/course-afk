@@ -1,6 +1,12 @@
 import type { Tab } from "nodriver-ts";
 import { PLATFORM } from "../config.ts";
-import { entry, normalize, resource, UUID } from "../domain/identity.ts";
+import {
+  entry,
+  normalize,
+  resource,
+  UUID,
+  platformHost,
+} from "../domain/identity.ts";
 import { PlatformHttp } from "../browser/http.ts";
 import type { Authentication, Lease } from "../browser/auth.ts";
 import type { TabScope } from "../browser/runtime.ts";
@@ -18,6 +24,8 @@ export interface Manifest {
   complete: boolean;
   message?: string;
   residual?: boolean;
+  /** URL activity destinations are collected, but do not define that activity's completion. */
+  optionalLinks?: string[];
 }
 export interface DiscoveryContext {
   repo: Repository;
@@ -28,41 +36,83 @@ export interface DiscoveryContext {
   confirm: (message: string) => Promise<boolean>;
 }
 
+export function subjectSectionCompleted(
+  section: any,
+  subject: Pick<Task, "businessId">,
+): boolean {
+  const p = section?.progress;
+  return (
+    !!section?.id &&
+    !!p &&
+    String(p.finishStatus) === "2" &&
+    String(p.courseId).toLowerCase() === subject.businessId.toLowerCase() &&
+    String(p.sectionId).toLowerCase() === String(section.id).toLowerCase() &&
+    !!section.resourceId &&
+    String(p.resourceId) === String(section.resourceId)
+  );
+}
+
 export function subjectManifest(payload: unknown, subject: Task): Manifest {
   const links: string[] = [];
+  const optionalLinks: string[] = [];
+  const requiredLinks = new Set<string>();
   let complete = true,
-    count = 0;
+    count = 0,
+    residual = false;
   for (const chapter of list(payload)) {
     if (!Array.isArray(chapter?.courseChapterSections)) {
       complete = false;
+      residual = true;
       continue;
     }
     for (const s of chapter.courseChapterSections) {
       count++;
       try {
-        if (Number(s.sectionType) === 10)
-          links.push(
-            resource(
-              "course",
-              s.attachmentId || s.resourceId,
-              subject.businessId,
-              s.required,
-            ),
+        if (Number(s.sectionType) === 10) {
+          const url = resource(
+            "course",
+            s.attachmentId || s.resourceId,
+            subject.businessId,
+            s.required,
           );
-        else if (Number(s.sectionType) === 9)
-          links.push(resource("exam", s.resourceId));
-        else if (Number(s.sectionType) === 3 && s.url)
-          links.push(normalize(s.url));
-        else complete = false;
+          links.push(url);
+          requiredLinks.add(url);
+        } else if (Number(s.sectionType) === 9) {
+          const url = resource("exam", s.resourceId);
+          links.push(url);
+          requiredLinks.add(url);
+        } else if (Number(s.sectionType) === 3) {
+          residual ||= !subjectSectionCompleted(s, subject);
+          const destination = new URL(s.url);
+          if (
+            !["http:", "https:"].includes(destination.protocol) ||
+            destination.username ||
+            destination.password
+          )
+            throw new Error("主题外链地址无效");
+          // External documents are activities on the subject, not crawl roots.
+          if (platformHost(destination.hostname)) {
+            const destinations = extractLinks([destination.href], subject.url);
+            optionalLinks.push(
+              ...destinations.filter((url) => !links.includes(url)),
+            );
+            links.push(...destinations);
+          }
+        } else {
+          complete = false;
+          residual = true;
+        }
       } catch {
         complete = false;
+        residual = true;
       }
     }
   }
   return {
     links,
     complete: complete && count > 0,
-    residual: !complete,
+    residual: residual || !complete || count === 0,
+    optionalLinks: optionalLinks.filter((url) => !requiredLinks.has(url)),
     message: !complete ? "主题仍有无法识别的章节，已保留已发现课程" : undefined,
   };
 }
@@ -70,22 +120,48 @@ export function extractLinks(texts: string[], base: string): string[] {
   const links = new Set<string>();
   const accept = (raw: string) => {
     try {
-      const url = normalize(new URL(raw.replace(/&amp;/g, "&"), base).href);
+      raw = raw.trim().replace(/&amp;/g, "&");
+      if (
+        !raw ||
+        raw.length > 8192 ||
+        /[\s<>"'`\\{}()]/.test(raw) ||
+        /%3[ce]/i.test(raw)
+      )
+        return;
+      if (raw.startsWith("#") && !raw.startsWith("#/")) return;
+      if (
+        /^#?\/(?:study\/(?:course|subject)\/detail|exam\/(?:answer-paper|exam-detail)|train-new\/class-detail)\//i.test(
+          raw,
+        )
+      )
+        raw = `${PLATFORM}/#${raw.replace(/^#/, "")}`;
+      const url = normalize(new URL(raw, base).href);
+      const parsed = new URL(url);
       const e = entry(url, "discovery");
       if (
         e.kind !== "entry" ||
-        /\/topic\/|casePool|classId=|paasurl=/i.test(url)
+        (/\/topic\//i.test(parsed.pathname) &&
+          /(?:\.html?\/?|\/)$/i.test(parsed.pathname)) ||
+        /(?:^|\/)casePool(?:[/?#]|$)/i.test(parsed.pathname + parsed.hash)
       )
         links.add(url);
     } catch {}
   };
-  for (const text of texts) {
+  for (const input of texts) {
+    const text = input.replace(/<!--[\s\S]*?-->/g, "");
     accept(text);
-    for (const match of text.matchAll(/https?:\/\/[^\s"'<>\\]+/g))
-      accept(match[0]);
+    const absolute = /https?:\/\/[^\s"'<>`\\{}()]+/g;
+    for (const match of text.matchAll(absolute)) accept(match[0]);
     for (const match of text.matchAll(
-      /(?:#?\/study\/(?:course|subject)\/detail\/|#?\/exam\/(?:answer-paper|exam-detail)\/|#?\/train-new\/class-detail\/)[0-9a-f-]{36}(?:\/\d+\/[01]\/[0-9a-f-]{36})?/gi,
+      /(?:^|\s)(?:href|src|data-url)\s*=\s*["']([^"'<>`\s]+)["']/gi,
     ))
+      accept(match[1]);
+    // Remove full URLs first so query-form sources cannot also yield a bare course.
+    for (const match of text
+      .replace(absolute, "")
+      .matchAll(
+        /(?:#?\/study\/(?:course|subject)\/detail\/|#?\/exam\/(?:answer-paper|exam-detail)\/|#?\/train-new\/class-detail\/)[0-9a-f-]{36}(?:\/\d+\/[01]\/[0-9a-f-]{36})?(?:\?[^\s"'<>`\\{}()]*)?/gi,
+      ))
       accept(`${PLATFORM}/#${match[0].replace(/^#/, "")}`);
   }
   return [...links];
@@ -137,12 +213,21 @@ export async function traverse(
     ctx.report(`正在解析入口 ${expanded}：${task.url}`);
     try {
       const manifest = await read(task, depth > 0);
+      ctx.repo.outcome(task.id, "READY", {
+        discoveryComplete: false,
+        residual: !!manifest.residual,
+      });
+      const optional = new Set(manifest.optionalLinks);
       const children = [...new Set(manifest.links)]
         .map((url) => ctx.repo.upsert(url, ctx.lease.account))
         .filter(
           (child) =>
             !active.has(child.id) &&
-            ctx.repo.link(task, child, child.required !== "0"),
+            ctx.repo.link(
+              task,
+              child,
+              !optional.has(child.url) && child.required !== "0",
+            ),
         );
       // Persist all children before recursively touching another container.
       for (const child of children)
@@ -169,9 +254,10 @@ export async function traverse(
         ctx.repo.remove(task.id, "failure");
         ctx.repo.outcome(
           task.id,
-          children.length ? "WAITING_CHILDREN" : "COMPLETED",
+          manifest.residual ? "WAITING_SYNC" : "WAITING_CHILDREN",
           { discoveryComplete: true, residual: !!manifest.residual },
         );
+        ctx.repo.reconcile(task.id);
       } else
         failure(
           task,

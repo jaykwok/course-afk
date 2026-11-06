@@ -14,6 +14,10 @@ node dist/src/main.js
 
 Windows 默认查找 Edge，其次 Chrome；macOS 默认查找 Chrome，其次 Edge。
 
+工作台默认监听 `http://127.0.0.1:10000`，启动后自动打开。
+
+浏览器以可见窗口运行，使用项目独立的 `data/browser-profile/`，后续启动继续复用。这个本地个人资料关闭浏览器账号自动登录、同步和扩展，不使用日常浏览器的个人资料。
+
 ## 配置
 
 点击工作台右上角的 **设置**，填写并保存。无需复制配置模板或编辑环境文件。
@@ -44,6 +48,7 @@ Windows 默认查找 Edge，其次 Chrome；macOS 默认查找 Chrome，其次 E
 | ----------------------- | ---------------------------------------- |
 | `data/settings.json`    | AI、浏览器和学习设置                     |
 | `data/credentials.json` | 平台登录凭证                             |
+| `data/browser-profile/` | 项目专用浏览器个人资料                   |
 | `data/workbench.sqlite` | 各账号任务、队列、运行记录与考试复查状态 |
 | `data/references/`      | 按账号与课程保存的课件、导学及索引       |
 | `data/backups/`         | 清空队列前的数据库备份                   |
@@ -61,7 +66,7 @@ npm test
 npm run check-startup
 ```
 
-默认测试使用模拟协议和 HTTP 服务，不启动浏览器。真实浏览器测试需要显式开启，整轮复用一个浏览器，且使用预置密码检测缓存的独立临时目录：
+默认测试使用模拟协议和 HTTP 服务，不启动浏览器。真实浏览器测试需要显式开启，整轮复用一个可见浏览器；独立测试配置保存在 `build/browser-tests/browser-profile/`，后续测试继续复用，并在启动前检查密码检测缓存：
 
 ```powershell
 $env:COURSE_AFK_BROWSER_TEST='1'

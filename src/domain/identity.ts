@@ -27,21 +27,80 @@ export function normalize(raw: string): string {
     .replace(/[，。；]+$/, "");
   let url = safeUrl(value);
   for (let n = 0; n < 3; n++) {
-    const params = new URLSearchParams(
-      url.search ||
-        (url.hash.includes("?") ? url.hash.slice(url.hash.indexOf("?")) : ""),
-    );
-    const embedded = params.get("url") || params.get("redirectUrl");
+    const params = new URLSearchParams(url.search);
+    const append = (query: string) => {
+      for (const [key, value] of new URLSearchParams(query))
+        params.append(key, value);
+    };
+    if (url.hash.includes("?"))
+      append(url.hash.slice(url.hash.indexOf("?") + 1));
+    // paas-container carries its destination's query inside the paasurl value.
+    for (const nested of params.getAll("paasurl"))
+      if (nested.includes("?")) append(nested.slice(nested.indexOf("?") + 1));
+    const get = (...names: string[]) => {
+      const values = [...params]
+        .filter(([key]) => names.includes(key.toLowerCase()))
+        .map(([, value]) => value);
+      if (new Set(values).size > 1) throw new Error("链接参数存在冲突");
+      return values[0];
+    };
+    const embedded = get("url", "redirecturl");
     if (embedded?.startsWith("http")) {
       url = safeUrl(embedded);
       continue;
     }
-    const id = params.get("businessId"),
-      type = params.get("businessType");
+    const route = url.hash.split("?")[0];
+    const course = route.match(/^#\/study\/course\/detail\/([\w-]+)(.*)$/);
+    if (course) {
+      if (!UUID.test(course[1])) throw new Error("平台资源 ID 无效");
+      const suffix = course[2].replace(/\/$/, "");
+      const context = suffix.match(/^\/([1-9]\d*)\/([01])\/([\w-]+)$/);
+      if (suffix && (!context || !UUID.test(context[3])))
+        throw new Error("课程来源或必修标记不完整");
+      const query = [
+        get("type"),
+        get("required", "require", "isrequired"),
+        get("sourceid"),
+      ];
+      const path = context ? context.slice(1) : [];
+      if (
+        path.length &&
+        query.some(
+          (v, i) =>
+            v !== undefined && v.toLowerCase() !== path[i].toLowerCase(),
+        )
+      )
+        throw new Error("课程来源参数与路径不一致");
+      const source = path.length ? path : query;
+      const base = `${url.origin}/#/study/course/detail/${course[1].toLowerCase()}`;
+      if (source.every((v) => v === undefined)) return base;
+      if (
+        !/^[1-9]\d*$/.test(source[0] || "") ||
+        !/^[01]$/.test(source[1] || "") ||
+        !UUID.test(source[2] || "")
+      )
+        throw new Error("课程来源或必修标记不完整");
+      return `${base}/${source[0]}/${source[1]}/${source[2]!.toLowerCase()}`;
+    }
+    const classId = get("classid");
+    if (classId !== undefined) return resource("class", classId);
+    const id = get("businessid"),
+      type = get("businesstype");
     const kind = (
       { "1": "course", "2": "subject", "6": "class" } as Record<string, string>
     )[type || ""];
-    if (id && UUID.test(id) && kind) return resource(kind as Kind, id);
+    if (id && UUID.test(id) && kind) {
+      const target = resource(kind as Kind, id);
+      if (kind !== "course") return target;
+      const source = new URLSearchParams();
+      for (const [key, value] of [
+        ["type", get("type")],
+        ["required", get("required", "require", "isrequired")],
+        ["sourceId", get("sourceid")],
+      ])
+        if (value !== undefined) source.set(key!, value);
+      return normalize(`${target}${source.size ? `?${source}` : ""}`);
+    }
     break;
   }
   value = url.href.replace("/exam/exam-detail/", "/exam/answer-paper/");

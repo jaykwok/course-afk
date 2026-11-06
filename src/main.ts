@@ -5,6 +5,7 @@ import { BrowserRuntime, executable } from "./browser/runtime.ts";
 import { Application } from "./application/runtime.ts";
 import { WebServer } from "./web/server.ts";
 import { acquireInstance, reopenInstance } from "./application/instance.ts";
+import { join } from "node:path";
 
 async function main() {
   const version = process.versions.node.split(".").map(Number);
@@ -28,7 +29,11 @@ async function main() {
   try {
     const logger = new Logger(config.logsDir);
     repo = new Repository(config.dataDir);
-    browser = await BrowserRuntime.launch(logger, config.browserPath);
+    browser = await BrowserRuntime.launch(
+      logger,
+      config.browserPath,
+      join(config.dataDir, "browser-profile"),
+    );
     app = new Application(repo, browser, config, logger);
     server = new WebServer(app);
     const url = await server.start();

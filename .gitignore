@@ -7,12 +7,28 @@ __pycache__/
 .vscode/
 .claude/
 .agents/
+.codex/
+.idea/
 docs/
+.DS_Store
+Thumbs.db
 
 # Local secrets
 .env
+.env.*
+.npmrc
+*.pem
+*.key
+*.p12
+*.pfx
+cookies*.json
+credentials.json
 storage_state*.json
 auth_state*.json
+*.har
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
 
 # Runtime data (queues, cookies, logs, reference materials)
 data/

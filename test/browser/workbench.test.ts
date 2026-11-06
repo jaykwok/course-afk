@@ -16,6 +16,8 @@ import {
 } from "../../src/platform/exam.ts";
 import { until } from "../../src/utils.ts";
 import type { DiscoveryContext } from "../../src/platform/discovery.ts";
+import { platformChecks } from "./platform-checks.ts";
+import { acquireInstance } from "../../src/application/instance.ts";
 
 test(
   "one shared Browser: workbench, narrow layouts, native contrast switch, input, session isolation",
@@ -32,8 +34,18 @@ test(
     let runtime: BrowserRuntime | undefined,
       server: WebServer | undefined,
       app: Application | undefined;
+    let releaseProfile: (() => Promise<void>) | undefined;
     try {
-      runtime = await BrowserRuntime.launch(logger, config.browserPath);
+      const testDirectory = join(config.root, "build", "browser-tests");
+      const lock = await acquireInstance(testDirectory);
+      if (!lock.owned) throw new Error("已有浏览器测试正在使用测试配置");
+      releaseProfile = lock.close;
+      runtime = await BrowserRuntime.launch(
+        logger,
+        config.browserPath,
+        join(testDirectory, "browser-profile"),
+      );
+      await platformChecks(runtime);
       app = new Application(repo, runtime, config, logger);
       server = new WebServer(app);
       const execute = app.execute.bind(app);
@@ -45,7 +57,7 @@ test(
           default: false,
         });
       };
-      const url = await server.start(),
+      const url = await server.start(0),
         page = await runtime.openManagement(url);
       await page.waitForFunction(
         () =>
@@ -293,9 +305,13 @@ test(
       app?.exit();
       await app?.settled();
       await server?.close();
-      await runtime?.close();
-      repo.close();
-      await temp.close();
+      try {
+        await runtime?.close();
+      } finally {
+        repo.close();
+        await temp.close();
+        await releaseProfile?.();
+      }
     }
   },
 );

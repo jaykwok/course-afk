@@ -140,13 +140,16 @@ export class Repository {
       .run(id, queue);
   }
   outcome(id: string, status: Status, details: Record<string, any> = {}) {
+    const merged = { ...this.task(id).details, ...details };
+    if (status === "COMPLETED") {
+      // Failed attempts remain in runs; the current task should describe completion.
+      delete merged.reason;
+      delete merged.message;
+      delete merged.sections;
+    }
     this.db
       .prepare("UPDATE tasks SET status=?,details=? WHERE id=?")
-      .run(
-        status,
-        JSON.stringify({ ...this.task(id).details, ...details }),
-        id,
-      );
+      .run(status, JSON.stringify(merged), id);
   }
   review(
     task: Task,
@@ -193,16 +196,28 @@ export class Repository {
     for (const row of this.db
       .prepare("SELECT parent FROM edges WHERE child=?")
       .all(id)) {
-      const parent = this.task(String(row.parent));
-      const unfinished = this.db
-        .prepare(
-          "SELECT 1 FROM edges e JOIN tasks t ON t.id=e.child WHERE e.parent=? AND e.required=1 AND t.status!='COMPLETED' LIMIT 1",
-        )
-        .get(parent.id);
-      if (parent.details.discoveryComplete && !parent.details.residual)
-        this.outcome(parent.id, unfinished ? "WAITING_CHILDREN" : "COMPLETED");
-      this.refreshParents(parent.id, seen);
+      const parent = String(row.parent);
+      this.refreshContainer(parent);
+      this.refreshParents(parent, seen);
     }
+  }
+  reconcile(id: string) {
+    this.refreshContainer(id);
+    this.refreshParents(id);
+  }
+  private refreshContainer(id: string) {
+    const task = this.task(id);
+    if (!task.details.discoveryComplete || task.details.residual) return;
+    const unfinished = this.db
+      .prepare(
+        "SELECT 1 FROM edges e JOIN tasks t ON t.id=e.child WHERE e.parent=? AND e.required=1 AND t.status!='COMPLETED' LIMIT 1",
+      )
+      .get(id);
+    this.transaction(() => {
+      this.outcome(id, unfinished ? "WAITING_CHILDREN" : "COMPLETED");
+      if (!unfinished)
+        this.db.prepare("DELETE FROM queues WHERE task_id=?").run(id);
+    });
   }
   begin(task: Task, kind: string) {
     const id = token();

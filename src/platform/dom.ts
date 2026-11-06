@@ -1,5 +1,66 @@
-import type { Tab } from "nodriver-ts";
+import {
+  ActionabilityError,
+  type Tab,
+  type Element as BrowserElement,
+} from "nodriver-ts";
 import { AuthenticationError, ReviewRequired } from "../utils.ts";
+/** Native input for main-frame player controls, with a fresh hit check before press. */
+export async function clickPlayerControl(
+  tab: Tab,
+  element: BrowserElement,
+  signal: AbortSignal,
+  guard: () => void,
+) {
+  signal.throwIfAborted();
+  guard();
+  if (element.frame !== tab.mainFrame)
+    throw new ActionabilityError("播放按钮不在主页面");
+  await element.scrollIntoView({ timeout: 5000, signal });
+  const point = await element.evaluate((e) => {
+    const r = e.getBoundingClientRect();
+    return {
+      x: (Math.max(0, r.left) + Math.min(innerWidth, r.right)) / 2,
+      y: (Math.max(0, r.top) + Math.min(innerHeight, r.bottom)) / 2,
+    };
+  });
+  const verify = async () => {
+    guard();
+    signal.throwIfAborted();
+    const valid = await element.evaluate((e, { x, y }) => {
+      const r = e.getBoundingClientRect(),
+        style = getComputedStyle(e);
+      const hit = document.elementFromPoint(x, y);
+      return (
+        e.isConnected &&
+        r.width > 0 &&
+        r.height > 0 &&
+        x >= 0 &&
+        y >= 0 &&
+        x < innerWidth &&
+        y < innerHeight &&
+        x >= r.left &&
+        x < r.right &&
+        y >= r.top &&
+        y < r.bottom &&
+        style.visibility !== "hidden" &&
+        style.display !== "none" &&
+        !e.matches(":disabled") &&
+        e.getAttribute("aria-disabled") !== "true" &&
+        !!hit &&
+        (hit === e || e.contains(hit))
+      );
+    }, point);
+    if (!valid)
+      throw new ActionabilityError("播放按钮已移动或被遮挡，未执行点击");
+  };
+  await verify();
+  await tab.mouse.click(point.x, point.y, {
+    timeout: 5000,
+    signal,
+    guard,
+    beforePress: verify,
+  });
+}
 export async function clickText(
   tab: Tab,
   labels: string[],
@@ -27,19 +88,87 @@ export async function clickText(
   }
   return false;
 }
+export interface AccessSignals {
+  challenge: boolean;
+  title: string;
+  notices: string[];
+}
+export function accessProblem({
+  challenge,
+  title,
+  notices,
+}: AccessSignals): "authentication" | "concurrent" | "denied" | undefined {
+  if (
+    challenge ||
+    /^(?:安全验证|人机验证|访问验证|访问已被拦截|访问过于频繁)(?:\s*[-|·].*)?$/.test(
+      title.trim(),
+    ) ||
+    notices.some((text) =>
+      /^(?:安全验证|人机验证|身份验证)(?:\s|$)|请.{0,12}(?:输入|填写).{0,8}验证码|请.{0,12}(?:完成|通过).{0,8}验证|(?:安全|人机|身份)验证失败|访问过于频繁|访问已被拦截|操作过于频繁/.test(
+        text,
+      ),
+    )
+  )
+    return "authentication";
+  if (
+    notices.some((text) => /同时学习|正在学习其他课程|同一时间只能/.test(text))
+  )
+    return "concurrent";
+  if (
+    notices.some((text) =>
+      /没有权限|无权访问|课程已下架|不在学习范围/.test(text),
+    )
+  )
+    return "denied";
+}
 export async function inspectAccess(tab: Tab, signal: AbortSignal) {
-  const text = await tab.evaluate(
-    () => document.body.innerText.slice(0, 15000),
+  const signals = await tab.evaluate(
+    () => {
+      const content =
+        ".question-type-item,.single-title,.stem-content-main,.preview-list,.rich-text-style,.chapter-list-box";
+      const visible = (e: Element) =>
+        e.getBoundingClientRect().height > 0 &&
+        getComputedStyle(e).visibility !== "hidden";
+      const outsideContent = (e: Element) =>
+        !e.closest(content) && !e.querySelector(content);
+      const challenge = [
+        ...document.querySelectorAll(
+          '#captcha,.captcha-container,.geetest_panel,.geetest_panel_box,.yidun_popup,.nc-container,[data-captcha],input[name*="captcha" i],input[id*="captcha" i],iframe[src*="captcha" i]',
+        ),
+      ].some((e) => visible(e) && outsideContent(e));
+      const notices = [
+        ...document.querySelectorAll(
+          '[role="alert"],[role="dialog"],.ant-modal-content,.el-dialog,.ant-message-notice-content,.el-message,.error-page,.access-denied,.ant-result,.el-result,h1,h2',
+        ),
+      ]
+        .filter((e) => visible(e) && outsideContent(e))
+        .map((e) => (e as HTMLElement).innerText.slice(0, 2000));
+      // Some platform error pages use plain divs without an alert role.
+      for (const e of document.querySelectorAll("p,div,span")) {
+        const text = (e.textContent || "").trim();
+        if (
+          !e.children.length &&
+          visible(e) &&
+          outsideContent(e) &&
+          /^(?:您|你|当前账号)?(?:没有权限|无权)(?:查看|访问)(?:该|此)资源[。！!]?$/u.test(
+            text,
+          )
+        )
+          notices.push(text);
+      }
+      return { challenge, title: document.title, notices };
+    },
     undefined,
     { timeout: 5000, signal },
   );
-  if (/安全验证|访问过于频繁|访问已被拦截|操作过于频繁|验证码/.test(text))
+  const problem = accessProblem(signals);
+  if (problem === "authentication")
     throw new AuthenticationError("平台要求验证或暂时限制访问，本轮已停止");
-  if (/同时学习|正在学习其他课程|同一时间只能/.test(text))
+  if (problem === "concurrent")
     throw new AuthenticationError(
       "平台提示已有其他学习会话，请结束其他会话后继续",
     );
-  if (/没有权限|无权访问|课程已下架|不在学习范围/.test(text))
+  if (problem === "denied")
     throw new ReviewRequired("access_denied", "当前账号无法访问此课程");
 }
 export async function dismissOverlays(tab: Tab, signal: AbortSignal) {

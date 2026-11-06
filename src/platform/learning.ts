@@ -1,4 +1,9 @@
-import type { Tab } from "nodriver-ts";
+import {
+  InputActionError,
+  StaleElementError,
+  TimeoutError,
+  type Tab,
+} from "nodriver-ts";
 import type { Configuration } from "../config.ts";
 import type { Task } from "../storage/repository.ts";
 import { resource } from "../domain/identity.ts";
@@ -11,9 +16,14 @@ import {
   list,
 } from "../utils.ts";
 import type { DiscoveryContext } from "./discovery.ts";
-import { discover } from "./discovery.ts";
+import { discover, subjectManifest } from "./discovery.ts";
 import { examState, readExamState } from "./exam.ts";
-import { clickText, dismissOverlays, inspectAccess } from "./dom.ts";
+import {
+  clickText,
+  clickPlayerControl,
+  dismissOverlays,
+  inspectAccess,
+} from "./dom.ts";
 export interface Section {
   id: string;
   resourceId: string;
@@ -148,22 +158,32 @@ async function rating(tab: Tab, ctx: DiscoveryContext) {
       }
   }
 }
-async function activate(tab: Tab, s: Section, ctx: DiscoveryContext) {
+export async function activate(tab: Tab, s: Section, ctx: DiscoveryContext) {
   await rating(tab, ctx);
   await dismissOverlays(tab, ctx.lease.signal);
   const selector = `dl.chapter-list-box[id$="${s.id}"]`;
   for (let n = 0; n < 3; n++) {
     ctx.auth.assert(ctx.lease);
-    const box = await tab.waitForSelector(`${selector} .section-item-wrapper`, {
-      timeout: 10000,
-      signal: ctx.lease.signal,
-    });
-    await box.click({
-      signal: ctx.lease.signal,
-      timeout: 5000,
-      guard: () => ctx.auth.assert(ctx.lease),
-    });
     try {
+      const box = await tab.waitForSelector(
+        `${selector} .section-item-wrapper`,
+        {
+          timeout: 10000,
+          signal: ctx.lease.signal,
+        },
+      );
+      // The platform can activate the first chapter itself during page startup.
+      if (
+        await box.evaluate((e) =>
+          e.closest("dl.chapter-list-box")?.classList.contains("focus"),
+        )
+      )
+        return selector;
+      await box.click({
+        signal: ctx.lease.signal,
+        timeout: 5000,
+        guard: () => ctx.auth.assert(ctx.lease),
+      });
       await tab.waitForFunction(
         (selector) =>
           document.querySelector(selector)?.classList.contains("focus"),
@@ -173,6 +193,22 @@ async function activate(tab: Tab, s: Section, ctx: DiscoveryContext) {
       return selector;
     } catch (e) {
       if (ctx.lease.signal.aborted) throw e;
+      if (!tab.closed) await inspectAccess(tab, ctx.lease.signal);
+      // The SPA can replace chapter rows after the initial API response. A
+      // click interrupted before dispatch is safe to retry with a fresh row.
+      const detachedBeforeInput =
+        e instanceof InputActionError &&
+        e.report.events === 0 &&
+        e.report.completedSegments === 0 &&
+        e.cause instanceof StaleElementError;
+      if (detachedBeforeInput) {
+        const cleanup = await e.cleanup;
+        if (cleanup.status !== "completed") throw e;
+      } else if (
+        !(e instanceof StaleElementError) &&
+        !(e instanceof TimeoutError)
+      )
+        throw e;
     }
     await sleep(500, ctx.lease.signal);
   }
@@ -186,6 +222,22 @@ async function resumeMedia(tab: Tab, selector: string, ctx: DiscoveryContext) {
     ctx.lease.signal,
     ".register-mask-layer button,.register-mask-layer .btn,.register-mask-layer a,.register-mask-layer span",
   );
+  const focused = await tab.evaluate(
+    (selector) =>
+      !!document.querySelector(selector)?.classList.contains("focus"),
+    selector,
+    { timeout: 5000, signal: ctx.lease.signal },
+  );
+  if (!focused) return { focused: false, videos: [] };
+  // Video.js needs a genuine input gesture to unlock playback on a fresh profile.
+  const play = await tab.query(
+    ".video-js.vjs-paused .vjs-big-play-button,.video-js.vjs-paused .vjs-play-control",
+    { visible: true, timeout: 5000, signal: ctx.lease.signal },
+  );
+  if (play)
+    await clickPlayerControl(tab, play, ctx.lease.signal, () =>
+      ctx.auth.assert(ctx.lease),
+    );
   return tab.evaluate(
     async (selector) => {
       const target = document.querySelector(selector);
@@ -222,8 +274,8 @@ export async function learn(
   onProgress: (value: unknown) => void,
 ) {
   if (task.kind !== "course") {
-    const result = await discover([task.url], ctx);
-    if (task.kind === "subject" && !result.complete)
+    await discover([task.url], ctx);
+    if (task.kind === "subject" && ctx.repo.task(task.id).details.residual)
       await learnSubjectLinks(task, ctx);
     return;
   }
@@ -423,22 +475,30 @@ async function learnSubjectLinks(task: Task, ctx: DiscoveryContext) {
         `/api/v1/course-study/subject/chapter-progress?courseId=${task.businessId}&knowledgePaymentEnable=false`,
       ),
     );
-    const residual = chapters
-      .flatMap((c) => c.courseChapterSections || [])
-      .filter((s) => ![9, 10].includes(Number(s.sectionType)));
-    if (
-      residual.length &&
-      residual.every((s) => String(s.finishStatus) === "2")
-    ) {
+    const manifest = subjectManifest(chapters, task);
+    // Local activity progress cannot repair an incomplete child discovery.
+    const discoveryComplete =
+      manifest.complete &&
+      ctx.repo.task(task.id).details.discoveryComplete === true;
+    if (!manifest.residual && discoveryComplete) {
       ctx.repo.remove(task.id, "failure");
       ctx.repo.outcome(task.id, "WAITING_CHILDREN", {
         residual: false,
         discoveryComplete: true,
       });
+      ctx.repo.reconcile(task.id);
     } else
-      ctx.repo.review(task, "subject_residual", {
-        message: "主题外链或其他章节仍需平台确认或人工处理",
-      });
+      ctx.repo.review(
+        task,
+        manifest.residual ? "subject_residual" : "discovery_incomplete",
+        {
+          residual: !!manifest.residual,
+          discoveryComplete,
+          message: manifest.residual
+            ? "主题外链或其他章节仍需平台确认或人工处理"
+            : "子入口尚未完整解析，已确认的主题活动进度已保留",
+        },
+      );
   } finally {
     await tab.close();
   }

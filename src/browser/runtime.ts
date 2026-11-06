@@ -2,8 +2,14 @@ import { Browser, type BrowserContext, type Tab } from "nodriver-ts";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { createProfile, validateProfile, removeProfile } from "./profile.ts";
+import {
+  createProfile,
+  validateProfile,
+  removeProfile,
+  prepareProjectProfile,
+} from "./profile.ts";
 import type { Logger } from "../log.ts";
+import { navigateDocument } from "./navigation.ts";
 const loopback = (host: string) =>
   ["127.0.0.1", "localhost", "::1", "[::1]"].includes(host.replace(/^\./, ""));
 
@@ -64,6 +70,7 @@ export class BrowserRuntime {
   readonly browser: Browser;
   readonly context: BrowserContext;
   readonly profile?: string;
+  private readonly temporaryProfile: boolean;
   management?: Tab;
   readonly retained = new Set<Tab>();
   private origins = new Set([
@@ -73,10 +80,16 @@ export class BrowserRuntime {
     "https://cms.mylearning.cn",
   ]);
   private unsubscribe: () => void;
-  private constructor(browser: Browser, logger: Logger, profile?: string) {
+  private constructor(
+    browser: Browser,
+    logger: Logger,
+    profile?: string,
+    temporaryProfile = true,
+  ) {
     this.browser = browser;
     this.context = browser.defaultContext;
     this.profile = profile;
+    this.temporaryProfile = temporaryProfile;
     this.unsubscribe = browser.cdp.on(
       "Target.targetInfoChanged",
       ({ targetInfo }) => this.note(targetInfo.url),
@@ -85,9 +98,15 @@ export class BrowserRuntime {
     browser.tabCreated.on((tab) => tab.setInputPolicy({ mode: "human" }));
     browser.errors.on((error) => logger.log(error, "warn"));
   }
-  static async launch(logger: Logger, path?: string) {
+  static async launch(
+    logger: Logger,
+    path?: string,
+    profileDirectory?: string,
+  ) {
     const executablePath = executable(path),
-      profile = await createProfile();
+      profile = profileDirectory
+        ? await prepareProjectProfile(profileDirectory)
+        : await createProfile();
     try {
       await validateProfile(profile);
       const browser = await Browser.launch({
@@ -100,13 +119,16 @@ export class BrowserRuntime {
         preset: "agent",
         args: [
           "--disable-background-timer-throttling",
-          "--disable-features=LocalNetworkAccessChecks,LocalNetworkAccessChecksWebRTC,msForceBrowserSignIn",
+          "--disable-extensions",
+          "--disable-sync",
+          "--profile-directory=Default",
+          "--disable-features=LocalNetworkAccessChecks,LocalNetworkAccessChecksWebRTC,msForceBrowserSignIn,msImplicitSignin,msEdgeOnRampFRE",
         ],
         onError: (e) => logger.log(e, "warn"),
       });
-      return new BrowserRuntime(browser, logger, profile);
+      return new BrowserRuntime(browser, logger, profile, !profileDirectory);
     } catch (e) {
-      await removeProfile(profile);
+      if (!profileDirectory) await removeProfile(profile);
       throw e;
     }
   }
@@ -166,8 +188,8 @@ export class BrowserRuntime {
         this.browser.process &&
         !(await this.browser.process.waitForExit(10000))
       )
-        throw new Error("浏览器尚未退出，临时目录已保留");
-      await removeProfile(this.profile);
+        throw new Error("浏览器尚未退出，配置目录已保留");
+      if (this.temporaryProfile) await removeProfile(this.profile);
     }
   }
 }
@@ -192,7 +214,7 @@ export class TabScope {
     };
     signal.addEventListener("abort", this.abortListener, { once: true });
   }
-  async open(url?: string) {
+  async open(url?: string, timeout = 30000) {
     this.signal.throwIfAborted();
     const tab = await this.runtime.context.newTab();
     this.tabs.add(tab);
@@ -202,11 +224,13 @@ export class TabScope {
     }
     if (url) {
       this.runtime.note(url);
-      await tab.goto(url, {
-        waitUntil: "domcontentloaded",
-        timeout: 30000,
-        signal: this.signal,
-      });
+      try {
+        await navigateDocument(tab, url, this.signal, timeout);
+      } catch (e) {
+        await tab.close().catch(() => {});
+        this.tabs.delete(tab);
+        throw e;
+      }
     }
     return tab;
   }
