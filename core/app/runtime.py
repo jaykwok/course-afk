@@ -11,6 +11,7 @@ import threading
 import time
 
 from core.abort import UserCancelRequested, UserAbortRequested
+from core.auth.access import CredentialUnavailableError
 from core.app.control_session import ControlSession
 from core.ui.frontend import use_frontend
 from core.ui.web_frontend import WebFrontend, WebLogHandler
@@ -194,6 +195,11 @@ class ApplicationRuntime:
                         self.dispatcher(kind, self.frontend)
                 except (UserCancelRequested, UserAbortRequested, asyncio.CancelledError) as exc:
                     self.frontend.show_warning(str(exc) or "已取消，待办保留")
+                except CredentialUnavailableError as exc:
+                    # Missing/expired credentials are an expected prerequisite,
+                    # including when a platform recheck invalidates them mid-task.
+                    logging.warning("管理操作需要重新登录：%s；%s", kind, exc)
+                    self.frontend.show_warning(str(exc))
                 except Exception as exc:
                     logging.exception("管理操作失败：%s", kind)
                     self.frontend.show_error(str(exc) or type(exc).__name__)

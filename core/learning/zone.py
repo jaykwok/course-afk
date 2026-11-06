@@ -4,26 +4,20 @@ from core.browser.bootstrap import navigate_platform_page
 
 import re
 import asyncio
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlparse, urljoin, urldefrag
 
 from bs4 import BeautifulSoup
 
-from core.browser.session import create_browser_context, is_target_closed_exception
-from core.abort import UserCancelRequested, UserAbortRequested, WafBlockError
-from core.queues.learning import (
-    record_learning_failure,
-    remove_learning_failure,
-    remember_discovery_entries,
-)
+from core.browser.session import create_browser_context
+from core.queues.learning import remember_discovery_entries
 from core.runtime import close_safely
 from core.config import ZHIXUEYUN_COURSE_PREFIX, ZHIXUEYUN_SUBJECT_PREFIX
-from core.file_ops import is_compliant_url_regex, normalize_url
+from core.file_ops import is_compliant_url_regex, is_train_class_url, is_exam_url, normalize_url
 from core.links import is_ctexpert_case_pool_url, unique_urls
 from core.browser.overlays import (
     dismiss_topmost_overlays_async,
     prepare_page_after_navigation_async,
 )
-from core.discovery.subject_parse import enqueue_learning_links_with_subject_expand
 
 
 # 实勘（cms topic / 学习专区）:
@@ -327,6 +321,31 @@ def extract_learning_links_from_runtime_values(values: object) -> list[str]:
     return unique_urls(links)
 
 
+def extract_topic_entry_urls(html_content: str, page_url: str) -> list[str]:
+    """Read class/subtopic cards, excluding site-wide navigation and other hosts."""
+    soup = BeautifulSoup(html_content or "", "html.parser")
+    for navigation in soup.select("header, footer, nav, smart-header, floating-sidebar, footer-bar"):
+        navigation.decompose()
+    entries = []
+    for link in soup.select("a[href]"):
+        raw = urljoin(page_url, link.get("href", "").strip())
+        target = urlparse(raw)
+        if target.hostname not in {"cms.mylearning.cn", "kc.zhixueyun.com"} or target.username or target.password:
+            continue
+        url = urldefrag(normalize_url(raw))[0] if target.hostname == "cms.mylearning.cn" else normalize_url(raw)
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"} or parsed.username or parsed.password:
+            continue
+        if parsed.hostname == "kc.zhixueyun.com" and (is_train_class_url(url) or is_exam_url(url)):
+            entries.append(url)
+        elif (parsed.hostname == "cms.mylearning.cn"
+              and parsed.path.startswith("/safe/topic/")
+              and parsed.path.endswith((".html", ".htm"))
+              and urldefrag(url)[0] != urldefrag(page_url)[0]):
+            entries.append(url)
+    return unique_urls(entries)
+
+
 async def _fetch_learning_zone_links_direct(context, url: str) -> list[str]:
     """用浏览器 Cookie 直接请求 topic HTML；失败返回空列表触发页面兜底。"""
 
@@ -382,9 +401,11 @@ def _extract_detail_urls_from_text(text: str) -> list[str]:
 async def _click_load_more_until_stable(page, status_callback=None) -> int:
     """点击「更多」类按钮直到不再出现新按钮、链接不再增加，或达到上限。"""
     clicks = 0
-    prev_count = len(
-        extract_learning_links_from_learning_zone_html(await page.content())
-    )
+    async def link_count():
+        html = await page.content()
+        return (len(extract_learning_links_from_learning_zone_html(html))
+                + len(extract_topic_entry_urls(html, getattr(page, "url", ""))))
+    prev_count = await link_count()
     for _ in range(_MORE_CLICK_MAX):
         await dismiss_topmost_overlays_async(page, max_count=2)
         try:
@@ -397,16 +418,12 @@ async def _click_load_more_until_stable(page, status_callback=None) -> int:
         if status_callback and clicks == 1:
             status_callback("正在展开学习专区「更多」内容…")
         await page.wait_for_timeout(_MORE_CLICK_WAIT_MS)
-        new_count = len(
-            extract_learning_links_from_learning_zone_html(await page.content())
-        )
+        new_count = await link_count()
         # 点了但链接数不涨，且连续无效则停（避免误点空转）
         if new_count <= prev_count:
             # 再给一页懒加载机会；仍不涨则结束
             await page.wait_for_timeout(_MORE_CLICK_WAIT_MS)
-            new_count = len(
-                extract_learning_links_from_learning_zone_html(await page.content())
-            )
+            new_count = await link_count()
             if new_count <= prev_count:
                 raise RuntimeError("更多按钮没有推进页面，收集不完整")
         prev_count = new_count
@@ -583,227 +600,141 @@ async def _collect_ctexpert_case_pool_pages(
     return links, clicks
 
 
-async def collect_learning_links_from_learning_zone_urls(
-    learning_zone_urls: list[str],
-    status_callback=None,
-    before_close_callback=None,
-    *,
-    context=None,
-    detailed=False,
-) -> int:
-    """
-    解析学习专区链接并写入学习队列。
+async def read_learning_zone_manifest(page, context, url, status_callback=None):
+    """Read one catalog page; recursive traversal and queue writes live elsewhere."""
+    from core.discovery.contracts import DiscoveryManifest
+    is_case_pool = is_ctexpert_case_pool_url(url)
+    source_label = "案例库" if is_case_pool else "学习专区"
+    elapsed = 0
+    learning_links: list[str] = []
+    rendered_links: list[str] = []
+    nested_entries: list[str] = []
+    case_pool_api_stats = {"records": 0, "total": 0, "pages": 0}
+    case_pool_api_direct = False
+    incomplete_reason = ""
+    if not is_case_pool:
+        learning_links = await _fetch_learning_zone_links_direct(
+            context, url
+        )
+        if learning_links and status_callback:
+            status_callback(
+                f"已通过 HTTP 直接读取首屏 HTML：{len(learning_links)} 条链接，继续展开浏览器页面"
+            )
 
-    可传入已有 context 复用浏览器；否则自建 context。
-    """
+    await navigate_platform_page(page, url, wait_until="load")
+    await prepare_page_after_navigation_async(
+        page, status_callback=status_callback
+    )
+    if is_case_pool:
+        await _ensure_ctexpert_case_pool_authenticated(
+            page,
+            url,
+            status_callback=status_callback,
+        )
+
+    if is_case_pool:
+        (
+            learning_links,
+            case_pool_api_stats,
+        ) = await _fetch_ctexpert_case_pool_links(page)
+        case_pool_api_direct = case_pool_api_stats.get("complete") is True
+        if learning_links and status_callback:
+            status_callback(
+                "已通过案例库接口直接读取 "
+                f"{case_pool_api_stats['records']} 条记录 / "
+                f"{case_pool_api_stats['pages']} 批请求"
+            )
+        elif status_callback:
+            status_callback(
+                "案例库接口直取未返回课程链接，改用页面数据兜底"
+            )
+    # 先等首屏出现任意合规链接，再点更多收全
+    while (
+        not (case_pool_api_direct or rendered_links or nested_entries)
+        and elapsed <= LEARNING_ZONE_LINK_WAIT_MILLISECONDS
+    ):
+        dismissed_count = await dismiss_topmost_overlays_async(page)
+        if dismissed_count and status_callback:
+            status_callback(
+                f"已关闭 {dismissed_count} 个页面弹窗，继续读取课程链接"
+            )
+        html = await page.content()
+        rendered_links = extract_learning_links_from_learning_zone_html(html)
+        if not is_case_pool:
+            nested_entries = extract_topic_entry_urls(html, url)
+        if is_case_pool:
+            rendered_links = unique_urls(
+                rendered_links + await _read_runtime_learning_links(page)
+            )
+        learning_links = unique_urls(learning_links + rendered_links)
+        if rendered_links or nested_entries:
+            break
+        if elapsed >= LEARNING_ZONE_LINK_WAIT_MILLISECONDS:
+            break
+        await page.wait_for_timeout(LEARNING_ZONE_LINK_POLL_MILLISECONDS)
+        elapsed += LEARNING_ZONE_LINK_POLL_MILLISECONDS
+
+    if is_case_pool and not case_pool_api_direct:
+        (
+            learning_links,
+            page_clicks,
+        ) = await _collect_ctexpert_case_pool_pages(
+            page,
+            learning_links,
+            status_callback=status_callback,
+        )
+        incomplete_reason = "案例库全分类接口未完整返回；页面兜底仅覆盖当前分类，请重试此入口"
+        if page_clicks and status_callback:
+            status_callback(f"已读取案例库 {page_clicks + 1} 页")
+    elif not is_case_pool:
+        more_clicks = await _click_load_more_until_stable(
+            page, status_callback=status_callback
+        )
+        if more_clicks and status_callback:
+            status_callback(f"已展开「更多」{more_clicks} 次")
+
+        html = await page.content()
+        nested_entries = unique_urls(nested_entries + extract_topic_entry_urls(html, url))
+        learning_links = unique_urls(
+            learning_links
+            + extract_learning_links_from_learning_zone_html(html)
+        )
+        if not rendered_links and not nested_entries:
+            incomplete_reason = (
+                "未能确认学习专区的课程清单已加载，请重试此入口"
+            )
+    # 再从渲染后的 DOM 文本兜底扫一轮（含非 a 标签）
+    body_text = await _evaluate(
+        page, "() => (document.body && document.body.innerText) || ''"
+    )
+    learning_links = unique_urls(
+        learning_links + _extract_detail_urls_from_text(body_text or "")
+    )
+
+
+    return DiscoveryManifest(
+        links=tuple(unique_urls(learning_links + nested_entries)),
+        complete=not incomplete_reason,
+        source="topic_entry_links",
+        message=incomplete_reason,
+        details={"source": source_label, "nested_entries": nested_entries},
+    )
+
+
+async def collect_learning_links_from_learning_zone_urls(
+    learning_zone_urls, status_callback=None, before_close_callback=None, *, context=None, detailed=False,
+):
+    """Batch facade sharing the same recursive discovery engine as other entries."""
+    from core.discovery.recursive import collect_discovery_entries
     if not learning_zone_urls:
         from core.discovery.contracts import CollectionResult
-
         return CollectionResult(complete=True) if detailed else 0
-
     remember_discovery_entries(learning_zone_urls)
-    total_added = 0
-    incomplete = []
-
-    async def _run_with_context(active_context) -> None:
-        nonlocal total_added
-        for index, url in enumerate(learning_zone_urls, start=1):
-            is_case_pool = is_ctexpert_case_pool_url(url)
-            source_label = "案例库" if is_case_pool else "学习专区"
-            if status_callback:
-                status_callback(
-                    f"正在解析{source_label}链接 {index}/{len(learning_zone_urls)}"
-                )
-            page = await active_context.new_page()
-            try:
-                elapsed = 0
-                learning_links: list[str] = []
-                rendered_links: list[str] = []
-                case_pool_api_stats = {"records": 0, "total": 0, "pages": 0}
-                case_pool_api_direct = False
-                incomplete_reason = ""
-                if not is_case_pool:
-                    learning_links = await _fetch_learning_zone_links_direct(
-                        active_context, url
-                    )
-                    if learning_links and status_callback:
-                        status_callback(
-                            f"已通过 HTTP 直接读取首屏 HTML：{len(learning_links)} 条链接，继续展开浏览器页面"
-                        )
-
-                await navigate_platform_page(page, url, wait_until="load")
-                await prepare_page_after_navigation_async(
-                    page, status_callback=status_callback
-                )
-                if is_case_pool:
-                    await _ensure_ctexpert_case_pool_authenticated(
-                        page,
-                        url,
-                        status_callback=status_callback,
-                    )
-
-                if is_case_pool:
-                    (
-                        learning_links,
-                        case_pool_api_stats,
-                    ) = await _fetch_ctexpert_case_pool_links(page)
-                    case_pool_api_direct = case_pool_api_stats.get("complete") is True
-                    if learning_links and status_callback:
-                        status_callback(
-                            "已通过案例库接口直接读取 "
-                            f"{case_pool_api_stats['records']} 条记录 / "
-                            f"{case_pool_api_stats['pages']} 批请求"
-                        )
-                    elif status_callback:
-                        status_callback(
-                            "案例库接口直取未返回课程链接，改用页面数据兜底"
-                        )
-                # 先等首屏出现任意合规链接，再点更多收全
-                while (
-                    not (case_pool_api_direct or rendered_links)
-                    and elapsed <= LEARNING_ZONE_LINK_WAIT_MILLISECONDS
-                ):
-                    dismissed_count = await dismiss_topmost_overlays_async(page)
-                    if dismissed_count and status_callback:
-                        status_callback(
-                            f"已关闭 {dismissed_count} 个页面弹窗，继续读取课程链接"
-                        )
-                    rendered_links = extract_learning_links_from_learning_zone_html(
-                        await page.content()
-                    )
-                    if is_case_pool:
-                        rendered_links = unique_urls(
-                            rendered_links + await _read_runtime_learning_links(page)
-                        )
-                    learning_links = unique_urls(learning_links + rendered_links)
-                    if rendered_links:
-                        break
-                    if elapsed >= LEARNING_ZONE_LINK_WAIT_MILLISECONDS:
-                        break
-                    await page.wait_for_timeout(LEARNING_ZONE_LINK_POLL_MILLISECONDS)
-                    elapsed += LEARNING_ZONE_LINK_POLL_MILLISECONDS
-
-                if is_case_pool and not case_pool_api_direct:
-                    (
-                        learning_links,
-                        page_clicks,
-                    ) = await _collect_ctexpert_case_pool_pages(
-                        page,
-                        learning_links,
-                        status_callback=status_callback,
-                    )
-                    incomplete_reason = "案例库全分类接口未完整返回；页面兜底仅覆盖当前分类，请重试此入口"
-                    if page_clicks and status_callback:
-                        status_callback(f"已读取案例库 {page_clicks + 1} 页")
-                elif not is_case_pool:
-                    more_clicks = await _click_load_more_until_stable(
-                        page, status_callback=status_callback
-                    )
-                    if more_clicks and status_callback:
-                        status_callback(f"已展开「更多」{more_clicks} 次")
-
-                    learning_links = unique_urls(
-                        learning_links
-                        + extract_learning_links_from_learning_zone_html(
-                            await page.content()
-                        )
-                    )
-                    if not rendered_links:
-                        incomplete_reason = (
-                            "未能确认学习专区的课程清单已加载，请重试此入口"
-                        )
-                # 再从渲染后的 DOM 文本兜底扫一轮（含非 a 标签）
-                body_text = await _evaluate(
-                    page, "() => (document.body && document.body.innerText) || ''"
-                )
-                learning_links = unique_urls(
-                    learning_links + _extract_detail_urls_from_text(body_text or "")
-                )
-
-                enqueue = await enqueue_learning_links_with_subject_expand(
-                    learning_links,
-                    page=page,
-                    status_callback=status_callback,
-                    source_label=source_label,
-                    parent_url=url,
-                )
-                total_added += enqueue["learning_added"]
-                if enqueue.get("complete") is not True and not incomplete_reason:
-                    incomplete_reason = "入口中的主题章节尚未完整确认，请重新解析此入口"
-                if incomplete_reason:
-                    incomplete.append("discovery_incomplete")
-                    record_learning_failure(
-                        url,
-                        reason="discovery_incomplete",
-                        reason_text=incomplete_reason,
-                        detail={"source": source_label},
-                    )
-                    if status_callback:
-                        status_callback(incomplete_reason)
-                else:
-                    remove_learning_failure(
-                        url, reason="discovery_incomplete", keep_file=True
-                    )
-                if enqueue.get("complete") is not True:
-                    incomplete.append("discovery_incomplete")
-                if status_callback:
-                    if learning_links:
-                        status_callback(
-                            f"已从{source_label}识别 "
-                            f"{enqueue['course_links']} 条课程、"
-                            f"{enqueue['subject_links']} 个主题"
-                            f"（展开后学习队列 +{enqueue['learning_added']}）"
-                        )
-                    else:
-                        status_callback(
-                            f"该{source_label}暂未识别到课程链接；已处理弹窗并等待页面加载，"
-                            "可改用手动选择模式"
-                        )
-            except (UserAbortRequested, UserCancelRequested, WafBlockError):
-                record_learning_failure(
-                    url,
-                    reason="discovery_incomplete",
-                    reason_text="入口收集被中断，请重新解析",
-                    detail={"source": source_label},
-                )
-                raise
-            except asyncio.CancelledError:
-                record_learning_failure(
-                    url,
-                    reason="discovery_incomplete",
-                    reason_text="入口收集被取消，请重新解析",
-                    detail={"source": source_label},
-                )
-                raise
-            except Exception as exc:
-                record_learning_failure(
-                    url,
-                    reason="discovery_incomplete",
-                    reason_text=f"入口收集不完整（{type(exc).__name__}），请重新解析",
-                    detail={"source": source_label},
-                )
-                if is_target_closed_exception(exc):
-                    raise UserCancelRequested(
-                        "收集页面已关闭，入口已保存供重试"
-                    ) from None
-                raise
-            finally:
-                await close_safely(page.close(), label="discovery page")
-
-    if context is not None:
-        await _run_with_context(context)
-        if before_close_callback:
-            before_close_callback(total_added)
+    if context is None:
+        async with create_browser_context() as (_, active):
+            result = await collect_discovery_entries(learning_zone_urls, context=active, status_callback=status_callback)
     else:
-        async with create_browser_context() as (_, new_context):
-            await _run_with_context(new_context)
-            if before_close_callback:
-                before_close_callback(total_added)
-
-    from core.discovery.contracts import CollectionResult
-
-    return (
-        CollectionResult(total_added, not incomplete, tuple(set(incomplete)))
-        if detailed
-        else total_added
-    )
+        result = await collect_discovery_entries(learning_zone_urls, context=context, status_callback=status_callback)
+    if before_close_callback:
+        before_close_callback(result.added)
+    return result if detailed else result.added

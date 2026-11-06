@@ -211,6 +211,52 @@ class WebServerTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ApplicationLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_missing_credentials_warn_and_leave_controller_available_for_login(self):
+        from core.auth.access import CredentialUnavailableError
+
+        runtime = ApplicationRuntime()
+        runtime.start()
+        try:
+            with (patch("core.auth.access.require_task_account", side_effect=CredentialUnavailableError("请先登录")),
+                  self.assertLogs(level="WARNING") as records):
+                runtime.command(rid(), "operation", {"kind": "links", "input_text": "https://example.invalid/course"})
+                async with asyncio.timeout(3):
+                    while runtime.control.operation_id:
+                        await asyncio.sleep(.01)
+            self.assertEqual([r.levelname for r in records.records], ["WARNING"])
+            self.assertIsNone(records.records[0].exc_info)
+            snapshot = runtime.session.snapshot()
+            self.assertEqual(snapshot["status"], "请先登录")
+            self.assertEqual(snapshot["logs"][-1]["level"], "warning")
+            self.assertIsNone(snapshot["prompt"])
+            self.assertIsNone(runtime.worker_error)
+            self.assertEqual(runtime.frontend.options, {})
+            with patch("core.app.launcher_controller.handle_refresh_credential") as login:
+                runtime.command(rid(), "operation", {"kind": "login"})
+                async with asyncio.timeout(3):
+                    while runtime.control.operation_id:
+                        await asyncio.sleep(.01)
+                login.assert_called_once()
+        finally:
+            await runtime.close()
+
+    async def test_unexpected_failure_still_logs_error_with_traceback(self):
+        def fail(kind, ui):
+            raise RuntimeError("unexpected failure")
+
+        runtime = ApplicationRuntime(dispatcher=fail)
+        runtime.start()
+        try:
+            with self.assertLogs(level="ERROR") as records:
+                runtime.command(rid(), "operation", {"kind": "links"})
+                async with asyncio.timeout(3):
+                    while runtime.control.operation_id:
+                        await asyncio.sleep(.01)
+            self.assertIsNotNone(records.records[0].exc_info)
+            self.assertEqual(runtime.session.snapshot()["logs"][-1]["level"], "error")
+        finally:
+            await runtime.close()
+
     async def test_borrowed_workflow_loop_rejects_sync_start_and_close_on_itself(self):
         from pathlib import Path
         from tempfile import TemporaryDirectory

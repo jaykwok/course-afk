@@ -157,13 +157,8 @@ async def assert_selection_routing(test, scenario):
         finally:
             closed.append(context)
 
-    async def subject_adapter(*args, **kwargs):
-        append_learning_urls([course])
-        return {"learning_added": 1, "exam_added": 0}
-
-    async def zone_adapter(*args, **kwargs):
-        append_learning_urls([course])
-        return 1
+    from core.discovery.contracts import DiscoveryManifest
+    from core.discovery.subject_parse import SubjectExpandResult
 
     with ExitStack() as stack:
         stack.enter_context(
@@ -183,14 +178,14 @@ async def assert_selection_routing(test, scenario):
         )
         subject_call = stack.enter_context(
             patch(
-                "core.discovery.subject_parse.expand_and_append_subject_urls",
-                new=AsyncMock(side_effect=subject_adapter),
+                "core.discovery.subject_parse.expand_subject_from_page",
+                new=AsyncMock(return_value=SubjectExpandResult(course_urls=[course], complete=True)),
             )
         )
         zone_call = stack.enter_context(
             patch(
-                "core.learning.zone.collect_learning_links_from_learning_zone_urls",
-                new=AsyncMock(side_effect=zone_adapter),
+                "core.learning.zone.read_learning_zone_manifest",
+                new=AsyncMock(return_value=DiscoveryManifest((course,), True)),
             )
         )
         class_call = stack.enter_context(

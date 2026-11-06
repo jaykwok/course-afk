@@ -209,6 +209,7 @@ dependencies = [
     { name = "playwright" },
     { name = "psutil" },
     { name = "python-dotenv" },
+    { name = "sqlalchemy" },
 ]
 
 [package.metadata]
@@ -221,6 +222,7 @@ requires-dist = [
     { name = "playwright" },
     { name = "psutil", specifier = ">=7.2,<8" },
     { name = "python-dotenv" },
+    { name = "sqlalchemy", specifier = ">=2.0.43,<3" },
 ]
 
 [[package]]

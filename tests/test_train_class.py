@@ -357,6 +357,17 @@ class TrainClassCollectionTests(unittest.IsolatedAsyncioTestCase):
                     await ensure_class_enrolled(page, "class", headers={})
                 self.assertEqual(page.context.request.post_calls, [])
 
+    async def test_catalog_discovery_checks_enrollment_without_submitting(self):
+        for registered in (0, 5):
+            page = FakeTrainClassPage()
+            page.context.request.registration_status = registered
+            if registered == 5:
+                await ensure_class_enrolled(page, "class", headers={}, allow_enrollment=False)
+            else:
+                with self.assertRaisesRegex(ClassEnrollmentError, "完成报名"):
+                    await ensure_class_enrolled(page, "class", headers={}, allow_enrollment=False)
+            self.assertEqual(page.context.request.post_calls, [])
+
     async def test_delayed_registration_confirmation_is_polled_without_resubmitting(self):
         page = FakeTrainClassPage()
         real_get = page.context.request.get

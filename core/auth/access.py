@@ -11,10 +11,10 @@ def require_task_account():
 
     metadata = load_credential_metadata()
     if metadata and not metadata.account_name.strip():
-        raise CredentialUnavailableError("登录信息缺少稳定账号标识，请在「账号与登录」重新登录；若仍失败，请检查账号资料接口。")
+        raise CredentialUnavailableError("登录信息缺少稳定账号标识，请点击「登录 / 更新凭证」重新登录；若仍失败，请检查账号资料接口。")
     available, expired = has_valid_credential()
     if not available or expired:
-        raise CredentialUnavailableError("登录凭证缺失或已过期，请先在「账号与登录」更新登录凭证。")
+        raise CredentialUnavailableError("登录凭证缺失或已过期，请先点击「登录 / 更新凭证」，完成后重试本次操作。")
     account = account_id()
     if account == "unbound":
         raise CredentialUnavailableError("未取得稳定账号标识，请重新登录后再添加或执行任务。")

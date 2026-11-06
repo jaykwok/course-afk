@@ -168,11 +168,16 @@ class WorkflowBoundaryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_subject_waf_preserves_unvisited_entries_and_propagates(self):
         urls = ["https://kc.zhixueyun.com/#/study/subject/detail/11111111-1111-1111-1111-111111111111", "https://kc.zhixueyun.com/#/study/subject/detail/22222222-2222-2222-2222-222222222222"]
-        with patch.object(subject_parse, "expand_subject_from_page", new=AsyncMock(side_effect=WafBlockError())) as expand, patch.object(subject_parse, "append_learning_urls") as append:
+        from core.discovery.recursive import collect_discovery_entries
+        from core.queues.learning import read_learning_failures
+        page = SimpleNamespace(close=AsyncMock())
+        context = SimpleNamespace(new_page=AsyncMock(return_value=page))
+        with patch.object(subject_parse, "expand_subject_from_page", new=AsyncMock(side_effect=WafBlockError())) as expand:
             with self.assertRaises(WafBlockError):
-                await subject_parse.expand_and_append_subject_urls(urls, page=object())
+                await collect_discovery_entries(urls, context=context)
         expand.assert_awaited_once()
-        append.assert_called_once_with(urls)
+        page.close.assert_awaited_once()
+        self.assertTrue(set(urls) <= {item.url for item in read_learning_failures()})
 
     def test_scores_are_monotone_and_unknown_attempts_remain_unknown(self):
         outcomes = [evaluate_course_exam_state({"passScore": 3, "paperClass": {"totalScore": 500}}, {"examRecord": {"isFinished": 1, "score": score}}).passed for score in (0, 99, 100, 101, 299, 300, 400)]

@@ -27,7 +27,7 @@ class ApplicationBoundaryTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(host.calls, [COURSE, sourced])
             self.assertEqual(len(host.repository.export()["runs"]), 2)
 
-    async def exercise_class(self, page, *, enqueue=None):
+    async def exercise_class(self, page):
         self.temp = TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         host = ActivityHost(self.temp.name, {"discover": discover})
@@ -45,8 +45,6 @@ class ApplicationBoundaryTests(unittest.IsolatedAsyncioTestCase):
             stack.enter_context(patch("core.browser.session.create_browser_context", browser))
             stack.enter_context(patch("core.discovery.train_class.prepare_page_after_navigation_async", new=AsyncMock()))
             stack.enter_context(patch("core.discovery.train_class.wait_for_authorization_header", new=AsyncMock(return_value="test")))
-            if enqueue:
-                stack.enter_context(patch("core.discovery.subject_parse.enqueue_learning_links_with_subject_expand", new=enqueue))
             result = await host.execute(CLASS, "discover")
             from core.queues.learning import read_learning_failures
             failures = read_learning_failures()
@@ -55,11 +53,9 @@ class ApplicationBoundaryTests(unittest.IsolatedAsyncioTestCase):
     async def test_enrollment_failure_remains_blocked_and_closes_page(self):
         page = FakeTrainClassPage()
         page.context.request.registration_status = 1
-        enqueue = AsyncMock()
-        host, result, failures = await self.exercise_class(page, enqueue=enqueue)
+        host, result, failures = await self.exercise_class(page)
         self.assertEqual(result["status"], "BLOCKED")
         self.assertIn("enrollment_blocked", [f.reason for f in failures])
-        enqueue.assert_not_awaited()
         self.assertTrue(page.closed)
         self.assertEqual(host.repository.export()["queue_items"][0]["collection"], "挂课失败链接.json")
 
@@ -74,9 +70,13 @@ class ApplicationBoundaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(page.closed)
 
     async def test_class_activity_paginates_all_items_before_enqueue(self):
+        from core.discovery.subject_parse import SubjectExpandResult
         page = FakeTrainClassPage()
-        enqueue = AsyncMock(return_value={"complete": True, "learning_added": 13})
-        _, result, _ = await self.exercise_class(page, enqueue=enqueue)
-        self.assertEqual(result["status"], "COMPLETED")
-        self.assertEqual(len(enqueue.call_args.args[0]), 13)
+        with patch("core.discovery.subject_parse.expand_subject_from_page", new=AsyncMock(
+            return_value=SubjectExpandResult(course_urls=[COURSE], complete=True)
+        )):
+            host, result, _ = await self.exercise_class(page)
+        self.assertEqual(result["status"], "WAITING_CHILDREN")
+        self.assertEqual(result["details"]["learning_added"], 13)
+        self.assertEqual(len([t for t in host.repository.export()["tasks"] if t["kind"] == "course"]), 13)
         self.assertTrue(page.closed)

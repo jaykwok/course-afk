@@ -1,10 +1,8 @@
 import unittest
-from contextlib import asynccontextmanager
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 from core.learning import zone as learning_zone_module
 from core.learning.zone import (
-    collect_learning_links_from_learning_zone_urls,
     extract_learning_links_from_learning_zone_html,
     extract_learning_links_from_runtime_values,
 )
@@ -220,144 +218,37 @@ class FakeDirectTopicContext(FakeLearningZoneContext):
 
 
 class LearningZoneCollectionTests(unittest.IsolatedAsyncioTestCase):
-    async def test_collection_reads_topic_html_directly_before_page_navigation(self):
+    async def test_manifest_merges_direct_html_and_rendered_links(self):
         topic_url = "https://cms.mylearning.cn/safe/topic/example/pc.html"
-        course_url = (
-            "https://kc.zhixueyun.com/#/study/course/detail/"
-            "11111111-1111-1111-1111-111111111111"
-        )
+        course_url = "https://kc.zhixueyun.com/#/study/course/detail/11111111-1111-1111-1111-111111111111"
         page = FakeLearningZonePage()
-        context = FakeDirectTopicContext(
-            page,
-            topic_url,
-            f'<a href="{course_url}">课程</a>',
-        )
+        context = FakeDirectTopicContext(page, topic_url, f'<a href="{course_url}">课程</a>')
         messages = []
-
-        with patch(
-            "core.learning.zone.enqueue_learning_links_with_subject_expand",
-            new=AsyncMock(
-                return_value={
-                    "course_links": 1,
-                    "subject_links": 0,
-                    "course_added": 1,
-                    "subject_learning_added": 0,
-                    "learning_added": 1,
-                    "exam_added": 0,
-                }
-            ),
-        ) as mock_enqueue:
-            added = await collect_learning_links_from_learning_zone_urls(
-                [topic_url],
-                context=context,
-                status_callback=messages.append,
-            )
-
-        self.assertEqual(added, 1)
-        self.assertEqual(page.wait_until, "load")
-        self.assertEqual(context.request.calls[0][0], topic_url)
-        self.assertIn(course_url, mock_enqueue.await_args.args[0])
+        result = await learning_zone_module.read_learning_zone_manifest(page, context, topic_url, messages.append)
+        self.assertTrue(result.complete)
+        self.assertEqual(len(result.links), 2)
+        self.assertIn(course_url, result.links)
         self.assertTrue(context.request.response.disposed)
         self.assertTrue(any("HTTP 直接读取" in item for item in messages))
 
-    async def test_collection_closes_popup_and_waits_for_dynamic_links(self):
+    async def test_manifest_closes_overlay_and_waits_for_dynamic_links(self):
         page = FakeLearningZonePage()
-        context = FakeLearningZoneContext(page)
         messages = []
-        lifecycle = {"exited": False, "callback": None}
-
-        @asynccontextmanager
-        async def fake_browser_context():
-            try:
-                yield object(), context
-            finally:
-                lifecycle["exited"] = True
-
-        enqueue_calls: list[list[str]] = []
-
-        async def fake_enqueue(
-            learning_links,
-            *,
-            page=None,
-            status_callback=None,
-            source_label: str = "来源",
-            parent_url=None,
-        ):
-            enqueue_calls.append(list(learning_links))
-            return {
-                "course_links": 0,
-                "subject_links": 1,
-                "course_added": 0,
-                "subject_learning_added": 1,
-                "learning_added": 1,
-                "exam_added": 0,
-            }
-
-        with (
-            patch(
-                "core.learning.zone.create_browser_context",
-                side_effect=fake_browser_context,
-            ),
-            patch(
-                "core.learning.zone.enqueue_learning_links_with_subject_expand",
-                side_effect=fake_enqueue,
-            ),
-        ):
-            added = await collect_learning_links_from_learning_zone_urls(
-                ["https://cms.mylearning.cn/zone.html"],
-                status_callback=messages.append,
-                before_close_callback=lambda count: lifecycle.update(
-                    callback=(count, lifecycle["exited"])
-                ),
-            )
-
-        self.assertEqual(added, 1)
-        self.assertEqual(len(enqueue_calls), 1)
-        self.assertIn(
-            "https://kc.zhixueyun.com/#/study/subject/detail/"
-            "22222222-2222-2222-2222-222222222222",
-            enqueue_calls[0],
-        )
-        # prepare 关弹窗 settle 200 + 轮间 400；轮询未命中链接时再 500
-        self.assertIn(200, page.waits)
-        self.assertIn(400, page.waits)
+        result = await learning_zone_module.read_learning_zone_manifest(
+            page, FakeLearningZoneContext(page), "https://cms.mylearning.cn/zone.html", messages.append)
+        self.assertTrue(result.complete)
+        self.assertEqual(len(result.links), 1)
         self.assertIn(500, page.waits)
-        self.assertTrue(page.closed)
         self.assertTrue(any("已关闭 1 个页面弹窗" in item for item in messages))
-        self.assertTrue(any("0 条课程、1 个主题" in item for item in messages))
-        self.assertEqual(lifecycle["callback"], (1, False))
-        self.assertTrue(lifecycle["exited"])
 
-    async def test_collection_reuses_external_context_without_creating_browser(self):
+    async def test_topic_with_only_class_cards_is_ready_without_waiting_for_courses(self):
         page = FakeLearningZonePage()
-        context = FakeLearningZoneContext(page)
-
-        with (
-            patch(
-                "core.learning.zone.create_browser_context",
-            ) as mock_create,
-            patch(
-                "core.learning.zone.enqueue_learning_links_with_subject_expand",
-                new=AsyncMock(
-                    return_value={
-                        "course_links": 0,
-                        "subject_links": 1,
-                        "course_added": 0,
-                        "subject_learning_added": 1,
-                        "learning_added": 1,
-                        "exam_added": 0,
-                    }
-                ),
-            ),
-        ):
-            added = await collect_learning_links_from_learning_zone_urls(
-                ["https://cms.mylearning.cn/zone.html"],
-                context=context,
-            )
-
-        self.assertEqual(added, 1)
-        mock_create.assert_not_called()
-        self.assertTrue(page.closed)
+        page.content = AsyncMock(return_value='<a href="https://kc.zhixueyun.com/app/wechat/#/qrScan?businessType=6&amp;businessId=11111111-1111-4111-8111-111111111111">班级</a>')
+        result = await learning_zone_module.read_learning_zone_manifest(
+            page, FakeLearningZoneContext(page), "https://cms.mylearning.cn/safe/topic/test/pc.html")
+        self.assertTrue(result.complete)
+        self.assertEqual(result.links, ("https://kc.zhixueyun.com/#/train-new/class-detail/11111111-1111-4111-8111-111111111111",))
+        self.assertNotIn(500, page.waits)
 
 
 if __name__ == "__main__":

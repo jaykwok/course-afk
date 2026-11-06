@@ -298,7 +298,8 @@ class ActivityRegressions(unittest.IsolatedAsyncioTestCase):
 
         async def partial(*args, **kwargs):
             record_learning_failure(
-                zone, reason="discovery_incomplete", reason_text="pagination incomplete"
+                zone, reason="discovery_incomplete", reason_text="pagination incomplete",
+                detail={"page": 3},
             )
             append_learning_urls([COURSE])
             record_discovered_tasks(
@@ -313,7 +314,7 @@ class ActivityRegressions(unittest.IsolatedAsyncioTestCase):
         with (
             patch("core.browser.session.create_browser_context", browser),
             patch(
-                "core.learning.zone.collect_learning_links_from_learning_zone_urls",
+                "core.discovery.recursive.collect_discovery_entries",
                 new=AsyncMock(side_effect=partial),
             ) as collector,
         ):
@@ -321,6 +322,10 @@ class ActivityRegressions(unittest.IsolatedAsyncioTestCase):
                 zone, "discover", options={"zone_mode": "auto"}
             )
             self.assertEqual(outcome["status"], "NEEDS_REVIEW")
+            failure = next(e for e in read_learning_failures() if e.url == zone)
+            self.assertEqual(failure.reason_text, "pagination incomplete")
+            self.assertEqual(failure.detail, {"page": 3})
+            self.assertEqual(outcome["details"]["message"], "pagination incomplete")
             self.assertIn(
                 "discovery_incomplete",
                 [e.reason for e in read_learning_failures() if e.url == zone],

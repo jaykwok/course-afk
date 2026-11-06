@@ -39,15 +39,8 @@ async def learn(host, payload):
 
 async def discover(host, payload):
     from core.browser.session import create_browser_context
-    from core.discovery.train_class import (
-        ClassEnrollmentError,
-        collect_learning_links_from_class_page,
-    )
-    from core.discovery.subject_parse import (
-        expand_and_append_subject_urls,
-        enqueue_learning_links_with_subject_expand,
-    )
-    from core.learning.zone import collect_learning_links_from_learning_zone_urls
+    from core.discovery.train_class import ClassEnrollmentError
+    from core.discovery.recursive import collect_discovery_entries
     from core.discovery.manual import collect_learning_links_from_entry_urls
     from core.queues.learning import (
         read_learning_failures,
@@ -61,82 +54,44 @@ async def discover(host, payload):
     discovery_complete = False
     try:
         async with create_browser_context() as (_, context):
-            if task["kind"] == "class":
-                from core.runtime import close_safely
-
-                page = await context.new_page()
-                try:
-                    links = await collect_learning_links_from_class_page(
-                        page, task["url"], status_callback=host.status_callback
-                    )
-                    details = await enqueue_learning_links_with_subject_expand(
-                        links,
-                        page=page,
-                        status_callback=host.status_callback,
-                        source_label="培训班",
-                        parent_url=task["url"],
-                    )
-                    discovery_complete = details.get("complete") is True
-                finally:
-                    await close_safely(page.close(), label="discovery class page")
-            elif task["kind"] == "subject":
-                details = await expand_and_append_subject_urls(
-                    [task["url"]], context=context, status_callback=host.status_callback
+            automatic = task["kind"] in {"class", "subject", "course", "exam"} or is_learning_zone_url(task["url"])
+            manual = is_learning_zone_url(task["url"]) and payload["options"].get("zone_mode", "auto") == "manual"
+            if automatic and not manual:
+                result = await collect_discovery_entries(
+                    [task["url"]], context=context, status_callback=host.status_callback,
                 )
-                discovery_complete = details.get("complete") is True
-            elif is_learning_zone_url(task["url"]):
-                if payload["options"].get("zone_mode", "auto") == "manual":
-                    counts = await collect_learning_links_from_entry_urls(
-                        [task["url"]],
-                        context=context,
-                        status_callback=host.status_callback,
-                    )
-                    details = {
-                        "manual_record_count": counts[1],
-                        "manual_exam_record_count": counts[2],
-                    }
-                    discovery_complete = True
-                else:
-                    result = await collect_learning_links_from_learning_zone_urls(
-                        [task["url"]],
-                        context=context,
-                        status_callback=host.status_callback,
-                        detailed=True,
-                    )
-                    from core.discovery.contracts import CollectionResult
-
-                    discovery_complete = (
-                        isinstance(result, CollectionResult) and result.complete
-                    )
-                    details = {
-                        "learning_added": result.added
-                        if isinstance(result, CollectionResult)
-                        else result
-                    }
+                discovery_complete = result.complete
+                details = {**result.details, "learning_added": result.added}
             else:
                 counts = await collect_learning_links_from_entry_urls(
-                    [task["url"]], context=context, status_callback=host.status_callback
+                    [task["url"]], context=context, status_callback=host.status_callback,
                 )
-                details = {
-                    "manual_record_count": counts[1],
-                    "manual_exam_record_count": counts[2],
-                }
+                details = {"manual_record_count": counts[1], "manual_exam_record_count": counts[2]}
                 discovery_complete = True
         details["discovery_complete"] = discovery_complete
         if discovery_complete:
             remove_learning_failure(task["url"], reason="discovery_incomplete")
             remove_learning_failure(task["url"], reason="enrollment_blocked")
         else:
-            record_learning_failure(
-                task["url"],
-                reason="discovery_incomplete",
-                reason_text="入口清单尚未完整确认，请重新解析；已发现的任务已保留",
-            )
+            # Keep the collector's concrete diagnosis instead of replacing it
+            # with a generic message and an empty detail object.
+            existing = [e for e in read_learning_failures()
+                        if e.url == task["url"] and e.reason in {"discovery_incomplete", "enrollment_blocked"}]
+            if not existing:
+                record_learning_failure(
+                    task["url"], reason="discovery_incomplete",
+                    reason_text=details.get("message") or "入口清单尚未完整确认，请重新解析；已发现的任务已保留",
+                    detail=details,
+                )
+            elif not details.get("message"):
+                details["message"] = existing[0].reason_text
         failures = [e for e in read_learning_failures() if e.url == task["url"]]
         children = [r["task_id"] for r in host.repository.children(task["task_id"])]
         return TaskOutcome(
             task["task_id"],
-            Status.NEEDS_REVIEW
+            Status.BLOCKED
+            if any(e.reason == "enrollment_blocked" for e in failures)
+            else Status.NEEDS_REVIEW
             if failures
             else Status.WAITING_CHILDREN
             if details.get("residual_count")

@@ -446,9 +446,12 @@ small {
   content: "：";
 }
 
-.recommended-box strong {
+.recommended-box button {
   font-weight: 600;
   color: var(--accent);
+  background: transparent;
+  white-space: normal;
+  text-align: left;
 }
 
 .task-controls {

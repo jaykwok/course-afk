@@ -3,15 +3,12 @@ from __future__ import annotations
 from core.browser.bootstrap import navigate_platform_page
 
 import logging
-import asyncio
 import re
 from dataclasses import dataclass, field
 
-from core.browser.session import create_browser_context, is_target_closed_exception
 from core.config import (
     ZHIXUEYUN_EXAM_PREFIX,
 )
-from core.queues.exam import append_exam_urls
 from core.file_ops import (
     is_compliant_url_regex,
     is_exam_url,
@@ -19,21 +16,10 @@ from core.file_ops import (
     normalize_url,
     build_subject_course_url,
 )
-from core.queues.learning import (
-    append_learning_urls,
-    remember_discovery_entries,
-    remove_learning_failure,
-)
 from core.links import unique_urls
 from core.browser.page_auth import fetch_json, wait_for_authorization_header
 from core.browser.overlays import prepare_page_after_navigation_async
-from core.abort import (
-    UserAbortRequested,
-    UserCancelRequested,
-    WafBlockError,
-    raise_for_batch_stop,
-)
-from core.runtime import close_safely
+from core.abort import raise_for_batch_stop
 
 
 # 实勘（subject 详情页）:
@@ -345,202 +331,3 @@ async def collect_course_links_from_subject_page(
         page, subject_url, status_callback=status_callback
     )
     return list(result.course_urls)
-
-
-def append_expand_result(result: SubjectExpandResult) -> tuple[int, int]:
-    """将展开结果写入学习队列与考试队列，返回 (learning_added, exam_added)。"""
-    learning_urls = list(result.course_urls)
-    if result.residual_subject_url:
-        learning_urls.append(result.residual_subject_url)
-    learning_added = append_learning_urls(learning_urls)
-    exam_added = append_exam_urls(result.exam_urls)
-    return len(learning_added), len(exam_added)
-
-
-async def enqueue_learning_links_with_subject_expand(
-    learning_links: list[str],
-    *,
-    page=None,
-    status_callback=None,
-    source_label: str = "来源",
-    parent_url: str | None = None,
-) -> dict[str, int]:
-    """
-    将混合课程/主题链接分流入队（课直接进学习队列，主题按章节类型展开）。
-
-    返回 course_links / subject_links / course_added / subject_learning_added /
-    learning_added / exam_added。
-    """
-    course_links, subject_links = partition_course_and_subject_urls(learning_links)
-    from core.tasks.relations import record_discovered_tasks
-
-    record_discovered_tasks(learning_links, parent_url=parent_url, source="entry_links")
-    course_added_urls = append_learning_urls(course_links)
-    course_added = len(course_added_urls)
-    subject_learning_added = 0
-    exam_added = 0
-    complete = True
-    if subject_links:
-        if status_callback:
-            status_callback(
-                f"{source_label}含 {len(subject_links)} 个主题，按类型展开中"
-            )
-        expand_stats = await expand_and_append_subject_urls(
-            subject_links,
-            status_callback=status_callback,
-            page=page,
-        )
-        subject_learning_added = expand_stats["learning_added"]
-        exam_added = expand_stats["exam_added"]
-        complete = expand_stats.get("complete") is True
-    return {
-        "course_links": len(course_links),
-        "subject_links": len(subject_links),
-        "course_added": course_added,
-        "subject_learning_added": subject_learning_added,
-        "learning_added": course_added + subject_learning_added,
-        "exam_added": exam_added,
-        "complete": complete,
-    }
-
-
-async def expand_and_append_subject_urls(
-    subject_urls: list[str],
-    status_callback=None,
-    before_close_callback=None,
-    *,
-    page=None,
-    context=None,
-) -> dict[str, int]:
-    """
-    批量按章节类型展开主题并写入队列。
-
-    可传入已有 page/context 复用浏览器；否则自建 context。
-    返回 course_count / exam_count / residual_count / learning_added / exam_added。
-    """
-    stats = {
-        "course_count": 0,
-        "exam_count": 0,
-        "residual_count": 0,
-        "learning_added": 0,
-        "exam_added": 0,
-        "subject_count": 0,
-        "complete": True,
-    }
-    if not subject_urls:
-        if before_close_callback:
-            before_close_callback(stats["learning_added"])
-        return stats
-
-    unique_subjects = unique_urls(
-        [normalize_url(url.strip()) for url in subject_urls if url and url.strip()]
-    )
-    stats["subject_count"] = len(unique_subjects)
-    remember_discovery_entries(unique_subjects)
-
-    async def _run_with_page(active_page) -> None:
-        for index, url in enumerate(unique_subjects, start=1):
-            if status_callback:
-                status_callback(f"正在展开主题链接 {index}/{len(unique_subjects)}")
-            try:
-                result = await expand_subject_from_page(
-                    active_page, url, status_callback=status_callback
-                )
-            except (
-                UserAbortRequested,
-                UserCancelRequested,
-                WafBlockError,
-                asyncio.CancelledError,
-            ):
-                # Preserve every unvisited entry before propagating the stop.
-                append_learning_urls(unique_subjects[index - 1 :])
-                raise
-            except Exception as exc:
-                raise_for_batch_stop(exc)
-                if is_target_closed_exception(exc):
-                    raise UserCancelRequested(
-                        "主题页面已关闭，未完成的解析入口已保留"
-                    ) from None
-                logging.error(f"展开主题失败 {url}: {exc}")
-                if status_callback:
-                    status_callback(f"展开主题失败，保留原链接: {exc}")
-                result = SubjectExpandResult(residual_subject_url=normalize_url(url))
-            stats["course_count"] += len(result.course_urls)
-            stats["exam_count"] += len(result.exam_urls)
-            if result.residual_subject_url:
-                stats["residual_count"] += 1
-            learning_n, exam_n = append_expand_result(result)
-            from core.tasks.relations import (
-                record_discovered_tasks,
-                record_local_outcome,
-            )
-
-            record_discovered_tasks(
-                result.course_urls + result.exam_urls,
-                parent_url=url,
-                source="subject_api",
-            )
-            if result.complete:
-                remove_learning_failure(
-                    url, reason="discovery_incomplete", keep_file=True
-                )
-            else:
-                from core.queues.learning import record_learning_failure
-
-                record_learning_failure(
-                    url,
-                    reason="discovery_incomplete",
-                    reason_text="主题章节清单尚未完整确认，请重新解析入口",
-                )
-                stats["complete"] = False
-            from core.queues.learning import read_learning_failures
-            from core.workflow.contracts import Status
-
-            failures = [item for item in read_learning_failures() if item.url == url]
-            local_complete = result.complete and not result.residual_subject_url
-            record_local_outcome(
-                url,
-                Status.NEEDS_REVIEW
-                if failures
-                else Status.COMPLETED
-                if local_complete
-                else Status.WAITING_CHILDREN,
-                source="subject_api",
-                reason_codes=[item.reason for item in failures]
-                or (["subject_residual"] if result.residual_subject_url else []),
-                evidence_refs=["subject_chapter_list"] if result.complete else [],
-                details={
-                    "discovery_complete": result.complete,
-                    "local_work_complete": local_complete,
-                    "residual_count": int(bool(result.residual_subject_url)),
-                },
-            )
-            stats["learning_added"] += learning_n
-            stats["exam_added"] += exam_n
-
-    if page is not None:
-        await _run_with_page(page)
-    elif context is not None:
-        active = await context.new_page()
-        try:
-            await _run_with_page(active)
-        finally:
-            await close_safely(active.close(), label="subject page")
-    else:
-        async with create_browser_context() as (_, new_context):
-            active = await new_context.new_page()
-            try:
-                await _run_with_page(active)
-            finally:
-                await close_safely(active.close(), label="subject page")
-
-    if status_callback:
-        status_callback(
-            "主题展开完成："
-            f"{stats['course_count']} 课 / {stats['exam_count']} 考 / "
-            f"{stats['residual_count']} 残留，"
-            f"学习队列 +{stats['learning_added']}，考试队列 +{stats['exam_added']}"
-        )
-    if before_close_callback:
-        before_close_callback(stats["learning_added"])
-    return stats

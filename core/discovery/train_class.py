@@ -90,9 +90,14 @@ def _check_pending_registration(progress: dict) -> None:
 
 async def ensure_class_enrolled(
     page, class_id: str, *, headers: dict[str, str], status_callback=None,
+    allow_enrollment: bool = True,
 ) -> None:
     """对齐页面报名接口；提交一次，并以重新查询的 registerStatus=5 确认成功。"""
     progress = await _registration_progress(page, class_id, headers)
+    if not allow_enrollment:
+        if str(progress["registerStatus"]) != "5":
+            raise ClassEnrollmentError("专题中的培训班尚未确认报名，请打开该培训班完成报名后重新解析专题")
+        return
     from core.workflow.host import activity_context, current_host
     activity = activity_context.get()
     repository = current_host().repository if activity else None
@@ -326,6 +331,8 @@ async def collect_learning_links_from_class_page(
     page,
     class_url: str,
     status_callback=None,
+    *,
+    allow_enrollment: bool = True,
 ) -> list[str]:
     """打开培训班页，确认报名成功后，经章节/活动 API 收集课程/主题链接。"""
     class_id = extract_class_id(class_url)
@@ -361,6 +368,7 @@ async def collect_learning_links_from_class_page(
 
     await ensure_class_enrolled(
         page, class_id, headers=headers, status_callback=status_callback,
+        allow_enrollment=allow_enrollment,
     )
 
     try:

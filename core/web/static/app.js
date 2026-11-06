@@ -10,6 +10,12 @@ const RECOMMENDED_LABELS = {
   "手动选择课程 / 录入课程或考试链接": "录入课程或考试链接",
   "切换账号 / 更新登录凭证": "登录或更新凭证"
 };
+const RECOMMENDED_ACTIONS = {
+  "仅挂课": "learn",
+  "AI 自动考试": "exam",
+  "手动选择课程 / 录入课程或考试链接": "links",
+  "切换账号 / 更新登录凭证": "login"
+};
 
 const PROMPT_BADGES = {
   multiline: "输入链接",
@@ -46,6 +52,7 @@ function availability() {
   document.querySelectorAll("[data-kind]").forEach(el => {
     el.disabled = busy;
   });
+  $("recommended").disabled = busy || !RECOMMENDED_ACTIONS[state?.dashboard?.recommended];
   $("workbench-input").disabled = busy;
   $("clear-workbench").disabled = busy;
   $("auto-submit").disabled = busy;
@@ -326,9 +333,8 @@ async function start() {
   }
 }
 
-document.querySelectorAll("[data-kind]").forEach(el =>
-  el.addEventListener("click", async () => {
-    const kind = el.dataset.kind;
+async function startOperation(kind) {
+    if (!kind || state?.operation_id || state?.control.exit_requested) return;
     const payload = { kind };
     if (kind === "links" || kind === "references") {
       const input = $("workbench-input").value.trim();
@@ -338,8 +344,11 @@ document.querySelectorAll("[data-kind]").forEach(el =>
     }
     // Keep the draft available for retries and reuse; only explicit clear removes it.
     await send("/api/operations", payload);
-  })
+}
+document.querySelectorAll("[data-kind]").forEach(el =>
+  el.addEventListener("click", () => startOperation(el.dataset.kind))
 );
+$("recommended").onclick = () => startOperation(RECOMMENDED_ACTIONS[state?.dashboard?.recommended]);
 $("clear-workbench").onclick = () => {
   $("workbench-input").value = "";
   $("workbench-input").focus();
