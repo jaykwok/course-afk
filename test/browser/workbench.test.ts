@@ -45,6 +45,10 @@ test(
         config.browserPath,
         join(testDirectory, "browser-profile"),
       );
+      const startup = runtime.context.tabs.find(
+        (tab) => tab.url === "about:blank",
+      );
+      assert.ok(startup);
       await platformChecks(runtime);
       app = new Application(repo, runtime, config, logger);
       server = new WebServer(app);
@@ -59,6 +63,8 @@ test(
       };
       const url = await server.start(0),
         page = await runtime.openManagement(url);
+      assert.equal(page.id, startup.id);
+      assert.deepEqual(runtime.context.tabs.map((tab) => tab.id), [page.id]);
       await page.waitForFunction(
         () =>
           document

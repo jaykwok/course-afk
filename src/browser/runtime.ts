@@ -71,6 +71,7 @@ export class BrowserRuntime {
   readonly context: BrowserContext;
   readonly profile?: string;
   private readonly temporaryProfile: boolean;
+  private startupTab?: Tab;
   management?: Tab;
   readonly retained = new Set<Tab>();
   private origins = new Set([
@@ -90,6 +91,13 @@ export class BrowserRuntime {
     this.context = browser.defaultContext;
     this.profile = profile;
     this.temporaryProfile = temporaryProfile;
+    // Capture only the launch tab, before any business scopes create their tabs.
+    this.startupTab = this.context.tabs.find(
+      (tab) =>
+        !tab.closed &&
+        tab.url === "about:blank" &&
+        !browser.targetInfo.get(tab.id)?.openerId,
+    );
     this.unsubscribe = browser.cdp.on(
       "Target.targetInfoChanged",
       ({ targetInfo }) => this.note(targetInfo.url),
@@ -143,7 +151,12 @@ export class BrowserRuntime {
     } catch {}
   }
   async openManagement(url: string) {
-    this.management = await this.context.newTab(url);
+    const startup = this.startupTab;
+    this.startupTab = undefined;
+    if (startup && !startup.closed && startup.url === "about:blank") {
+      await startup.goto(url);
+      this.management = startup;
+    } else this.management = await this.context.newTab(url);
     await this.management.bringToFront();
     return this.management;
   }
