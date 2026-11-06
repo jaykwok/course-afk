@@ -223,7 +223,7 @@ function renderPrompt(prompt: Prompt | null) {
   if (prompt.kind === "multiline") {
     const input = document.createElement("textarea");
     input.id = "link-input";
-    input.placeholder = "每行粘贴一条 HTTP/HTTPS 链接...";
+    input.placeholder = "粘贴 HTTP/HTTPS 链接或包含链接的通知文字...";
     input.setAttribute("aria-label", prompt.title);
     host.append(input);
     button("继续", () => answer(prompt, input.value), "primary");

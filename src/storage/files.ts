@@ -2,12 +2,15 @@ import { mkdir, open, rename, rm, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { token } from "../utils.ts";
 export async function atomicJson(path: string, data: unknown) {
+  await atomicText(path, JSON.stringify(data, null, 2));
+}
+export async function atomicText(path: string, data: string) {
   await mkdir(dirname(path), { recursive: true });
   const tmp = `${path}.${token()}.tmp`;
   try {
     const file = await open(tmp, "wx", 0o600);
     try {
-      await file.writeFile(JSON.stringify(data, null, 2), "utf8");
+      await file.writeFile(data, "utf8");
       await file.sync();
     } finally {
       await file.close();

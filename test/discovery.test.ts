@@ -5,12 +5,134 @@ import {
   traverse,
   subjectManifest,
   extractLinks,
+  discover,
 } from "../src/platform/discovery.ts";
 import { temporary, COURSE, EXAM, SUBJECT } from "./helpers.ts";
-import { entry } from "../src/domain/identity.ts";
+import { entry, CASE_POOL } from "../src/domain/identity.ts";
+import { runInNewContext } from "node:vm";
 import { learn } from "../src/platform/learning.ts";
 import type { DiscoveryContext } from "../src/platform/discovery.ts";
 import { configuration } from "../src/config.ts";
+
+test("topic and case-pool adapters share recursive traversal, aliases, cycles and partial-result recovery", async () => {
+  const temp = await temporary(),
+    repo = new Repository(temp.dir);
+  const root = "https://cms.mylearning.cn/topic/root.html",
+    nested = "https://cms.mylearning.cn/topic/nested.html";
+  try {
+    for (const incomplete of [false, true]) {
+      const account = String(incomplete),
+        opened: string[] = [],
+        pages: number[] = [];
+      const ctx = {
+        repo,
+        lease: { account, signal: new AbortController().signal },
+        report() {},
+        auth: {
+          assert() {},
+          async navigate(_scope: unknown, url: string) {
+            opened.push(url);
+            return {
+              url,
+              async close() {},
+              async queryAll() {
+                return [];
+              },
+              async waitForFunction() {},
+              async evaluate(fn: Function, arg: any) {
+                if (url === root)
+                  return [
+                    `<a href="${CASE_POOL}">案例库</a><a href="http://ctexpert.cn/expert-assist-h5/casePool">移动案例库</a>`,
+                  ];
+                if (url === nested) return [SUBJECT, CASE_POOL];
+                if (url === SUBJECT)
+                  return {
+                    status: 200,
+                    value: [
+                      {
+                        courseChapterSections: [
+                          {
+                            sectionType: 10,
+                            attachmentId: entry(COURSE, account).businessId,
+                            required: 1,
+                          },
+                          {
+                            sectionType: 9,
+                            resourceId: entry(EXAM, account).businessId,
+                          },
+                        ],
+                      },
+                    ],
+                  };
+                assert.equal(url, CASE_POOL);
+                assert.equal(arg, undefined);
+                return runInNewContext(`(${fn.toString()})()`, {
+                  AbortSignal,
+                  location: new URL(CASE_POOL),
+                  localStorage: { getItem: () => "synthetic-token" },
+                  fetch: async (path: string, options: any) => {
+                    assert.equal(options.headers.token, "synthetic-token");
+                    if (path.includes("/tag/listTree"))
+                      return {
+                        ok: true,
+                        json: async () => ({
+                          code: 200,
+                          data: [
+                            { name: "案例资源", childrenList: [{ id: "tag" }] },
+                          ],
+                        }),
+                      };
+                    const page = JSON.parse(options.body).pageNum;
+                    pages.push(page);
+                    return {
+                      ok: true,
+                      json: async () => ({
+                        code: incomplete && page === 2 ? 500 : 200,
+                        data: {
+                          total: 2,
+                          records: [
+                            {
+                              id: String(page),
+                              url: page === 1 ? nested : COURSE,
+                            },
+                          ],
+                        },
+                      }),
+                    };
+                  },
+                });
+              },
+            };
+          },
+        },
+      } as unknown as DiscoveryContext;
+      const result = await discover([root], ctx);
+      assert.equal(result.complete, !incomplete);
+      assert.deepEqual(pages, [1, 2]);
+      assert.deepEqual(opened, [root, CASE_POOL, nested, SUBJECT]);
+      assert.equal(repo.queue(account, "learn").length, incomplete ? 1 : 2);
+      assert.equal(repo.queue(account, "exam").length, 1);
+      assert.equal(
+        repo.task(repo.upsert(CASE_POOL, account).id).details.discoveryComplete,
+        !incomplete,
+      );
+      const activity = subjectManifest(
+        [
+          {
+            courseChapterSections: [
+              { id: "url", resourceId: "r", sectionType: 3, url: CASE_POOL },
+            ],
+          },
+        ],
+        repo.upsert(SUBJECT, account),
+      );
+      assert.deepEqual(activity.links, [CASE_POOL]);
+    }
+  } finally {
+    repo.close();
+    await temp.close();
+  }
+});
 
 test("subject learning refreshes nested activity progress without erasing incomplete child discovery", async () => {
   const temp = await temporary(),

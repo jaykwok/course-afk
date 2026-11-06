@@ -3,6 +3,24 @@ import { digest } from "../utils.ts";
 export const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export type Kind = "course" | "subject" | "exam" | "class" | "entry";
+export const CASE_POOL = "https://www.ctexpert.cn/expert-assist-web/casePool";
+/** This is a discovery entry, not an additional credential or download domain. */
+export function isCasePoolUrl(value: string | URL): boolean {
+  try {
+    const u = new URL(value);
+    return (
+      ["http:", "https:"].includes(u.protocol) &&
+      ["ctexpert.cn", "www.ctexpert.cn"].includes(u.hostname) &&
+      !u.username &&
+      !u.password &&
+      !u.port &&
+      /^\/expert-assist-(?:web|h5)\/casePool\/?$/.test(u.pathname) &&
+      (!u.hash || u.hash === "#")
+    );
+  } catch {
+    return false;
+  }
+}
 export function platformHost(host: string) {
   return ["mylearning.cn", "zhixueyun.com"].some(
     (d) => host === d || host.endsWith(`.${d}`),
@@ -15,9 +33,9 @@ export function safeUrl(raw: string): URL {
     url.username ||
     url.password ||
     (url.port && !["443", "80"].includes(url.port)) ||
-    !platformHost(url.hostname)
+    (!platformHost(url.hostname) && !isCasePoolUrl(url))
   )
-    throw new Error("请使用网上大学或知学云平台链接");
+    throw new Error("请使用网上大学、知学云或天翼专家案例库链接");
   return url;
 }
 export function normalize(raw: string): string {
@@ -27,6 +45,8 @@ export function normalize(raw: string): string {
     .replace(/[，。；]+$/, "");
   let url = safeUrl(value);
   for (let n = 0; n < 3; n++) {
+    // Discard callback codes and mobile aliases before storing an entry identity.
+    if (isCasePoolUrl(url)) return CASE_POOL;
     const params = new URLSearchParams(url.search);
     const append = (query: string) => {
       for (const [key, value] of new URLSearchParams(query))
@@ -105,6 +125,23 @@ export function normalize(raw: string): string {
   }
   value = url.href.replace("/exam/exam-detail/", "/exam/answer-paper/");
   return value;
+}
+/** Extract first, then apply exactly the same source and host validation as discovery. */
+export function parseLinkInput(text: string) {
+  const urls = new Set<string>();
+  let rejected = 0;
+  for (const match of text
+    .replace(/&amp;/g, "&")
+    .matchAll(
+      /https?:\/\/[^\s<>"'`\\{}()\[\]，。；！？、（）【】《》“”‘’]+/gi,
+    )) {
+    try {
+      urls.add(normalize(match[0].replace(/[.,;!]+$/, "")));
+    } catch {
+      rejected++;
+    }
+  }
+  return { urls: [...urls], rejected };
 }
 export function resource(
   kind: Kind,

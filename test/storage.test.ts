@@ -2,9 +2,48 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { Repository } from "../src/storage/repository.ts";
-import { normalize, entry, resource } from "../src/domain/identity.ts";
+import {
+  normalize,
+  entry,
+  resource,
+  parseLinkInput,
+  CASE_POOL,
+  platformHost,
+} from "../src/domain/identity.ts";
+import { previewUrl } from "../src/platform/references.ts";
 import { acquireInstance } from "../src/application/instance.ts";
 import { temporary, COURSE, EXAM, SUBJECT } from "./helpers.ts";
+
+test("pasted prose retains valid URLs and validates each complete source independently", () => {
+  const sourced = `${COURSE}?type=6&required=1&sourceId=${entry(SUBJECT, "a").businessId}`;
+  const input = `课程链接：【${COURSE}】，考试：${EXAM}；重复（${COURSE}）。\n主题来源：<${sourced.replaceAll("&", "&amp;")}>\n无效来源：${COURSE}?sourceId=broken 外站：https://evil.test/a`;
+  const result = parseLinkInput(input);
+  assert.deepEqual(result.urls, [COURSE, EXAM, normalize(sourced)]);
+  assert.equal(result.rejected, 2);
+  assert.deepEqual(parseLinkInput("通知里没有链接"), { urls: [], rejected: 0 });
+  assert.deepEqual(parseLinkInput(`链接：${COURSE}，${EXAM}`).urls, [
+    COURSE,
+    EXAM,
+  ]);
+});
+
+test("case-pool entry aliases share identity without extending credential or download hosts", () => {
+  assert.equal(
+    normalize("http://ctexpert.cn/expert-assist-h5/casePool/?code=discarded"),
+    CASE_POOL,
+  );
+  assert.equal(entry(CASE_POOL, "a").kind, "entry");
+  assert.equal(platformHost("www.ctexpert.cn"), false);
+  assert.throws(() => previewUrl(CASE_POOL));
+  for (const url of [
+    "https://evil.ctexpert.cn/expert-assist-web/casePool",
+    "https://www.ctexpert.cn/expert-assist-web/casePool/other",
+    "https://www.ctexpert.cn/login",
+    "https://www.ctexpert.cn/expert-assist-web/casePool#/study/course/detail/11111111-1111-4111-8111-111111111111",
+    "https://u:p@www.ctexpert.cn/expert-assist-web/casePool",
+  ])
+    assert.throws(() => normalize(url));
+});
 
 test("identity keeps tenant, account and source; QR aliases resolve", () => {
   assert.equal(

@@ -1,15 +1,15 @@
 import { mkdir, writeFile, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { createHash } from "node:crypto";
 import { PLATFORM } from "../config.ts";
 import { platformHost, entry } from "../domain/identity.ts";
 import { PlatformHttp } from "../browser/http.ts";
-import { atomicJson } from "../storage/files.ts";
+import { atomicJson, atomicText } from "../storage/files.ts";
 import type { Task } from "../storage/repository.ts";
-import { redact } from "../log.ts";
 import { AuthenticationError, list, token } from "../utils.ts";
 import { subjectManifest, type DiscoveryContext } from "./discovery.ts";
 import { courseInfo } from "./learning.ts";
+import { ReferenceCache, checksum } from "./reference-cache.ts";
+import type { Tab } from "nodriver-ts";
 export const MAX_BYTES = 128 * 1024 * 1024;
 export function filename(name: string) {
   const s = name
@@ -140,35 +140,41 @@ export async function references(
   ctx: DiscoveryContext,
   directory: string,
 ) {
-  const root = await ctx.auth.navigate(ctx.scope, task.url, ctx.lease),
-    http = new PlatformHttp(root, ctx.auth, ctx.lease);
   const output = join(directory, "references", task.account, task.businessId);
   await mkdir(output, { recursive: true });
-  const manifest: { files: any[]; failures: any[]; complete: boolean } = {
-    files: [],
-    failures: [],
-    complete: true,
-  };
+  const cache = new ReferenceCache(output),
+    manifest = cache.manifest;
+  await cache.load(decodeDocument, MAX_BYTES);
+  await cache.save();
+  let root: Tab | undefined;
   try {
-    const urls =
-      task.kind === "course"
-        ? [task.url]
-        : task.kind === "subject"
-          ? subjectManifest(
-              await http.json(
-                `/api/v1/course-study/subject/chapter-progress?courseId=${task.businessId}&knowledgePaymentEnable=false`,
-              ),
-              task,
-            ).links.filter((url) => entry(url, task.account).kind === "course")
-          : [];
+    root = await ctx.auth.navigate(ctx.scope, task.url, ctx.lease);
+    const http = new PlatformHttp(root, ctx.auth, ctx.lease);
+    cache.clearFailure(task.businessId);
+    let urls = task.kind === "course" ? [task.url] : [];
+    if (task.kind === "subject") {
+      const subject = subjectManifest(
+        await http.json(
+          `/api/v1/course-study/subject/chapter-progress?courseId=${task.businessId}&knowledgePaymentEnable=false`,
+        ),
+        task,
+      );
+      urls = subject.links.filter(
+        (url) => entry(url, task.account).kind === "course",
+      );
+      if (!subject.complete)
+        cache.fail(task.businessId, "主题课程清单尚未完整确认，请重新下载");
+    }
     if (!urls.length) throw new Error("请使用课程或包含课程的主题链接下载资料");
     for (const url of urls) {
       ctx.auth.assert(ctx.lease);
-      const course = ctx.repo.upsert(url, task.account),
-        tab = await ctx.auth.navigate(ctx.scope, url, ctx.lease);
-      const api = new PlatformHttp(tab, ctx.auth, ctx.lease);
+      const course = ctx.repo.upsert(url, task.account);
+      let tab: Tab | undefined;
       try {
+        tab = await ctx.auth.navigate(ctx.scope, url, ctx.lease);
+        const api = new PlatformHttp(tab, ctx.auth, ctx.lease);
         const { info, sections } = await courseInfo(api, course);
+        cache.clearFailure(course.businessId);
         const resources = [
           ...sections,
           ...(info.courseAttachments || []).map((a: any) => ({
@@ -187,7 +193,10 @@ export async function references(
           const ext = String(s.fileType || "").toLowerCase();
           try {
             ctx.auth.assert(ctx.lease);
-            if (["pdf", "doc", "docx", "ppt", "pptx"].includes(ext)) {
+            if (
+              ["pdf", "doc", "docx", "ppt", "pptx"].includes(ext) &&
+              !cache.has(course.businessId, id)
+            ) {
               const preview = await api.json(
                 `/api/v1/tools-center-v2/file-cloud/preview?id=${encodeURIComponent(id)}`,
               );
@@ -226,85 +235,79 @@ export async function references(
               } finally {
                 await rm(tmp, { force: true });
               }
-              manifest.files.push({
+              cache.put({
                 course: course.businessId,
                 resource: id,
                 path: name,
                 bytes: file.bytes.length,
-                sha256: createHash("sha256").update(file.bytes).digest("hex"),
+                sha256: checksum(file.bytes),
               });
+              await cache.save();
               ctx.report(`已保存课件：${name}`);
             }
-            if (s.guideStudyFlag) {
+            if (
+              s.guideStudyFlag &&
+              !cache.has(course.businessId, id, "guide")
+            ) {
               const items = list(
                 await api.json(
                   `/api/v1/course-study/guide-study/get-guide-study-info?courseId=${course.businessId}&attachmentId=${encodeURIComponent(id)}`,
                 ),
               );
               const name = `${filename(info.name || course.businessId)}-${filename(id.slice(0, 8))}-导学.json`;
+              ctx.auth.assert(ctx.lease);
               await atomicJson(join(output, name), items);
               const markdown = name.replace(/\.json$/, ".md");
-              await writeFile(
-                join(output, markdown),
-                [
-                  `# ${info.name || course.businessId} · ${s.name || "导学"}`,
+              const content = [
+                `# ${info.name || course.businessId} · ${s.name || "导学"}`,
+                "",
+                ...items.flatMap((item) => [
+                  `## ${String(item.name || "总述")}`,
                   "",
-                  ...items.flatMap((item) => [
-                    `## ${String(item.name || "总述")}`,
-                    "",
-                    String(item.content || "暂无导学内容"),
-                    "",
-                  ]),
-                ].join("\n"),
-              );
-              manifest.files.push({
+                  String(item.content || "暂无导学内容"),
+                  "",
+                ]),
+              ].join("\n");
+              await atomicText(join(output, markdown), content);
+              const json = JSON.stringify(items, null, 2);
+              cache.put({
                 course: course.businessId,
                 resource: id,
                 path: name,
                 markdown,
                 kind: "guide",
+                bytes: Buffer.byteLength(json),
+                sha256: checksum(json),
+                markdownBytes: Buffer.byteLength(content),
+                markdownSha256: checksum(content),
               });
+              await cache.save();
             }
+            cache.clearFailure(course.businessId, id);
           } catch (e) {
             if (ctx.lease.signal.aborted || e instanceof AuthenticationError)
               throw e;
-            manifest.failures.push({
-              course: course.businessId,
-              resource: id,
-              message: redact(e),
-            });
-            manifest.complete = false;
+            cache.fail(course.businessId, e, id);
           }
-          await atomicJson(join(output, "manifest.json"), manifest);
+          await cache.save();
         }
       } catch (e) {
         if (ctx.lease.signal.aborted || e instanceof AuthenticationError)
           throw e;
-        manifest.failures.push({
-          course: course.businessId,
-          message: redact(e),
-        });
-        manifest.complete = false;
+        cache.fail(course.businessId, e);
       } finally {
-        await tab.close();
+        await tab?.close();
+        await cache.save();
       }
     }
-    await atomicJson(join(output, "manifest.json"), manifest);
-    await writeFile(
-      join(output, "资料索引.md"),
-      [
-        "# 资料索引",
-        "",
-        ...manifest.files.map(
-          (file) =>
-            `- [${file.markdown || file.path}](<${encodeURI(file.markdown || file.path)}>)`,
-        ),
-        "",
-        `下载失败：${manifest.failures.length} 项`,
-      ].join("\n"),
-    );
+    manifest.complete = manifest.failures.length === 0;
+    await cache.save();
     return manifest;
+  } catch (error) {
+    cache.fail(task.businessId, error);
+    await cache.save();
+    throw error;
   } finally {
-    await root.close();
+    await root?.close();
   }
 }

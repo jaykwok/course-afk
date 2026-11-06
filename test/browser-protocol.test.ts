@@ -268,6 +268,8 @@ test("session clearing targets a page CDP session and preserves the management p
     await f.runtime.clearPlatform();
     assert.equal(admin.closed, false);
     assert.ok(origins.includes("https://sso.example.test"));
+    assert.ok(origins.includes("https://www.ctexpert.cn"));
+    assert.ok(origins.includes("https://ctexpert.cn"));
     f.chrome.assertDone();
   } finally {
     await f.close();

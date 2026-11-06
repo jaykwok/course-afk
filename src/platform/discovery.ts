@@ -6,6 +6,7 @@ import {
   resource,
   UUID,
   platformHost,
+  isCasePoolUrl,
 } from "../domain/identity.ts";
 import { PlatformHttp } from "../browser/http.ts";
 import type { Authentication, Lease } from "../browser/auth.ts";
@@ -91,7 +92,10 @@ export function subjectManifest(payload: unknown, subject: Task): Manifest {
           )
             throw new Error("主题外链地址无效");
           // External documents are activities on the subject, not crawl roots.
-          if (platformHost(destination.hostname)) {
+          if (
+            platformHost(destination.hostname) ||
+            isCasePoolUrl(destination)
+          ) {
             const destinations = extractLinks([destination.href], subject.url);
             optionalLinks.push(
               ...destinations.filter((url) => !links.includes(url)),
@@ -142,7 +146,7 @@ export function extractLinks(texts: string[], base: string): string[] {
         e.kind !== "entry" ||
         (/\/topic\//i.test(parsed.pathname) &&
           /(?:\.html?\/?|\/)$/i.test(parsed.pathname)) ||
-        /(?:^|\/)casePool(?:[/?#]|$)/i.test(parsed.pathname + parsed.hash)
+        isCasePoolUrl(parsed)
       )
         links.add(url);
     } catch {}
@@ -465,7 +469,7 @@ async function catalogManifest(
 ): Promise<Manifest> {
   const found = new Set<string>();
   let complete = false;
-  if (/casePool/i.test(tab.url)) return casePoolManifest(tab, ctx);
+  if (isCasePoolUrl(tab.url)) return casePoolManifest(tab, ctx);
   let previous = "";
   for (let round = 0; round < 21; round++) {
     ctx.auth.assert(ctx.lease);
@@ -517,12 +521,19 @@ async function casePoolManifest(
   tab: Tab,
   ctx: DiscoveryContext,
 ): Promise<Manifest> {
+  ctx.auth.assert(ctx.lease);
+  if (!isCasePoolUrl(tab.url)) throw new Error("案例库页面已变化，请重新解析");
   // Requests remain inside the authenticated case-pool origin; tokens never leave the page.
   const result = await tab.evaluate(
     async () => {
       const values: string[] = [],
         seenTags = new Set<string>();
       const signal = AbortSignal.timeout(90000);
+      if (
+        location.origin !== "https://www.ctexpert.cn" ||
+        location.pathname.replace(/\/$/, "") !== "/expert-assist-web/casePool"
+      )
+        return { values, complete: false };
       const token = localStorage.getItem("userID");
       if (!token) return { values, complete: false };
       const request = async (path: string, body: unknown) => {

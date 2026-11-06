@@ -3,12 +3,18 @@ import type { Protocol } from "devtools-protocol";
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { HOME, CENTER, PLATFORM } from "../config.ts";
-import { accountId, entry, platformHost } from "../domain/identity.ts";
+import {
+  accountId,
+  entry,
+  platformHost,
+  isCasePoolUrl,
+} from "../domain/identity.ts";
 import { atomicJson } from "../storage/files.ts";
 import { AuthenticationError, digest, until } from "../utils.ts";
 import type { BrowserRuntime, TabScope } from "./runtime.ts";
 import { navigateDocument } from "./navigation.ts";
 import { waitForLoginReturn } from "./login.ts";
+import { waitForCasePoolSession } from "./case-pool.ts";
 
 interface Credential {
   version: 2;
@@ -222,6 +228,17 @@ export class Authentication {
     this.assert(lease);
     const wanted = entry(url, lease.account);
     const tab = await scope.open(wanted.url);
+    if (isCasePoolUrl(wanted.url)) {
+      try {
+        await waitForCasePoolSession(tab, lease.signal, () =>
+          this.assert(lease),
+        );
+        return tab;
+      } catch (error) {
+        await tab.close();
+        throw error;
+      }
+    }
     let reopened = false;
     await until(
       async () => {

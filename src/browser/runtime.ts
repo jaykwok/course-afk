@@ -79,6 +79,8 @@ export class BrowserRuntime {
     "https://center.mylearning.cn",
     "https://kc.zhixueyun.com",
     "https://cms.mylearning.cn",
+    "https://www.ctexpert.cn",
+    "https://ctexpert.cn",
   ]);
   private unsubscribe: () => void;
   private constructor(

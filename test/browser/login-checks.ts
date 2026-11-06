@@ -57,6 +57,29 @@ export async function loginChecks(runtime: BrowserRuntime) {
       signal,
     );
     await frame.waitForSelector("#j-auto-group-qr", { signal, timeout: 5000 });
+    const waitForSelected = (suffix: string) =>
+      until(
+        async () => {
+          // The real login loop reapplies preferences after stale or replaced controls.
+          await applyLoginPreferences(tab, signal);
+          return frame.evaluate((suffix) => {
+            const group = document.getElementById("j-auto-group" + suffix);
+            return (
+              group
+                ?.querySelector(".option.active")
+                ?.getAttribute("data-time") === "3" &&
+              group.querySelector(".login-time-text")?.textContent ===
+                "30天内自动登录" &&
+              group.querySelector("i")?.getAttribute("data-index") === "1" &&
+              document
+                .getElementById("j-agreement-box" + suffix)
+                ?.getAttribute("data-index") === "1"
+            );
+          }, suffix);
+        },
+        10000,
+        signal,
+      );
     for (const mode of ["-qr", "", "-sms", "-qk"]) {
       await (await frame.query(`[data-switch="${mode}"]`))!.click({ signal });
       await frame.waitForFunction(
@@ -87,14 +110,7 @@ export async function loginChecks(runtime: BrowserRuntime) {
         checked: "1",
         agreement: "1",
       };
-      await until(
-        async () => {
-          await applyLoginPreferences(tab, signal);
-          return JSON.stringify(await check()) === JSON.stringify(expected);
-        },
-        10000,
-        signal,
-      );
+      await waitForSelected(mode);
       assert.deepEqual(await check(), expected);
       const count: number = await frame.evaluate<number>("trusted.length");
       await applyLoginPreferences(tab, signal);
@@ -105,7 +121,7 @@ export async function loginChecks(runtime: BrowserRuntime) {
       );
     }
     await (await frame.query("#reset"))!.click({ signal });
-    await applyLoginPreferences(tab, signal);
+    await waitForSelected("-qk");
     assert.equal(
       await frame.evaluate(() =>
         document
@@ -122,7 +138,7 @@ export async function loginChecks(runtime: BrowserRuntime) {
       signal,
     );
     await frame.waitForSelector("#j-auto-group-qr", { signal, timeout: 5000 });
-    await applyLoginPreferences(tab, signal);
+    await waitForSelected("-qr");
     assert.equal(
       await frame.evaluate(() =>
         document

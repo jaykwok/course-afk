@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { BrowserRuntime } from "../../src/browser/runtime.ts";
-import { inspectAccess, clickPlayerControl } from "../../src/platform/dom.ts";
+import {
+  inspectAccess,
+  clickPlayerControl,
+  continueArchivedCourse,
+  startRegisteredCourse,
+} from "../../src/platform/dom.ts";
 import { AuthenticationError, ReviewRequired } from "../../src/utils.ts";
 
 /** Reuses the caller's Browser; all pages here are synthetic and local. */
@@ -23,7 +28,7 @@ export async function platformChecks(runtime: BrowserRuntime) {
     } else response.end('<title>Fixture</title><h1 id="ready">已就绪</h1>');
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const signal = AbortSignal.timeout(20000),
+  const signal = AbortSignal.timeout(40000),
     scope = runtime.scope(signal);
   try {
     const tab = await scope.open(
@@ -48,6 +53,59 @@ export async function platformChecks(runtime: BrowserRuntime) {
     assert.equal(
       await play.evaluate((e) => (e as HTMLElement).dataset.trusted),
       "true",
+    );
+    await tab.setContent(`<div class="register-mask-layer"><img id="course-registerMask" alt="" style="display:block;width:100px;height:60px;background:blue"
+      onclick="document.body.dataset.trusted=String(event.isTrusted);this.parentElement.remove()"></div>`);
+    assert.equal(
+      await startRegisteredCourse(tab, signal, () => signal.throwIfAborted()),
+      true,
+    );
+    assert.equal(
+      await tab.evaluate(() => document.body.dataset.trusted),
+      "true",
+    );
+    assert.equal(await startRegisteredCourse(tab, signal, () => {}), false);
+    for (const container of ["ant-modal-content", "study-transition-page"]) {
+      await tab.setContent(
+        `<div class="${container}">该课程已归档，是否继续学习？<button class="ant-btn" onclick="document.body.dataset.trusted=String(event.isTrusted);this.parentElement.style.display='none'">继续学习</button></div>`,
+      );
+      assert.equal(
+        await continueArchivedCourse(tab, signal, () =>
+          signal.throwIfAborted(),
+        ),
+        true,
+      );
+      assert.equal(
+        await tab.evaluate(() => document.body.dataset.trusted),
+        "true",
+      );
+      assert.equal(await continueArchivedCourse(tab, signal, () => {}), false);
+    }
+    await tab.setContent(
+      '<div class="ant-modal-content">评分<button class="ant-btn" onclick="document.body.dataset.wrong=\'true\'">继续学习</button></div>',
+    );
+    assert.equal(await continueArchivedCourse(tab, signal, () => {}), false);
+    assert.equal(
+      await tab.evaluate(() => document.body.dataset.wrong),
+      undefined,
+    );
+    await tab.setContent(
+      '<div class="ant-modal-content">已归档<button disabled>继续学习</button></div>',
+    );
+    assert.equal(await continueArchivedCourse(tab, signal, () => {}), false);
+    await tab.setContent(
+      '<div class="study-transition-page">课程已归档<button onclick="location.assign(\'/archive-ready\')">继续学习</button></div>',
+    );
+    assert.equal(
+      await continueArchivedCourse(tab, signal, () => signal.throwIfAborted()),
+      true,
+    );
+    assert.equal(new URL(tab.url).pathname, "/archive-ready");
+    await assert.rejects(
+      startRegisteredCourse(tab, signal, () => {
+        throw new Error("凭证已变化");
+      }),
+      /凭证已变化/,
     );
     await tab.setContent(
       '<title>考试</title><div role="alert">请输入验证码</div>',

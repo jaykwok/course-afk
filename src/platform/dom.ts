@@ -4,6 +4,104 @@ import {
   type Element as BrowserElement,
 } from "nodriver-ts";
 import { AuthenticationError, ReviewRequired } from "../utils.ts";
+/** Only dismiss a confirmed archive prompt; unrelated business dialogs stay intact. */
+export async function continueArchivedCourse(
+  tab: Tab,
+  signal: AbortSignal,
+  guard: () => void,
+) {
+  guard();
+  for (const dialog of await tab.queryAll(
+    ".study-transition-page,.ant-modal-content",
+    {
+      visible: true,
+      timeout: 5000,
+      signal,
+    },
+  )) {
+    if (!/归档/.test(await dialog.text())) continue;
+    for (const button of await dialog.queryAll(
+      'button,.btn,a,span,[role="button"],[id$="goOnStudy"]',
+      {
+        visible: true,
+        timeout: 3000,
+        signal,
+      },
+    )) {
+      if ((await button.text()).replace(/\s/g, "") !== "继续学习") continue;
+      if (
+        await button.evaluate(
+          (e) =>
+            e.matches(":disabled") ||
+            e.getAttribute("aria-disabled") === "true",
+        )
+      )
+        continue;
+      await button.click({ signal, timeout: 5000, guard });
+      await waitForOverlayExit(
+        tab,
+        ".study-transition-page,.ant-modal-content",
+        signal,
+        guard,
+        "归档",
+      );
+      return true;
+    }
+  }
+  return false;
+}
+async function waitForOverlayExit(
+  tab: Tab,
+  selector: string,
+  signal: AbortSignal,
+  guard: () => void,
+  text = "",
+) {
+  guard();
+  await tab.waitForFunction(
+    ({ selector, text }) =>
+      document.readyState !== "loading" &&
+      ![...document.querySelectorAll(selector)].some((e) => {
+        const rect = e.getBoundingClientRect(),
+          style = getComputedStyle(e);
+        return (
+          rect.width > 0 &&
+          rect.height > 0 &&
+          style.visibility !== "hidden" &&
+          style.display !== "none" &&
+          (!text || e.textContent?.includes(text))
+        );
+      }),
+    { selector, text },
+    { timeout: 5000, signal },
+  );
+  guard();
+}
+/** Some course gates bind registration to an image ID rather than button text. */
+export async function startRegisteredCourse(
+  tab: Tab,
+  signal: AbortSignal,
+  guard: () => void,
+) {
+  guard();
+  const image = await tab.query('.register-mask-layer [id$="registerMask"]', {
+    visible: true,
+    timeout: 3000,
+    signal,
+  });
+  const clicked = image
+    ? (await image.click({ signal, timeout: 5000, guard }), true)
+    : await clickText(
+        tab,
+        ["开始学习", "继续学习"],
+        signal,
+        ".register-mask-layer button,.register-mask-layer .btn,.register-mask-layer a,.register-mask-layer span",
+        guard,
+      );
+  if (clicked)
+    await waitForOverlayExit(tab, ".register-mask-layer", signal, guard);
+  return clicked;
+}
 /** Native input for main-frame player controls, with a fresh hit check before press. */
 export async function clickPlayerControl(
   tab: Tab,

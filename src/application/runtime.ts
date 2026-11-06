@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { join } from "node:path";
-import { accountId, normalize, entry } from "../domain/identity.ts";
+import { accountId, parseLinkInput, entry } from "../domain/identity.ts";
 import {
   HOME,
   readSettings,
@@ -488,13 +488,13 @@ export class Application extends EventEmitter {
           },
         );
         try {
-          const urls = payload.input_text?.trim()
-            ? String(payload.input_text)
-                .split(/\r?\n/)
-                .map((s) => s.trim())
-                .filter(Boolean)
-                .map(normalize)
-            : [HOME];
+          const input = parseLinkInput(
+            String(payload.input_text || "").trim() || HOME,
+          );
+          if (input.rejected)
+            report(`已忽略 ${input.rejected} 条无效或不支持的链接`);
+          const urls = input.urls;
+          if (!urls.length) throw new Error("未找到可用的平台链接");
           for (const url of urls) {
             const tab = await this.auth.navigate(scope, url, lease);
             record(tab.url);
@@ -523,18 +523,11 @@ export class Application extends EventEmitter {
           payload.input_text ||
           (await this.prompt("multiline", {
             title: "录入链接",
-            message: "每行粘贴一条平台链接",
+            message: "粘贴平台链接或包含链接的通知文字",
           }));
-        const urls = [
-          ...new Set(
-            String(text)
-              .split(/\r?\n/)
-              .map((s) => s.trim())
-              .filter(Boolean)
-              .map(normalize),
-          ),
-        ];
-        if (!urls.length) throw new Error("未提供链接");
+        const { urls, rejected } = parseLinkInput(String(text));
+        if (rejected) report(`已忽略 ${rejected} 条无效或不支持的链接`);
+        if (!urls.length) throw new Error("未找到可用的平台链接");
         if (kind === "links") {
           const result = await discover(urls, ctx);
           this.update({
@@ -544,6 +537,7 @@ export class Application extends EventEmitter {
               rows: [
                 ["已发现任务", result.found.length],
                 ["待复查入口", result.issues.length],
+                ["已忽略无效链接", rejected],
               ],
             },
           });
@@ -575,6 +569,7 @@ export class Application extends EventEmitter {
               rows: [
                 ["已保存", saved],
                 ["失败", failed],
+                ["已忽略无效链接", rejected],
               ],
             },
           });

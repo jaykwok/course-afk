@@ -23,6 +23,8 @@ import {
   clickPlayerControl,
   dismissOverlays,
   inspectAccess,
+  continueArchivedCourse,
+  startRegisteredCourse,
 } from "./dom.ts";
 export interface Section {
   id: string;
@@ -111,11 +113,8 @@ export async function progress(
 async function prepare(tab: Tab, ctx: DiscoveryContext) {
   await inspectAccess(tab, ctx.lease.signal);
   ctx.auth.assert(ctx.lease);
-  await clickText(
-    tab,
-    ["继续学习"],
-    ctx.lease.signal,
-    ".study-transition-page .btn,.ant-modal-content .btn",
+  await continueArchivedCourse(tab, ctx.lease.signal, () =>
+    ctx.auth.assert(ctx.lease),
   );
   await dismissOverlays(tab, ctx.lease.signal);
   await clickText(
@@ -127,6 +126,9 @@ async function prepare(tab: Tab, ctx: DiscoveryContext) {
 }
 async function rating(tab: Tab, ctx: DiscoveryContext) {
   ctx.auth.assert(ctx.lease);
+  await continueArchivedCourse(tab, ctx.lease.signal, () =>
+    ctx.auth.assert(ctx.lease),
+  );
   for (const dialog of await tab.queryAll(".ant-modal-content", {
     visible: true,
     timeout: 5000,
@@ -216,11 +218,8 @@ export async function activate(tab: Tab, s: Section, ctx: DiscoveryContext) {
 }
 async function resumeMedia(tab: Tab, selector: string, ctx: DiscoveryContext) {
   ctx.auth.assert(ctx.lease);
-  await clickText(
-    tab,
-    ["开始学习", "继续学习"],
-    ctx.lease.signal,
-    ".register-mask-layer button,.register-mask-layer .btn,.register-mask-layer a,.register-mask-layer span",
+  await startRegisteredCourse(tab, ctx.lease.signal, () =>
+    ctx.auth.assert(ctx.lease),
   );
   const focused = await tab.evaluate(
     (selector) =>
