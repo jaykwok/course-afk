@@ -63,9 +63,6 @@ class SubjectCompletionTests(unittest.IsolatedAsyncioTestCase):
             patch("core.browser.session.create_browser_context", browser)
         )
         self.enterContext(
-            patch("core.browser.session.is_controller_window_closed", return_value=False)
-        )
-        self.enterContext(
             patch(
                 "core.learning.afk_runner._open_course_page",
                 new=AsyncMock(return_value=page),

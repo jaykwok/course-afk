@@ -92,57 +92,7 @@ class StartupAccessTests(unittest.IsolatedAsyncioTestCase):
                         AccountProfile("同名", "center:two")
                     )
 
-    def test_fatal_worker_error_survives_cleanup_and_restores_log_handlers(self):
-        from contextlib import redirect_stderr
-        import io
-        import logging
-        from unittest.mock import Mock
-        from core.ui import tui_bridge
 
-        with TemporaryDirectory() as tmp:
-            app = SimpleNamespace(
-                fatal_error=RuntimeError("worker exploded"),
-                _launcher_thread=None,
-                _exit_status=1,
-                run=Mock(return_value=1),
-                exit=Mock(),
-            )
-            handlers = list(logging.getLogger().handlers)
-            output = io.StringIO()
-            with (
-                patch.object(tui_bridge, "CourseTuiApp", return_value=app),
-                patch.object(tui_bridge, "setup_logging"),
-                patch("core.config.DATA_DIR", Path(tmp)),
-                patch("core.config.ERROR_LOG_FILE", Path(tmp) / "logs/app-error.log"),
-                patch("core.runtime.protect_application_children"),
-                patch(
-                    "core.startup.shutdown_workflows",
-                    side_effect=ModuleNotFoundError("dbos"),
-                ),
-                redirect_stderr(output),
-            ):
-                self.assertEqual(tui_bridge.launch_tui(), 1)
-            self.assertIn("worker exploded", output.getvalue())
-            self.assertIn(str(Path(tmp) / "logs/app-error.log"), output.getvalue())
-            self.assertEqual(logging.getLogger().handlers, handlers)
-
-    def test_recoverable_identity_error_returns_to_menu(self):
-        import launcher
-        from unittest.mock import Mock
-
-        ui = Mock()
-        ui.show_menu.side_effect = [3, 7]
-        with (
-            patch("core.config.setup_logging"),
-            patch("core.state.collect_project_state", return_value=SimpleNamespace()),
-            patch(
-                "core.app.launcher_controller.handle_manual_selection",
-                side_effect=CredentialUnavailableError("请重新登录"),
-            ),
-        ):
-            self.assertEqual(launcher.main(ui), 0)
-        ui.show_warning.assert_called_once_with("请重新登录")
-        ui.pause.assert_called_once()
 
     async def test_real_profile_extraction_produces_executable_distinct_identities(
         self,
@@ -236,8 +186,8 @@ class StartupAccessTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(str(Path(tmp) / "logs/app-error.log"), result.stderr)
             self.assertNotIn("never awaited", result.stderr)
 
-    def test_runtime_fatal_error_reaches_terminal_after_tui_returns(self):
-        code = "import sys;sys.argv=['launcher.py'];import core.ui.tui_bridge as b;b.launch_tui=lambda: (_ for _ in ()).throw(RuntimeError('operation exploded'));import launcher;raise SystemExit(launcher.entrypoint())"
+    def test_runtime_fatal_error_reaches_terminal_after_web_returns(self):
+        code = "import sys;sys.argv=['launcher.py'];import core.app.runtime as b;b.launch_web=lambda: (_ for _ in ()).throw(RuntimeError('operation exploded'));import launcher;raise SystemExit(launcher.entrypoint())"
         with TemporaryDirectory() as tmp:
             result = subprocess.run(
                 [sys.executable, "-X", "utf8", "-c", code],

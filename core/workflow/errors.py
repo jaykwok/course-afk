@@ -10,6 +10,10 @@ from core.workflow.contracts import Status, TaskOutcome
 
 
 def error_outcome(task_id, exc):
+    from core.auth.access import CredentialUnavailableError
+    if isinstance(exc, CredentialUnavailableError):
+        return TaskOutcome(task_id, Status.BLOCKED, ["credential_unavailable"],
+                           stop_scope="batch", details={"message": str(exc)})
     from core.browser.session import (
         is_target_closed_exception,
         raise_for_certificate_error,

@@ -6,4 +6,5 @@ if [ ! -x "$TASK_ROOT/.venv/bin/python" ]; then
   printf '%s\n' '请先在项目目录运行 uv sync，或直接运行 uv run launcher.py。' >&2
   exit 1
 fi
+printf '%s\n' '正在启动本地 Web 管理页…'
 exec "$TASK_ROOT/.venv/bin/python" -X utf8 "$TASK_ROOT/launcher.py" "$@"

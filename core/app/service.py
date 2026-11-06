@@ -1,4 +1,4 @@
-"""CLI and TUI share selection, sequential dispatch and business outcomes."""
+"""Sequential dispatch and business outcomes, with application stop boundaries."""
 
 from __future__ import annotations
 
@@ -25,7 +25,10 @@ _STATUS_LABELS = {
 
 
 class ApplicationService:
-    def __init__(self, host=None):
+    def __init__(self, host=None, *, control=None):
+        from core.ui.frontend import current_frontend
+        frontend = current_frontend()
+        self.control = control or getattr(frontend, "control", None)
         self._require_credentials = host is None
         if host is None:
             from core.auth.access import require_task_account
@@ -71,6 +74,10 @@ class ApplicationService:
             self.host.repository.plan(task_id, kind, options or {}, VERSION)
         results = []
         for url in selected:
+            if self.control and not self.control.can_dispatch():
+                if status_callback:
+                    status_callback("本课程结束后已停止，剩余任务保留")
+                break
             if status_callback:
                 status_callback(
                     f"{_OPERATION_LABELS[kind]} {len(results) + 1}/{len(selected)}: {url}"

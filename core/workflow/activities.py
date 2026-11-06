@@ -11,7 +11,7 @@ def _task(host, payload):
 
 
 async def learn(host, payload):
-    from core.browser.session import create_browser_context, is_controller_window_closed
+    from core.browser.session import create_browser_context
     from core.learning.afk_runner import execute_learning
     from core.learning.flows import course_learning, subject_learning
     from core.file_ops import is_subject_detail_url
@@ -34,9 +34,6 @@ async def learn(host, payload):
             task["url"],
             subject_learning if is_subject_detail_url(task["url"]) else course_learning,
         )
-        if is_controller_window_closed(context):
-            result.stop_scope = "batch"
-            result.details["message"] = "心跳页已关闭，当前课程结束，剩余任务保留"
     return result
 
 

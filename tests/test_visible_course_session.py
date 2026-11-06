@@ -14,7 +14,7 @@ class VisibleCourseTests(unittest.IsolatedAsyncioTestCase):
         from unittest.mock import AsyncMock, patch
         from core.learning.handlers import _watch_video_playback
 
-        async with create_browser_context(cookies_path=None, controller=False) as (
+        async with create_browser_context(cookies_path=None) as (
             _,
             context,
         ):
@@ -81,7 +81,7 @@ class VisibleCourseTests(unittest.IsolatedAsyncioTestCase):
     async def test_business_dialogs_survive_generic_cleanup_and_start_is_read_back(
         self,
     ):
-        async with create_browser_context(cookies_path=None, controller=False) as (
+        async with create_browser_context(cookies_path=None) as (
             _,
             context,
         ):

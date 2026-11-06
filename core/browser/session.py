@@ -14,18 +14,12 @@ from core.config import (
     BROWSER_CHANNEL,
     BROWSER_TYPE,
     COOKIES_FILE,
-    MYLEARNING_HOME,
 )
 from core.file_ops import load_cookies
-from core.browser.overlays import prepare_page_after_navigation_async
 from core.runtime import close_safely, own_playwright_driver
+from core.browser.bootstrap import release_platform_session
 
 
-_CONTROLLER_PAGES: dict[int, object] = {}
-# 心跳页关闭时登记停止请求；它不证明浏览器物理进程已经断开。
-# 当前课程可完成，但不能开下一门。整窗关闭也会触发这页的 close；
-# Edge 后台进程仍连接时，必须以此状态阻止继续工作。
-_CONTEXT_WINDOW_CLOSED: dict[int, bool] = {}
 _START_MAXIMIZED_ARG = "--start-maximized"
 # 反自动化探测脚本（context.add_init_script，document_start 在每个 frame 执行）。
 #
@@ -204,24 +198,6 @@ def build_browser_launch_options(
     return options
 
 
-async def maximize_browser_window_for_page(page, *, headless: bool) -> None:
-    if headless or BROWSER_TYPE != "chromium":
-        return
-
-    try:
-        client = await page.context.new_cdp_session(page)
-        window_info = await client.send("Browser.getWindowForTarget")
-        await client.send(
-            "Browser.setWindowBounds",
-            {
-                "windowId": window_info["windowId"],
-                "bounds": {"windowState": "maximized"},
-            },
-        )
-    except Exception:
-        pass
-
-
 def build_browser_context_options(*, headless: bool) -> dict[str, object]:
     _ensure_visible_browser(headless)
     return {"no_viewport": True}
@@ -270,8 +246,6 @@ def get_context_browser(context):
 
 
 def is_browser_connected(context) -> bool:
-    if _CONTEXT_WINDOW_CLOSED.get(id(context)):
-        return False
     browser = get_context_browser(context)
     if browser is None:
         return False
@@ -283,16 +257,6 @@ def is_browser_connected(context) -> bool:
         except Exception:
             return False
     return False
-
-
-def is_controller_window_closed(context) -> bool:
-    """是否因心跳页关闭而登记了停止请求。"""
-    return _CONTEXT_WINDOW_CLOSED.get(id(context), False)
-
-
-def get_controller_page(context):
-    """当前心跳页（未注册或已释放时为 None）。"""
-    return _CONTROLLER_PAGES.get(id(context))
 
 
 def get_page_context(page):
@@ -312,65 +276,6 @@ def is_page_browser_connected(page) -> bool:
     return is_browser_connected(context)
 
 
-def _is_page_closed(page) -> bool:
-    is_closed = getattr(page, "is_closed", None)
-    if callable(is_closed):
-        try:
-            return bool(is_closed())
-        except Exception:
-            return False
-    return False
-
-
-async def _open_controller_page(context, *, headless: bool = False):
-    page = await context.new_page()
-    await maximize_browser_window_for_page(page, headless=headless)
-    await page.goto(MYLEARNING_HOME, wait_until="load")
-    # 主控页也常被推广弹窗挡住，先关掉再挂着
-    await prepare_page_after_navigation_async(page)
-    return page
-
-
-def _mark_controller_window_closed(context) -> None:
-    """心跳页被关：登记停止请求。"""
-    _CONTEXT_WINDOW_CLOSED[id(context)] = True
-
-
-def _remember_controller_page(context, page) -> None:
-    _CONTROLLER_PAGES[id(context)] = page
-    on = getattr(page, "on", None)
-    if callable(on):
-        # 不重开心跳页；各流程据此停止并保存剩余链接。
-        on("close", lambda: _mark_controller_window_closed(context))
-
-
-async def ensure_controller_page(context):
-    """确保常驻心跳页可用；已登记关闭时返回 None，不重开。"""
-    if _CONTEXT_WINDOW_CLOSED.get(id(context)):
-        return None
-    controller_page = _CONTROLLER_PAGES.get(id(context))
-    if controller_page is not None and not _is_page_closed(controller_page):
-        return controller_page
-    if not is_browser_connected(context):
-        return None
-    controller_page = await _open_controller_page(context)
-    _remember_controller_page(context, controller_page)
-    return controller_page
-
-
-def is_controller_page(context, page) -> bool:
-    """是否为该 context 的常驻主控页。"""
-    if page is None:
-        return False
-    controller = _CONTROLLER_PAGES.get(id(context))
-    return controller is not None and page is controller
-
-
-def release_controller_page(context) -> None:
-    _CONTROLLER_PAGES.pop(id(context), None)
-    _CONTEXT_WINDOW_CLOSED.pop(id(context), None)
-
-
 def raise_for_certificate_error(exc: Exception) -> None:
     """将浏览器证书错误转换为可恢复错误，保持 TLS 校验启用。"""
     if isinstance(exc, BrowserCertificateError):
@@ -382,9 +287,27 @@ def raise_for_certificate_error(exc: Exception) -> None:
 
 @asynccontextmanager
 async def create_browser_context(
-    cookies_path=COOKIES_FILE, headless=False, slow_mo=None, *, controller=True
+    cookies_path=COOKIES_FILE, headless=False, slow_mo=None
 ):
-    """浏览器初始化上下文管理器, 封装重复的启动/认证/关闭流程"""
+    """Lease tabs in the app window; standalone probes own an isolated browser."""
+    _ensure_visible_browser(headless)
+    from core.browser.application import current_browser, isolated_browser_allowed
+    owner = current_browser()
+    if owner is not None:
+        async with owner.lease(cookies_path) as pair:
+            yield pair
+    else:
+        if not isolated_browser_allowed():
+            raise RuntimeError("应用浏览器尚未就绪或正在退出，请重新启动程序")
+        async with create_isolated_browser_context(cookies_path, headless, slow_mo) as pair:
+            yield pair
+
+
+@asynccontextmanager
+async def create_isolated_browser_context(
+    cookies_path=COOKIES_FILE, headless=False, slow_mo=None
+):
+    """Own a browser only for application startup or standalone tests/probes."""
 
     _ensure_visible_browser(headless)
 
@@ -404,10 +327,9 @@ async def create_browser_context(
             await apply_async_browser_stealth(context)
             await context.add_cookies(cookies)
 
-            # 保留一个常驻心跳页：课程页逐门开关时它始终在场，关闭它登记停止请求。
-            if controller:
-                controller_page = await _open_controller_page(context, headless=headless)
-                _remember_controller_page(context, controller_page)
+            if cookies_path is not None:
+                from core.browser.bootstrap import bootstrap_platform_session
+                await bootstrap_platform_session(context, cookies_path)
         yield browser, context
     except Exception as exc:
         raise_for_certificate_error(exc)
@@ -429,7 +351,7 @@ async def create_browser_context(
                 try:
                     await close_safely(context.close(), label="browser context")
                 finally:
-                    release_controller_page(context)
+                    release_platform_session(context)
             if browser is not None:
                 await close_safely(browser.close(), label="browser")
             await close_safely(manager.__aexit__(*exception_info), label="Playwright driver")
@@ -437,6 +359,6 @@ async def create_browser_context(
             await close_safely(cleanup(), timeout=18, label="browser lifecycle")
         finally:
             if context is not None:
-                release_controller_page(context)
+                release_platform_session(context)
             if driver_job is not None:
                 await close_safely(driver_job.terminate(), label="browser process tree")

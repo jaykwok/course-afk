@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from core.browser.bootstrap import navigate_platform_page
+
 import logging
 import asyncio
 import re
@@ -272,7 +274,7 @@ async def expand_subject_from_page(
             status_callback(f"无法识别主题 subjectId: {subject_url}")
         return SubjectExpandResult(residual_subject_url=normalized or subject_url)
 
-    await page.goto(normalized, wait_until="load")
+    await navigate_platform_page(page, normalized, wait_until="load")
     try:
         await page.wait_for_load_state("networkidle", timeout=8000)
     except Exception as exc:

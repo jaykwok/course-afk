@@ -98,9 +98,9 @@ class FakeManualSelectionContext:
 
 @asynccontextmanager
 async def _fake_create_browser_context_for_entry(context):
-    """模拟 create_browser_context：已有主控页 + 复用同一 context。"""
+    """模拟 create_browser_context：已有空白占位页 + 复用同一 context。"""
     if not context.pages:
-        context.pages.append(FakeManualSelectionPage(url="https://www.mylearning.cn/"))
+        context.pages.append(FakeManualSelectionPage(url="about:blank"))
     try:
         yield object(), context
     finally:
@@ -418,7 +418,7 @@ class ManualSelectionWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 ),
                 mock.patch.object(
                     manual,
-                    "is_controller_page",
+                    "is_session_internal_page",
                     return_value=False,
                 ),
             ):

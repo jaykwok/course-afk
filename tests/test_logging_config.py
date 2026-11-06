@@ -145,65 +145,7 @@ class LoggingConfigTests(unittest.TestCase):
         self.assertFalse(config.INFO_LOG_FILE.exists())
         self.assertTrue(config.REFERENCE_OUTPUT_DIR.is_dir())
 
-    def test_build_console_handler_upgrades_console_streams_to_utf8_when_possible(self):
-        class DummyStream:
-            def __init__(self, encoding):
-                self.encoding = encoding
-                self.errors = "strict"
 
-            def reconfigure(self, **kwargs):
-                self.encoding = kwargs.get("encoding", self.encoding)
-                self.errors = kwargs.get("errors", self.errors)
-
-        class DummyRichHandler(logging.Handler):
-            def __init__(self, *args, **kwargs):
-                super().__init__()
-
-        stdout = DummyStream("gbk")
-        stderr = DummyStream("gbk")
-
-        with (
-            patch.object(config.sys, "stdout", stdout),
-            patch.object(config.sys, "stderr", stderr),
-            patch("rich.logging.RichHandler", DummyRichHandler),
-        ):
-            handler = config._build_console_handler()
-
-        self.assertIsInstance(handler, DummyRichHandler)
-        self.assertEqual(stdout.encoding, "utf-8")
-        self.assertEqual(stderr.encoding, "utf-8")
-        self.assertEqual(stdout.errors, "replace")
-        self.assertEqual(stderr.errors, "replace")
-
-    def test_build_console_handler_falls_back_to_plain_handler_when_console_stays_non_utf8(self):
-        class DummyStream:
-            def __init__(self, encoding):
-                self.encoding = encoding
-                self.errors = "strict"
-
-            def reconfigure(self, **kwargs):
-                self.errors = kwargs.get("errors", self.errors)
-
-        class DummyRichHandler(logging.Handler):
-            def __init__(self, *args, **kwargs):
-                super().__init__()
-
-        stdout = DummyStream("gbk")
-        stderr = DummyStream("gbk")
-
-        with (
-            patch.object(config.sys, "stdout", stdout),
-            patch.object(config.sys, "stderr", stderr),
-            patch("rich.logging.RichHandler", DummyRichHandler),
-        ):
-            handler = config._build_console_handler()
-
-        self.assertIsInstance(handler, logging.StreamHandler)
-        self.assertNotIsInstance(handler, DummyRichHandler)
-        self.assertEqual(stdout.encoding, "gbk")
-        self.assertEqual(stderr.encoding, "gbk")
-        self.assertEqual(stdout.errors, "replace")
-        self.assertEqual(stderr.errors, "replace")
 
     def test_sanitize_console_message_removes_playwright_call_log_block(self):
         raw_message = (
@@ -321,46 +263,6 @@ class LoggingConfigTests(unittest.TestCase):
             default.assert_not_called()
         self.assertIs(host.loop.get_exception_handler(),handler)
 
-    def test_disable_windows_console_input_modes_clears_quick_edit_and_insert(self):
-        class FakeKernel32:
-            def __init__(self):
-                self.mode = 0x0067
-                self.set_mode = None
-
-            def GetStdHandle(self, handle):
-                self.handle = handle
-                return 123
-
-            def GetConsoleMode(self, handle, mode_ref):
-                mode_ref._obj.value = self.mode
-                return 1
-
-            def SetConsoleMode(self, handle, mode):
-                self.set_mode = mode
-                return 1
-
-        fake_kernel32 = FakeKernel32()
-        fake_ctypes = type(
-            "FakeCtypes",
-            (),
-            {
-                "windll": type("FakeWindll", (), {"kernel32": fake_kernel32})(),
-                "c_uint": config.ctypes.c_uint,
-                "byref": config.ctypes.byref,
-            },
-        )()
-
-        with (
-            patch.object(config.sys, "platform", "win32"),
-            patch.object(config, "ctypes", fake_ctypes),
-        ):
-            config._disable_windows_console_input_modes()
-
-        self.assertEqual(fake_kernel32.handle, -10)
-        self.assertIsNotNone(fake_kernel32.set_mode)
-        self.assertEqual(fake_kernel32.set_mode & 0x0040, 0)
-        self.assertEqual(fake_kernel32.set_mode & 0x0020, 0)
-        self.assertNotEqual(fake_kernel32.set_mode & 0x0080, 0)
 
 
 if __name__ == "__main__":

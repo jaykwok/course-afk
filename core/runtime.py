@@ -45,6 +45,10 @@ def run_operation(awaitable, *, exception_handler_factory=None):
             host.loop.set_exception_handler(exception_handler_factory(host.loop.get_exception_handler()))
         if operation.stopping:
             operation.task.cancel()
+        from core.ui.frontend import current_frontend
+        control = getattr(current_frontend(), "control", None)
+        if control is not None:
+            control.check_cancelled()
         return await awaitable
 
     try:
@@ -285,6 +289,10 @@ class PosixDriver:
             await asyncio.to_thread(psutil.wait_procs,alive,timeout=1)
 
 
+class AlreadyRunningError(RuntimeError):
+    pass
+
+
 @contextmanager
 def application_lock(path: Path):
     """One UI process per data directory; prevents conflicting queue writers."""
@@ -301,13 +309,13 @@ def application_lock(path: Path):
             try:
                 msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
             except OSError as exc:
-                raise RuntimeError("本项目已有运行实例，请先关闭原窗口") from exc
+                raise AlreadyRunningError("本项目已有运行实例，请先关闭原窗口") from exc
         else:
             import fcntl
             try:
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError as exc:
-                raise RuntimeError("本项目已有运行实例，请先关闭原窗口") from exc
+                raise AlreadyRunningError("本项目已有运行实例，请先关闭原窗口") from exc
         try:
             yield
         finally:

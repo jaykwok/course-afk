@@ -23,7 +23,7 @@ async def probe(courses, classes):
         "courses": [],
         "classes": [],
     }
-    async with create_browser_context(controller=False) as (_, context):
+    async with create_browser_context() as (_, context):
         for kind, urls in (("courses", courses), ("classes", classes)):
             for url in urls:
                 page = await context.new_page()

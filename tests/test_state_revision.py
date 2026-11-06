@@ -6,7 +6,9 @@ from unittest.mock import Mock, patch
 
 from core.tasks.identity import parse_entry
 from core.tasks.repository import TaskRepository
-from core.ui.tui_bridge import TuiFrontend
+from core.ui.web_frontend import WebFrontend
+from core.web.session import WebSession
+from core.app.control_session import ControlSession
 
 
 class StateRevisionTests(unittest.TestCase):
@@ -19,20 +21,20 @@ class StateRevisionTests(unittest.TestCase):
             patch("core.config.COOKIES_FILE", Path(tmp) / "cookies.json"),
         ):
             repo = TaskRepository(Path(tmp) / "workflows/state.sqlite")
-            frontend = TuiFrontend(SimpleNamespace())
-            frontend._push_dashboard = Mock()
+            frontend = WebFrontend(WebSession(ControlSession()))
+            frontend.render_dashboard = Mock()
             try:
                 with patch(
                     "core.state.collect_project_state",
                     return_value=ProjectState(True, False, 1, 0, 0, 0),
                 ) as collect:
-                    frontend._refresh_dashboard()
-                    frontend._refresh_dashboard()
+                    frontend.refresh_dashboard()
+                    frontend.refresh_dashboard()
                     self.assertEqual(collect.call_count, 1)
                     repo.upsert(parse_entry("https://example.invalid/task", "test"))
-                    frontend._refresh_dashboard()
+                    frontend.refresh_dashboard()
                     self.assertEqual(collect.call_count, 2)
-                    frontend._refresh_dashboard()
+                    frontend.refresh_dashboard()
                     self.assertEqual(collect.call_count, 2)
                 self.assertFalse((Path(tmp) / "links").exists())
             finally:

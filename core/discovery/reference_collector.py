@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from core.browser.bootstrap import navigate_platform_page
+
 import base64
 import asyncio
 import hashlib
@@ -12,7 +14,7 @@ from pathlib import Path
 from urllib.parse import urlparse, urljoin, quote
 
 from core.browser.session import create_browser_context, is_target_closed_exception
-from core.abort import UserAbortRequested, UserCancelRequested, WafBlockError
+from core.abort import UserAbortRequested, UserCancelRequested, WafBlockError, raise_for_batch_stop
 from core.auth.credential import load_credential_metadata
 from core.storage import write_json_atomic, write_text_atomic, write_bytes_atomic
 from core.diagnostics import redact_text, redact
@@ -436,7 +438,7 @@ async def _collect_courses_from_subject_page(page, subject_url: str) -> list[Sub
         return list(unique.values())
 
     # DOM 兜底：API 未取到课程时，从页面 studyBtn 提取
-    await page.goto(subject_url, wait_until="load")
+    await navigate_platform_page(page, subject_url, wait_until="load")
     await prepare_page_after_navigation_async(page)
     await page.wait_for_timeout(1500)
     courses = await page.evaluate(
@@ -703,6 +705,7 @@ async def collect_reference_materials(
                         failure_results=course_info_failures,
                     )
                 except Exception as exc:
+                    raise_for_batch_stop(exc)
                     if status_callback:
                         status_callback(f"主题资料处理失败：{sanitize_error_text(exc)}")
                     if isinstance(exc, (UserCancelRequested, UserAbortRequested, WafBlockError)) or is_target_closed_exception(exc):

@@ -199,6 +199,8 @@ def handle_clear_credentials(state, ui) -> None:
         return
     try:
         clear_local_credentials(preserve_pending_owner=pending)
+        from core.browser.application import invalidate_application_credentials
+        run_async(invalidate_application_credentials())
     except OSError as exc:
         ui.show_error(f"清理登录凭据未完整完成，请重试：{exc}")
         ui.pause()

@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-_SENSITIVE = re.compile(r"authorization|cookie|password|passwd|secret|api.?key|token|auth.?key|signature|^sign$|access.?key|credential|session|^policy$|key-pair-id", re.I)
+_SENSITIVE = re.compile(r"authorization|cookie|password|passwd|secret|bootstrap|api.?key|token|auth.?key|signature|^sign$|access.?key|credential|session|^policy$|key-pair-id", re.I)
 _URL = re.compile(r"https?://[^\s<>\"']+", re.I)
 
 
@@ -19,6 +19,9 @@ def redact_url(value: str) -> str:
         if "?" in fragment:
             route, params = fragment.split("?", 1)
             fragment = route + "?" + urlencode([(key, "[redacted]" if _SENSITIVE.search(key) or key.lower() in {"code", "ticket"} else val) for key, val in parse_qsl(params, keep_blank_values=True)])
+        elif "=" in fragment and not fragment.startswith("/"):
+            fragment = urlencode([(key, "[redacted]" if _SENSITIVE.search(key) else val)
+                                  for key, val in parse_qsl(fragment, keep_blank_values=True)])
         return urlunsplit((parsed.scheme, netloc, parsed.path, query, fragment))
     except ValueError:
         return "[invalid URL]"

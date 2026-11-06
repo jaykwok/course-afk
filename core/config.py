@@ -4,7 +4,6 @@
 运行时配置主要从 .env 读取，本文件负责集中定义默认值、路径和日志行为。
 """
 
-import ctypes
 import logging
 import math
 import os
@@ -284,77 +283,8 @@ def _get_console_log_level() -> int:
     return logging.DEBUG if _env_flag("DEBUG_MODE") else CONSOLE_LOG_LEVEL
 
 
-def _is_utf8_console_encoding(encoding: str | None) -> bool:
-    if not encoding:
-        return False
-    normalized = encoding.strip().lower().replace("_", "-")
-    return normalized in {"utf-8", "utf8", "cp65001"}
-
-
-def _prepare_console_streams() -> None:
-    _disable_windows_console_input_modes()
-    for stream in (sys.stdout, sys.stderr):
-        reconfigure = getattr(stream, "reconfigure", None)
-        if callable(reconfigure):
-            try:
-                reconfigure(encoding="utf-8", errors="replace")
-            except Exception:
-                try:
-                    reconfigure(errors="replace")
-                except Exception:
-                    pass
-
-
-def _can_use_rich_console() -> bool:
-    return _is_utf8_console_encoding(getattr(sys.stdout, "encoding", None)) and (
-        _is_utf8_console_encoding(getattr(sys.stderr, "encoding", None))
-    )
-
-
-def _disable_windows_console_input_modes() -> None:
-    if not sys.platform.startswith("win"):
-        return
-
-    try:
-        kernel32 = ctypes.windll.kernel32
-        stdin_handle = kernel32.GetStdHandle(-10)
-        if stdin_handle in (0, -1):
-            return
-
-        mode = ctypes.c_uint()
-        if not kernel32.GetConsoleMode(stdin_handle, ctypes.byref(mode)):
-            return
-
-        extended_flags = 0x0080
-        quick_edit_mode = 0x0040
-        insert_mode = 0x0020
-        updated_mode = (mode.value | extended_flags) & ~(quick_edit_mode | insert_mode)
-        if updated_mode != mode.value:
-            kernel32.SetConsoleMode(stdin_handle, updated_mode)
-    except Exception:
-        pass
-
-
 def _build_console_handler():
-    _prepare_console_streams()
-
-    handler = None
-    if _can_use_rich_console():
-        try:
-            from rich.logging import RichHandler
-
-            handler = RichHandler(
-                rich_tracebacks=True,
-                show_path=False,
-                show_time=False,
-                show_level=False,
-                markup=True,
-            )
-        except Exception:
-            handler = None
-
-    if handler is None:
-        handler = logging.StreamHandler()
+    handler = logging.StreamHandler()
     handler.setLevel(_get_console_log_level())
     handler.addFilter(_SanitizedConsoleFilter())
     handler.setFormatter(_SanitizedConsoleFormatter(CONSOLE_LOG_FORMAT))

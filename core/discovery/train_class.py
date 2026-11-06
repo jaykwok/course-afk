@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from core.browser.bootstrap import navigate_platform_page
+
 
 import logging
 import re
@@ -337,7 +339,7 @@ async def collect_learning_links_from_class_page(
         if is_train_class_url(class_url) or "classId=" in class_url
         else normalize_url(class_url)
     )
-    await page.goto(target, wait_until="load")
+    await navigate_platform_page(page, target, wait_until="load")
     # 培训班 SPA 可能二次跳转；稍等再关弹窗/取 token，降低 context destroyed
     try:
         await page.wait_for_load_state("networkidle", timeout=8000)

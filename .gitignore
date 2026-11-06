@@ -25,6 +25,7 @@ tmp_*
 .pytest_cache/
 htmlcov/
 build/
+*.egg-info/
 /build-*.txt
 dist/
 

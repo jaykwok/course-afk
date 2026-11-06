@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from core.browser.bootstrap import navigate_platform_page
+
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import StrEnum
@@ -101,7 +103,7 @@ class CourseSession:
         )
 
         if url:
-            await self.page.goto(url, wait_until="load")
+            await navigate_platform_page(self.page, url, wait_until="load")
         await self.page.wait_for_load_state("load")
         await self.maintain()
         await ensure_course_page_ready(self.page)

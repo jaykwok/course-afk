@@ -4,6 +4,20 @@ from core import config
 
 
 class DistributionFilesTests(unittest.TestCase):
+    def test_web_is_only_frontend_and_static_assets_are_packaged(self):
+        import tomllib
+        project = tomllib.loads((config.PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        dependencies = project["project"]["dependencies"]
+        self.assertTrue(any(d.startswith("aiohttp") for d in dependencies))
+        for package in ("textual", "rich"):
+            self.assertFalse(any(d.startswith(package) for d in dependencies))
+        assets = project["tool"]["setuptools"]["package-data"]["core.web"]
+        self.assertIn("static/*.js", assets)
+        for name in ("index.html", "style.css", "app.js"):
+            self.assertTrue((config.PROJECT_ROOT / "core/web/static" / name).is_file())
+        for name in ("tui_app.py", "tui_bridge.py", "terminal_compat.py"):
+            self.assertFalse((config.PROJECT_ROOT / "core/ui" / name).exists())
+
     def test_env_example_exists_and_uses_placeholder_values(self):
         env_example = config.PROJECT_ROOT / ".env.example"
         self.assertTrue(env_example.exists())

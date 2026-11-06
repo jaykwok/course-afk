@@ -25,7 +25,7 @@ class CertificateErrorTests(unittest.IsolatedAsyncioTestCase):
         )
         session.raise_for_certificate_error(RuntimeError("net::ERR_CONNECTION_RESET"))
 
-    async def test_controller_certificate_failure_cleans_up_and_remains_recoverable(
+    async def test_bootstrap_certificate_failure_cleans_up_and_remains_recoverable(
         self,
     ):
         context = SimpleNamespace(
@@ -40,48 +40,20 @@ class CertificateErrorTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(session, "async_playwright", return_value=manager),
             patch.object(session, "own_playwright_driver", return_value=None),
+            patch.object(session, "load_cookies", return_value=[]),
             patch.object(
                 session, "launch_async_browser", new=AsyncMock(return_value=browser)
             ),
-            patch.object(
-                session,
-                "_open_controller_page",
+            patch(
+                "core.browser.bootstrap.bootstrap_platform_session",
                 new=AsyncMock(
                     side_effect=RuntimeError("net::ERR_CERT_AUTHORITY_INVALID")
                 ),
             ),
         ):
             with self.assertRaises(BrowserCertificateError):
-                async with session.create_browser_context(cookies_path=None):
+                async with session.create_browser_context(cookies_path="test-placeholder"):
                     self.fail("untrusted page cannot start an operation")
         context.close.assert_awaited_once()
         browser.close.assert_awaited_once()
         manager.__aexit__.assert_awaited_once()
-
-    def test_certificate_error_returns_to_main_menu_instead_of_exiting_application(
-        self,
-    ):
-        import launcher
-
-        state = SimpleNamespace(
-            has_credential=True,
-            credential_expired=False,
-            learning_count=0,
-            exam_count=1,
-            manual_exam_count=0,
-        )
-        from unittest.mock import Mock
-
-        ui = Mock()
-        ui.show_menu.side_effect = [2, 7]
-        with (
-            patch("core.config.setup_logging"),
-            patch("core.state.collect_project_state", return_value=state),
-            patch(
-                "core.app.launcher_controller.handle_ai_exam",
-                side_effect=BrowserCertificateError("ERR_CERT_AUTHORITY_INVALID"),
-            ),
-        ):
-            self.assertEqual(launcher.main(ui), 0)
-        ui.show_error.assert_called_once()
-        self.assertIn("ERR_CERT_AUTHORITY_INVALID", ui.show_error.call_args.args[0])

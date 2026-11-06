@@ -25,6 +25,15 @@ VERSION = "course-afk-v1"
 activity_context: ContextVar[dict | None] = ContextVar("activity_context", default=None)
 _host = None
 _host_lock = threading.Lock()
+_application_loop = None
+
+
+def bind_application_loop(loop):
+    """Use the Web/browser loop without starting DBOS until the first operation."""
+    global _application_loop
+    if _host is not None and _host.loop is not loop:
+        raise RuntimeError("工作流已绑定其他事件循环")
+    _application_loop = loop
 
 
 def current_host():
@@ -39,7 +48,7 @@ def get_host():
         if _host is None:
             from core.config import DATA_DIR
 
-            _host = WorkflowHost(DATA_DIR / "workflows")
+            _host = WorkflowHost(DATA_DIR / "workflows", loop=_application_loop)
             try:
                 _host.start()
             except BaseException:
@@ -60,7 +69,7 @@ atexit.register(shutdown_host)
 
 class WorkflowHost:
     def __init__(
-        self, directory: Path, *, activities=None, identity_provider=account_id
+        self, directory: Path, *, activities=None, identity_provider=account_id, loop=None
     ):
         self.directory = Path(directory).resolve()
         self.repository = TaskRepository(self.directory / "state.sqlite")
@@ -69,7 +78,8 @@ class WorkflowHost:
         ).render_as_string(hide_password=False)
         self.identity_provider = identity_provider
         self.activities = activities
-        self.loop = asyncio.new_event_loop()
+        self.owns_loop = loop is None
+        self.loop = loop or asyncio.new_event_loop()
         self.thread = threading.Thread(
             target=self._run, name="workflow-loop", daemon=True
         )
@@ -79,12 +89,15 @@ class WorkflowHost:
         self.status_callback = None
 
     def start(self):
-        self.thread.start()
+        self._check_sync_caller()
+        if self.owns_loop:
+            self.thread.start()
         try:
             self.submit(self.initialize()).result(45)
         except BaseException:
-            self.loop.call_soon_threadsafe(self.loop.stop)
-            self.thread.join(10)
+            if self.owns_loop:
+                self.loop.call_soon_threadsafe(self.loop.stop)
+                self.thread.join(10)
             raise
 
     def _run(self):
@@ -126,6 +139,10 @@ class WorkflowHost:
                         self.repository.dispatch(workflow.workflow_id, "INTERRUPTED")
             finally:
                 await asyncio.to_thread(client.destroy)
+        await asyncio.to_thread(self._launch_engine)
+        self.dispatch_lock = asyncio.Lock()
+
+    def _launch_engine(self):
         DBOS(
             config={
                 "name": "course-afk",
@@ -137,7 +154,14 @@ class WorkflowHost:
             }
         )
         DBOS.launch()
-        self.dispatch_lock = asyncio.Lock()
+
+    def _check_sync_caller(self):
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is self.loop:
+            raise RuntimeError("同步工作流启动/关闭不能等待自己的事件循环")
 
     def authorize(self, payload):
         scope = self.scopes.get(payload["run_id"])
@@ -212,6 +236,10 @@ class WorkflowHost:
                 self.status_callback = None
 
     async def perform(self, payload: dict) -> dict:
+        # DBOS may resume on its recovery loop. Browser objects never leave the
+        # application loop, including on recovery and cancellation.
+        if asyncio.get_running_loop() is not self.loop:
+            return await asyncio.wrap_future(self.submit(self.perform(payload)))
         scope = self.authorize(payload)  # Never a cached, separate precondition step.
         run_id = payload["run_id"]
         saved = self.repository.run(run_id)
@@ -273,13 +301,15 @@ class WorkflowHost:
         self.stopping = True
         for run_id in tuple(self.active):
             await self.cancel(run_id)
-        DBOS.destroy()
+        await asyncio.to_thread(DBOS.destroy)
 
     def close(self):
-        if not self.thread.is_alive():
+        self._check_sync_caller()
+        if not self.loop.is_running():
             return
         self.submit(self.shutdown()).result(40)
-        self.loop.call_soon_threadsafe(self.loop.stop)
-        self.thread.join(10)
-        if self.thread.is_alive():
-            raise RuntimeError("工作流清理未在退出期限内完成")
+        if self.owns_loop:
+            self.loop.call_soon_threadsafe(self.loop.stop)
+            self.thread.join(10)
+            if self.thread.is_alive():
+                raise RuntimeError("工作流清理未在退出期限内完成")

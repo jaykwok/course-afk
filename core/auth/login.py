@@ -158,7 +158,7 @@ async def install_login_preferences_watcher(
 
 
 async def login_and_save_credential() -> AccountProfile:
-    async with create_browser_context(cookies_path=None, controller=False) as (
+    async with create_browser_context(cookies_path=None) as (
         _,
         context,
     ):
@@ -193,7 +193,8 @@ async def login_and_save_credential() -> AccountProfile:
             stage = "核对待办账号归属"
             _validate_pending_account(profile)
             stage = "保存登录凭证"
-            cookies = await context.cookies()
+            from core.browser.application import platform_cookies
+            cookies = await platform_cookies(context)
             if COOKIES_FILE.exists():
                 _clear_readonly(COOKIES_FILE)
             save_credential_bundle(

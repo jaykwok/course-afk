@@ -1,9 +1,12 @@
 from __future__ import annotations
+
+from core.browser.bootstrap import navigate_platform_page
 import asyncio
 import logging
 from typing import Callable
 from urllib.parse import urlparse
-from core.browser.session import create_browser_context, is_controller_page
+from core.browser.session import create_browser_context
+from core.browser.bootstrap import is_session_internal_page
 from core.browser.course_links import resolve_course_page_url
 from core.browser.overlays import prepare_page_after_navigation_async
 from core.config import EXAM_URLS_FILE, LEARNING_URLS_FILE, summarize_exception_message
@@ -107,11 +110,13 @@ async def _collect_learning_links_on_entry_context(
             await new_page.wait_for_timeout(MANUAL_SELECTION_NEW_PAGE_IGNORE_WAIT_MS)
             if new_page in ignored_pages:
                 return
-            # 主控页（含恢复）永不记链、不关闭
-            if is_controller_page(context, new_page):
+            # 认证临时页与空白占位页永不记链、不关闭
+            if is_session_internal_page(context, new_page):
                 return
 
             url = await _wait_for_manual_popup_record_url(new_page)
+            if is_session_internal_page(context, new_page):
+                return
             if url:
                 from core.tasks.relations import record_discovered_tasks
 
@@ -139,39 +144,50 @@ async def _collect_learning_links_on_entry_context(
             if status_callback:
                 status_callback(_format_status_error_message("记录新页面链接失败", exc))
             try:
-                if not is_controller_page(context, new_page):
+                if not is_session_internal_page(context, new_page):
                     await new_page.close()
             except Exception:
                 pass
 
-    # 主控页由 create_browser_context 保留；在注册 page 监听后再开入口，
-    # 避免主控页被当成 popup 误记。
-    context.on(
-        "page",
-        lambda page: _track_background_task(
-            asyncio.create_task(handle_new_page(page)),
-            popup_tasks,
-        ),
-    )
+    # The shared context outlives this activity: detach listeners and drain
+    # popup work before another activity may lease its tabs.
+    def page_created(page):
+        _track_background_task(asyncio.create_task(handle_new_page(page)), popup_tasks)
 
-    for index, entry_url in enumerate(entry_urls, start=1):
-        if status_callback:
-            status_callback(
-                f"正在打开入口链接 {index}/{len(entry_urls)}，"
-                "处理完成后请关闭当前入口页面继续下一条"
-            )
-        if not _is_recordable_manual_popup_url(entry_url):
-            logging.warning(
-                f"入口链接不在官方域名内，仍将打开但请确认来源可信: {entry_url}"
-            )
-        entry_page = await context.new_page()
-        ignored_pages.add(entry_page)
-        await entry_page.goto(entry_url, wait_until="load")
-        await prepare_page_after_navigation_async(entry_page)
-        await entry_page.wait_for_event("close", timeout=0)
+    context.on("page", page_created)
+    try:
+        for index, entry_url in enumerate(entry_urls, start=1):
+            if status_callback:
+                status_callback(
+                    f"正在打开入口链接 {index}/{len(entry_urls)}，"
+                    "处理完成后请关闭当前入口页面继续下一条"
+                )
+            if not _is_recordable_manual_popup_url(entry_url):
+                logging.warning(
+                    f"入口链接不在官方域名内，仍将打开但请确认来源可信: {entry_url}"
+                )
+            entry_page = await context.new_page()
+            ignored_pages.add(entry_page)
+            # Generic portals may redirect to catalogs; known course/exam/subject
+            # inputs still pass the navigator's resource and source-identity gate.
+            await navigate_platform_page(entry_page, entry_url, wait_until="load")
+            await prepare_page_after_navigation_async(entry_page)
+            await entry_page.wait_for_event("close", timeout=0)
 
-    if popup_tasks:
-        await asyncio.gather(*tuple(popup_tasks), return_exceptions=True)
+        if popup_tasks:
+            await asyncio.gather(*tuple(popup_tasks), return_exceptions=True)
+
+    finally:
+        remove_listener = getattr(context, "remove_listener", None)
+        if callable(remove_listener):
+            remove_listener("page", page_created)
+        for task in tuple(popup_tasks):
+            if not task.done():
+                task.cancel()
+        if popup_tasks:
+            from core.runtime import close_safely
+            await close_safely(asyncio.gather(*tuple(popup_tasks), return_exceptions=True),
+                               label="manual popup tasks")
 
     result = (
         len(collected_urls),

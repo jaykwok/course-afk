@@ -72,6 +72,15 @@ class LoginTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bundle["cookies"][0]["value"], "test")
         self.assertTrue(self.closed)
 
+    async def test_shared_context_does_not_save_local_management_cookie(self):
+        self.context.cookies.return_value.append({
+            "name": "course_web", "value": "offline-web-session",
+            "domain": "127.0.0.1", "path": "/", "httpOnly": True,
+        })
+        await login.login_and_save_credential()
+        bundle = json.loads(self.path.read_text(encoding="utf-8"))
+        self.assertEqual([c["name"] for c in bundle["cookies"]], ["authorization"])
+
     async def test_login_observes_dom_before_sso_load_can_finish(self):
         async def goto(url, **kwargs):
             if kwargs.get("wait_until") != "domcontentloaded":

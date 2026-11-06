@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from core.browser.bootstrap import navigate_platform_page
+
 import asyncio
 import logging
 from typing import Callable
@@ -433,7 +435,7 @@ async def _run_paper_ai_exam(
     if entry:
         # Resolve the official answer route from the API ID; labels and popup
         # behavior do not participate in exam entry or resume decisions.
-        await page.goto(entry.answer_url, timeout=30000)
+        await navigate_platform_page(page, entry.answer_url, timeout=30000)
         await _raise_if_login_required(page, entry.answer_url)
     await ai_exam(
         client,
@@ -476,7 +478,7 @@ async def execute_exam(url, *, auto_submit=False):
         async with create_browser_context() as (_, context):
             try:
                 page = await context.new_page()
-                await page.goto(url, timeout=30000)
+                await navigate_platform_page(page, url, timeout=30000)
                 result = await (
                     _run_course_ai_exam if kind == "course" else _run_paper_ai_exam
                 )(page, url, client, model, auto_submit=allow_submit)

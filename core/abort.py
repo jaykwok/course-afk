@@ -7,15 +7,16 @@ class UserAbortRequested(Exception):
 
 
 class UserCancelRequested(Exception):
-    """用户取消当前菜单操作，应返回主菜单。"""
+    """用户取消当前操作，应让管理页回到空闲状态。"""
 
 
 def raise_for_batch_stop(exc: Exception) -> None:
     """Preserve operation-wide signals before any local fallback/aggregation."""
     from core.browser.session import raise_for_certificate_error
+    from core.auth.access import CredentialUnavailableError
 
     raise_for_certificate_error(exc)
-    if isinstance(exc, (UserCancelRequested, UserAbortRequested, WafBlockError)):
+    if isinstance(exc, (UserCancelRequested, UserAbortRequested, WafBlockError, CredentialUnavailableError)):
         raise exc
 
 

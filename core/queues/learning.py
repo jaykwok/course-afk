@@ -281,7 +281,7 @@ RETRIABLE_LEARNING_FAILURE_REASONS: frozenset[str] = frozenset(
     }
 )
 
-# 展示用：reason → 中文说明（TUI 汇总分组）
+# 展示用：reason → 中文说明（Web 汇总分组）
 LEARNING_FAILURE_REASON_LABELS: dict[str, str] = {
     "discovery_incomplete": "入口收集不完整（重新解析入口）",
     "retryable_error": "可重试错误",

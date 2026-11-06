@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from core.browser.bootstrap import navigate_platform_page
+
 import asyncio
 import json
 import logging
@@ -13,10 +15,8 @@ from core.abort import (
     WafBlockError,
 )
 from core.browser.session import (
-    ensure_controller_page,
     get_context_browser,
     is_browser_connected,
-    is_controller_window_closed,
     is_target_closed_exception,
 )
 from core.config import (
@@ -38,7 +38,7 @@ _COURSE_INFO_API_MARKER = "/api/v1/course-study/course-front/info/"
 _COURSE_BOOTSTRAP_TIMEOUT_SECONDS = 30
 # 判定「整窗关闭 vs 仅关标签」前等待页面 close 事件落定的时长：
 # target-closed 异常与 Playwright 内部错误（僵尸连接下 goto 抛
-# AttributeError 等）都可能先于 close 事件派发到达，连接判断 / 心跳闩锁
+# AttributeError 等）都可能先于 close 事件派发到达，连接判断 / 页面状态
 # / pages 状态此刻尚未更新，不等就会把整窗关闭误判成「仅关标签」。
 _WINDOW_CLOSE_SETTLE_SECONDS = 0.5
 
@@ -48,7 +48,7 @@ async def browser_still_usable(context) -> bool:
 
     单一信号都不可靠（实测，2026-09-02）：
     - is_connected：Edge 后台模式在窗口关闭后进程存活，恒 True；
-    - 心跳闩锁 / is_closed 标志：依赖 close 事件派发，异常常先于事件到达；
+    - is_closed 标志：依赖 close 事件派发，异常常先于事件到达；
     - 僵尸连接下 new_page 甚至能成功，随后 goto 才以内部错误崩掉。
     因此这里在事件落定后综合判断：所有页面都已关闭 = 整窗关闭 → False。
     无浏览器对象的测试替身无法证伪，按存活返回。
@@ -61,7 +61,7 @@ async def browser_still_usable(context) -> bool:
     if pages is None:
         return True
     await asyncio.sleep(_WINDOW_CLOSE_SETTLE_SECONDS)
-    if not is_browser_connected(context):  # 闩锁可能在落定期内置位
+    if not is_browser_connected(context):  # 页面关闭状态可能在落定期内更新
         return False
     return any(_is_page_open(page) for page in pages)
 
@@ -205,21 +205,9 @@ async def _close_page_quiet(page) -> None:
 
 
 async def _open_course_page(context):
-    """
-    为单门课/主题新开标签页。
-
-    必须一门一页、处理完 close：同页 goto 下一门会被平台拦到
-    /#/study/errors/...「您已打开新的课程详情页…」。心跳页（mylearning
-    主控页）始终保留：它被关 = 用户关掉了整窗。开课前用组合判定拦截——
-    Edge 后台模式下进程仍存活、new_page 会成功、goto 才崩，所以必须在
-    开课前判断，不能等异常。
-    """
-    await ensure_controller_page(context)
+    """Open a fresh course tab; business-window closure cancels this operation."""
     if not await browser_still_usable(context):
-        # 心跳页被关（可能是整窗关闭，也可能是单关心跳页）时给出对应文案
-        if is_controller_window_closed(context):
-            raise UserCancelRequested("心跳页已关闭，已保留剩余学习链接，返回主菜单")
-        raise UserCancelRequested("浏览器窗口已关闭，已保留剩余学习链接，返回主菜单")
+        raise UserCancelRequested("浏览器窗口已关闭，已保留剩余学习链接")
     try:
         return await context.new_page()
     except Exception as exc:
@@ -263,7 +251,7 @@ async def execute_learning(
             monitor = _install_course_info_monitor(page)
         await capture("page_created")
         # Business dialogs precede generic overlay cleanup in CourseSession.
-        await page.goto(url, wait_until="load")
+        await navigate_platform_page(page, url, wait_until="load")
         await capture("after_navigation")
         await _wait_for_course_bootstrap(page, monitor)
         await ensure_course_page_ready(page)
@@ -307,6 +295,9 @@ async def execute_learning(
         raise
     except Exception as exc:
         await capture("error")
+        from core.auth.access import CredentialUnavailableError
+        if isinstance(exc, CredentialUnavailableError):
+            raise
         raise_for_certificate_error(exc)
         if is_target_closed_exception(exc):
             if not await browser_still_usable(context):

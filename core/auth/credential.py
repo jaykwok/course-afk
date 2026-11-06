@@ -83,6 +83,8 @@ async def extract_account_profile_from_context(
     from core.runtime import close_safely
 
     page = await context.new_page()
+    from core.browser.bootstrap import register_internal_page, unregister_internal_page
+    register_internal_page(context, page)
     try:
         await page.goto(
             MYLEARNING_CENTER_HOME,
@@ -116,7 +118,10 @@ async def extract_account_profile_from_context(
             )
         return result
     finally:
-        await close_safely(page.close(), label="account profile page")
+        try:
+            await close_safely(page.close(), label="account profile page")
+        finally:
+            unregister_internal_page(context, page)
 
 
 def save_credential_bundle(

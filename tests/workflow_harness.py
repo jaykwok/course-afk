@@ -54,7 +54,7 @@ async def new_learning_batch(test, name):
 
         async def activity(host, payload):
             index = urls.index(host.repository.task(payload["task_id"])["url"])
-            if "heartbeat" in name and index == 0:
+            if "application_stop" in name and index == 0:
                 return TaskOutcome(
                     payload["task_id"], Status.COMPLETED, stop_scope="batch"
                 )
@@ -92,7 +92,7 @@ async def new_learning_batch(test, name):
         interrupted = any(
             word in name
             for word in (
-                "heartbeat",
+                "application_stop",
                 "waf",
                 "keyboard_interrupt",
                 "abort_with_save",
@@ -114,7 +114,7 @@ async def new_learning_batch(test, name):
             else:
                 await ApplicationService(host).learn()
         rows = host.repository.export()["queue_items"]
-        if "heartbeat" in name:
+        if "application_stop" in name:
             test.assertEqual(len(host.calls), 1)
             test.assertEqual(len(rows), 2)
         elif "keyboard_interrupt" in name or "abort_with_save" in name:

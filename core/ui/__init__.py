@@ -1,1 +1,1 @@
-"""Textual UI package. Controllers receive an explicit frontend."""
+"""Web frontend and controller presentation contract."""

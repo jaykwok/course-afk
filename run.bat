@@ -10,14 +10,8 @@ cls
 
 set "PAD=                "
 echo.
-REM 启动横幅固定左对齐：此前为居中 spawn PowerShell 取终端宽度，
-REM 冷启动要多花 0.5~2 秒，纯装饰不值得。
-echo   +------------------------------------------------------------+
-echo   ^|                     Course Automation                      ^|
-echo   ^|                    Unified Entry Point                     ^|
-echo   ^|                                                            ^|
-echo   ^|                  Starting launcher.py ...                  ^|
-echo   +------------------------------------------------------------+
+echo   Course Automation - Local Web Management
+echo   Starting launcher.py ...
 echo.
 
 set "PYTHON_EXE=.venv\Scripts\python.exe"

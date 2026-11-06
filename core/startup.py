@@ -26,6 +26,9 @@ def check_dependencies():
             missing.append(name)
     if missing:
         raise RuntimeError("缺少启动依赖：" + ", ".join(missing) + "。请在项目目录运行 uv sync，再运行 uv run launcher.py。")
+    for name in ("index.html", "style.css", "app.js"):
+        if not (root / "core" / "web" / "static" / name).is_file():
+            raise RuntimeError("本地 Web 静态资源不完整，请重新安装完整分发包：" + name)
 
 
 def report_fatal_error(exc):

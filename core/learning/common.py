@@ -353,7 +353,7 @@ def build_video_timing_plan(text: str) -> VideoTimingPlan:
 
 
 async def timer(duration: int, description: str = "学习进度"):
-    """等待指定时长，通过 UI 进度条展示（TUI / CLI 的 wait_with_progress）。"""
+    """等待指定时长，通过 UI 进度条展示（Web 的 wait_with_progress）。"""
     duration = math.ceil(duration)
     if duration <= 0:
         return

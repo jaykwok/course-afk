@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from core.browser.bootstrap import navigate_platform_page
+
 import re
 import asyncio
 from urllib.parse import parse_qs, urlparse
@@ -629,7 +631,7 @@ async def collect_learning_links_from_learning_zone_urls(
                             f"已通过 HTTP 直接读取首屏 HTML：{len(learning_links)} 条链接，继续展开浏览器页面"
                         )
 
-                await page.goto(url, wait_until="load")
+                await navigate_platform_page(page, url, wait_until="load")
                 await prepare_page_after_navigation_async(
                     page, status_callback=status_callback
                 )
