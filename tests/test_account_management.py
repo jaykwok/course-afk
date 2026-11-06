@@ -1,9 +1,7 @@
-import asyncio
 import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from types import SimpleNamespace as NS
 from unittest.mock import Mock, patch
 
 from core import config
@@ -15,9 +13,7 @@ from core.auth.credential import (
     load_pending_owner_metadata,
 )
 from core.app.launcher_controller import (
-    handle_account_management,
     handle_clear_credentials,
-    handle_show_login_state,
 )
 from core.file_ops import load_cookies
 from core.state import ProjectState
@@ -117,36 +113,15 @@ class AccountControllerTests(AccountFixture):
         self.assertEqual(self.cookies.read_bytes(), self.original)
 
     def test_confirmed_clear_shows_logged_out_state_without_cookie_values(self):
+        from core.app.runtime import ApplicationRuntime
+
         ui = FakeUi(True)
         handle_clear_credentials(self.pending, ui)
-        handle_show_login_state(ProjectState(False, True, 1, 1, 1, 1), ui)
-        rows = dict(ui.summaries[0][1])
-        self.assertEqual(rows["登录状态"], "未登录")
-        self.assertEqual(rows["待办归属账号"], self.metadata["account_label"])
-        self.assertNotIn("test-only-cookie-value", str(ui.summaries))
-
-    def test_account_menu_dispatch_and_zero_return(self):
-        for choice in range(1, 6):
-            with (
-                patch(
-                    "core.app.launcher_controller.handle_refresh_credential"
-                ) as refresh,
-                patch("core.app.launcher_controller.handle_show_login_state") as show,
-                patch("core.app.launcher_controller.handle_clear_credentials") as clear,
-            ):
-                ui = NS(prompt_choice=lambda *args: choice)
-                handle_account_management(self.pending, ui)
-                if choice == 1:
-                    refresh.assert_called_once_with(
-                        self.pending, ui, switch_account=True
-                    )
-                elif choice == 2:
-                    refresh.assert_called_once_with(self.pending, ui)
-                elif choice == 3:
-                    show.assert_called_once_with(self.pending, ui)
-                elif choice == 4:
-                    clear.assert_called_once_with(self.pending, ui)
-                else:
-                    refresh.assert_not_called()
-                    show.assert_not_called()
-                    clear.assert_not_called()
+        runtime = ApplicationRuntime()
+        self.addCleanup(runtime.frontend.close)
+        runtime.frontend.render_dashboard(ProjectState(False, True, 1, 1, 1, 1))
+        dashboard = runtime.session.snapshot()["dashboard"]
+        self.assertEqual(dashboard["account"], "未登录")
+        self.assertEqual(dashboard["credential"]["status"], "missing")
+        self.assertEqual(dashboard["pending_owner"], self.metadata["account_label"])
+        self.assertNotIn("test-only-cookie-value", str(dashboard))

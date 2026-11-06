@@ -121,19 +121,15 @@ async def _recheck_noop(_context):
 
 
 class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
-    async def test_run_afk_once_keeps_empty_learning_queue_file_after_processing(self):
-        from tests.workflow_harness import new_learning_batch
+    async def test_learning_batch_removes_completed_tasks_from_queue(self):
+        from tests.workflow_harness import assert_learning_batch
 
-        await new_learning_batch(
-            self, "test_run_afk_once_keeps_empty_learning_queue_file_after_processing"
-        )
+        await assert_learning_batch(self, 'completed')
 
-    async def test_run_afk_once_keeps_failed_url_in_learning_queue(self):
-        from tests.workflow_harness import new_learning_batch
+    async def test_learning_batch_keeps_failed_task_in_queue(self):
+        from tests.workflow_harness import assert_learning_batch
 
-        await new_learning_batch(
-            self, "test_run_afk_once_keeps_failed_url_in_learning_queue"
-        )
+        await assert_learning_batch(self, 'failed_url')
 
     async def test_open_course_page_cancels_when_business_window_closed(self):
         """业务窗口已关闭时，即使浏览器进程仍存活
@@ -340,11 +336,9 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
             )
 
     async def test_application_stop_finishes_current_course_then_stops(self):
-        from tests.workflow_harness import new_learning_batch
+        from tests.workflow_harness import assert_learning_batch
 
-        await new_learning_batch(
-            self, "test_application_stop_finishes_current_course_then_stops"
-        )
+        await assert_learning_batch(self, 'application_stop')
 
     async def testexecute_learning_records_retryable_failure_to_learning_failures(self):
         from core.learning.afk_runner import execute_learning
@@ -543,12 +537,10 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(failure["reason"], "invalid_course_link")
             self.assertIn("422/40121", failure["reason_text"])
 
-    async def test_run_afk_once_stops_batch_after_first_waf_block(self):
-        from tests.workflow_harness import new_learning_batch
+    async def test_learning_batch_stops_after_first_waf_block(self):
+        from tests.workflow_harness import assert_learning_batch
 
-        await new_learning_batch(
-            self, "test_run_afk_once_stops_batch_after_first_waf_block"
-        )
+        await assert_learning_batch(self, 'waf')
 
     async def testexecute_learning_clears_no_permission_and_records_reason(self):
         """无权限/资源不存在：移出课程链接，失败文档写明原因。"""
@@ -611,54 +603,30 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
                 ],
             )
 
-    async def test_run_afk_once_opens_new_page_per_url_and_closes(self):
-        from tests.workflow_harness import new_learning_batch
+    async def test_learning_batch_preserves_remaining_tasks_on_keyboard_interrupt(self):
+        from tests.workflow_harness import assert_learning_batch
 
-        await new_learning_batch(
-            self, "test_run_afk_once_opens_new_page_per_url_and_closes"
-        )
+        await assert_learning_batch(self, "keyboard_interrupt")
 
-    async def test_run_afk_once_saves_current_and_remaining_urls_on_keyboard_interrupt(
+    async def test_learning_batch_preserves_remaining_tasks_on_abort(self):
+        from tests.workflow_harness import assert_learning_batch
+
+        await assert_learning_batch(self, 'abort_with_save')
+
+    async def test_learning_batch_keeps_current_task_when_course_tab_closes(self):
+        from tests.workflow_harness import assert_learning_batch
+
+        await assert_learning_batch(self, 'only_course_tab')
+
+    async def test_learning_batch_cancellation_stops_dispatch_and_preserves_queue(self):
+        from tests.workflow_harness import assert_learning_batch
+
+        await assert_learning_batch(self, 'cancelled')
+
+    async def test_open_course_page_raises_cancellation_when_browser_closed_before_new_page(
         self,
     ):
-        from tests.workflow_harness import new_learning_batch
-
-        await new_learning_batch(
-            self,
-            "test_run_afk_once_saves_current_and_remaining_urls_on_keyboard_interrupt",
-        )
-
-    async def test_run_afk_once_updates_learning_queue_to_remaining_urls_on_abort_with_save(
-        self,
-    ):
-        from tests.workflow_harness import new_learning_batch
-
-        await new_learning_batch(
-            self,
-            "test_run_afk_once_updates_learning_queue_to_remaining_urls_on_abort_with_save",
-        )
-
-    async def test_run_afk_once_keeps_current_url_when_only_course_tab_is_closed(self):
-        from tests.workflow_harness import new_learning_batch
-
-        await new_learning_batch(
-            self, "test_run_afk_once_keeps_current_url_when_only_course_tab_is_closed"
-        )
-
-    async def test_run_afk_once_returns_to_menu_and_preserves_urls_when_browser_window_is_closed(
-        self,
-    ):
-        from tests.workflow_harness import new_learning_batch
-
-        await new_learning_batch(
-            self,
-            "test_run_afk_once_returns_to_menu_and_preserves_urls_when_browser_window_is_closed",
-        )
-
-    async def test_open_course_page_returns_to_menu_when_browser_closed_before_new_page(
-        self,
-    ):
-        """浏览器在 new_page 阶段被关闭时，应返回主菜单而非裸异常退出。"""
+        """浏览器在 new_page 阶段被关闭时，应报告取消，让应用清理本轮资源。"""
         from core.abort import UserCancelRequested
         from core.learning.afk_runner import _open_course_page
 
@@ -679,20 +647,6 @@ class AfkGracefulExitTests(unittest.IsolatedAsyncioTestCase):
             await _open_course_page(FakeContext())
 
         self.assertIn("浏览器窗口已关闭", str(ctx.exception))
-
-    async def test_run_afk_once_returns_to_menu_when_browser_closed_during_setup(self):
-        from tests.workflow_harness import new_learning_batch
-
-        await new_learning_batch(
-            self, "test_run_afk_once_returns_to_menu_when_browser_closed_during_setup"
-        )
-
-    async def test_run_afk_once_returns_to_menu_on_cancelled_error(self):
-        from tests.workflow_harness import new_learning_batch
-
-        await new_learning_batch(
-            self, "test_run_afk_once_returns_to_menu_on_cancelled_error"
-        )
 
 
 class ExamAttemptRoutingTests(unittest.TestCase):

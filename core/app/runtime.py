@@ -16,8 +16,19 @@ from core.ui.frontend import use_frontend
 from core.ui.web_frontend import WebFrontend, WebLogHandler
 from core.web.session import WebSession, ProtocolError
 
-OPERATIONS = {"learn": "课程学习", "exam": "考试", "links": "添加链接",
-              "references": "课程资料", "tasks": "任务管理", "account": "账号与登录"}
+OPERATIONS = {
+    "learn": "课程学习",
+    "exam": "自动考试",
+    "links": "添加链接",
+    "references": "课程资料",
+    "tasks": "队列统计与重试",
+    "account": "账号与登录",
+    "login": "登录 / 更新凭证",
+    "switch_account": "切换登录账号",
+    "clear_credentials": "清除凭证",
+    "clear_courses": "清空课程队列",
+    "clear_all": "清空全部待办",
+}
 MANUAL_SELECTION_PROMPTS = ["请粘贴课程、主题、考试、培训班或课程集合页链接，每行一条。",
     "课程集合页可全部解析或手动选择；需报名时请在业务浏览器中人工处理。"]
 
@@ -35,8 +46,13 @@ def dispatch(kind, frontend):
         "exam": lambda: c.handle_ai_exam(frontend),
         "links": lambda: c.handle_manual_selection(MANUAL_SELECTION_PROMPTS, frontend),
         "references": lambda: c.handle_reference_collection(frontend),
-        "tasks": lambda: c.handle_task_management(EXAM_URLS_FILE, LEARNING_URLS_FILE, MANUAL_EXAM_FILE, frontend),
+        "tasks": lambda: c.handle_show_output_state(EXAM_URLS_FILE, LEARNING_URLS_FILE, MANUAL_EXAM_FILE, frontend),
         "account": lambda: c.handle_account_management(collect_project_state(), frontend),
+        "login": lambda: c.handle_refresh_credential(collect_project_state(), frontend),
+        "switch_account": lambda: c.handle_refresh_credential(collect_project_state(), frontend, switch_account=True),
+        "clear_credentials": lambda: c.handle_clear_credentials(collect_project_state(), frontend),
+        "clear_courses": lambda: c.handle_clear_links(frontend, include_exams=False),
+        "clear_all": lambda: c.handle_clear_links(frontend, include_exams=True),
     }
     actions[kind]()
 
@@ -88,10 +104,23 @@ class ApplicationRuntime:
             kind = payload.get("kind")
             if kind not in OPERATIONS:
                 raise ProtocolError("未知操作", 400)
+            options = {}
+            if "input_text" in payload:
+                text = payload.get("input_text")
+                if not isinstance(text, str) or len(text) > 50000:
+                    raise ProtocolError("输入内容格式不正确", 400)
+                if text.strip():
+                    options["input_text"] = text
+            if "auto_submit" in payload:
+                auto_submit = payload.get("auto_submit")
+                if not isinstance(auto_submit, bool):
+                    raise ProtocolError("参数格式不正确", 400)
+                options["auto_submit"] = auto_submit
             if self.control.operation_id or self.control.exit_requested:
                 raise ProtocolError("已有操作正在运行或应用正在退出")
             operation_id = secrets.token_hex(16)
             self.control.begin(operation_id, kind)
+            self.frontend.options = options
             self.session.update(title=OPERATIONS[kind], status="准备操作", summary=None, progress=None)
             self.work.put_nowait((operation_id, kind))
             return dict(operation_id=operation_id)
@@ -170,8 +199,12 @@ class ApplicationRuntime:
                     self.frontend.show_error(str(exc) or type(exc).__name__)
                 finally:
                     with self.control.lock:
+                        self.frontend.options = {}
                         self.control.finish()
-                        self.session.update(prompt=None, progress=None)
+                        updates = dict(prompt=None, progress=None)
+                        if self.session.view.get("status") == "准备操作":
+                            updates["status"] = "就绪"
+                        self.session.update(**updates)
                     self.frontend.refresh_dashboard(force=True)
         except BaseException as exc:
             self.worker_error = exc

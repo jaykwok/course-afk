@@ -296,28 +296,19 @@ class ManualSelectionWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(task.exception(), RuntimeError)
 
     async def test_run_manual_course_selection_auto_parses_learning_zone_urls(self):
-        from tests.workflow_harness import new_selection
+        from tests.workflow_harness import assert_selection_routing
 
-        await new_selection(
-            self, "test_run_manual_course_selection_auto_parses_learning_zone_urls"
-        )
+        await assert_selection_routing(self, 'zone_auto')
 
-    async def test_run_manual_course_selection_manual_mode_opens_learning_zone_urls_manually(
-        self,
-    ):
-        from tests.workflow_harness import new_selection
+    async def test_run_manual_course_selection_manual_mode_opens_learning_zone_urls_manually(self):
+        from tests.workflow_harness import assert_selection_routing
 
-        await new_selection(
-            self,
-            "test_run_manual_course_selection_manual_mode_opens_learning_zone_urls_manually",
-        )
+        await assert_selection_routing(self, 'zone_manual')
 
     async def test_run_manual_course_selection_auto_parses_train_class_urls(self):
-        from tests.workflow_harness import new_selection
+        from tests.workflow_harness import assert_selection_routing
 
-        await new_selection(
-            self, "test_run_manual_course_selection_auto_parses_train_class_urls"
-        )
+        await assert_selection_routing(self, 'train_class')
 
     async def test_run_manual_course_selection_routes_direct_exam_url(self):
         exam_url = (
@@ -378,25 +369,14 @@ class ManualSelectionWorkflowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["entry_url_count"], 0)
 
     async def test_run_manual_course_selection_expands_direct_subject_url(self):
-        from tests.workflow_harness import new_selection
+        from tests.workflow_harness import assert_selection_routing
 
-        await new_selection(
-            self, "test_run_manual_course_selection_expands_direct_subject_url"
-        )
+        await assert_selection_routing(self, 'subject')
 
-    async def test_run_manual_course_selection_shares_browser_across_jobs(self):
-        from tests.workflow_harness import new_selection
+    async def test_run_manual_course_selection_routes_each_discovery_kind(self):
+        from tests.workflow_harness import assert_selection_routing
 
-        await new_selection(
-            self, "test_run_manual_course_selection_shares_browser_across_jobs"
-        )
-
-    async def test_run_manual_course_selection_shares_browser_with_entry_phase(self):
-        from tests.workflow_harness import new_selection
-
-        await new_selection(
-            self, "test_run_manual_course_selection_shares_browser_with_entry_phase"
-        )
+        await assert_selection_routing(self, 'mixed')
 
     async def test_collect_entry_with_injected_context_does_not_create_browser(self):
         """context= 注入时不再 create_browser_context。"""

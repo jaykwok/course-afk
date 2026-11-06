@@ -25,7 +25,6 @@ class LauncherControllerTests(unittest.TestCase):
             def __init__(self):
                 self.summaries = []
                 self.messages = []
-                self.paused = 0
 
             def show_summary(self, title, rows):
                 self.summaries.append((title, list(rows)))
@@ -37,7 +36,7 @@ class LauncherControllerTests(unittest.TestCase):
                 self.messages.append(message)
 
             def pause(self):
-                self.paused += 1
+                pass
 
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -77,7 +76,6 @@ class LauncherControllerTests(unittest.TestCase):
             ):
                 handle_show_output_state(exam, learning, manual, ui)
 
-            self.assertEqual(ui.paused, 1)
             self.assertTrue(ui.summaries)
             labels = [row[0] for row in ui.summaries[0][1]]
             self.assertIn("失败·可重试错误", labels)
@@ -122,54 +120,29 @@ class LauncherControllerTests(unittest.TestCase):
             "manual",
         )
 
-    def test_handle_ai_exam_prompts_for_auto_submission_defaulting_to_no(self):
+    def test_handle_ai_exam_uses_workbench_switch_without_confirmation_prompt(self):
         from core.app.launcher_controller import handle_ai_exam
+        from core.app.runtime import ApplicationRuntime
 
-        class FakeUi:
-            def __init__(self):
-                self.messages = []
-
-            def prompt_yes_no(self, message, default="N"):
-                self.messages.append((message, default))
-                return False
-
-            def show_success(self, message):
-                self.messages.append(message)
-
-            def show_warning(self, message):
-                self.messages.append(message)
-
-            def show_error(self, message):
-                self.messages.append(message)
-
-            def show_info(self, message):
-                self.messages.append(message)
-
-            def pause(self):
-                self.messages.append("pause")
-
-        with TemporaryDirectory() as tmp:
-            exam_file = Path(tmp) / "考试链接.json"
-            write_queue(
-                exam_file,
-                [{"url": "https://example.com/exam/1", "ai_failed_model_configs": []}],
-            )
-            ui = FakeUi()
+        runtime = ApplicationRuntime()
+        self.addCleanup(runtime.frontend.close)
+        ui = runtime.frontend
+        for enabled in (False, True, False):
+            ui.options = {"auto_submit": enabled}
             with (
-                patch("core.config.EXAM_URLS_FILE", exam_file),
+                self.subTest(auto_submit=enabled),
+                patch("core.app.launcher_controller._ensure_exam_urls_for_ai_exam", return_value=True),
                 patch("core.config.is_ai_configured", return_value=True),
+                patch.object(ui.session, "prepare_prompt", side_effect=AssertionError("不应再次询问自动交卷")),
                 patch(
                     "core.app.workflows.run_ai_exam_workflow",
                     new=unittest.mock.AsyncMock(return_value=0),
                 ) as mock_workflow,
             ):
                 handle_ai_exam(ui)
-
-        self.assertIn(("AI考试是否自动交卷？", "N"), ui.messages)
-        mock_workflow.assert_awaited_once_with(
-            status_callback=ui.show_info,
-            auto_submit=False,
-        )
+                mock_workflow.assert_awaited_once_with(
+                    status_callback=ui.show_info, auto_submit=enabled,
+                )
 
     def test_handle_ai_exam_warns_when_ai_not_configured(self):
         from core.app.launcher_controller import handle_ai_exam
@@ -185,7 +158,7 @@ class LauncherControllerTests(unittest.TestCase):
                 self.messages.append(message)
 
             def pause(self):
-                self.messages.append("pause")
+                pass
 
         ui = FakeUi()
         with (
@@ -200,7 +173,6 @@ class LauncherControllerTests(unittest.TestCase):
         self.assertTrue(
             any("AI 配置" in message for message in ui.messages), ui.messages
         )
-        self.assertIn("pause", ui.messages)
         mock_workflow.assert_not_awaited()
 
     def test_handle_ai_exam_does_not_start_when_missing_links_are_declined(self):
@@ -218,7 +190,7 @@ class LauncherControllerTests(unittest.TestCase):
                 self.messages.append(message)
 
             def pause(self):
-                self.messages.append("pause")
+                pass
 
         with TemporaryDirectory() as tmp:
             exam_file = Path(tmp) / "考试链接.json"
@@ -234,7 +206,6 @@ class LauncherControllerTests(unittest.TestCase):
                 handle_ai_exam(ui)
 
         self.assertIn(("是否现在粘贴考试链接？", "Y"), ui.messages)
-        self.assertIn("pause", ui.messages)
         mock_workflow.assert_not_awaited()
 
     def test_handle_ai_exam_accepts_multiline_links_and_starts_exam(self):
@@ -271,7 +242,7 @@ class LauncherControllerTests(unittest.TestCase):
                 self.messages.append(message)
 
             def pause(self):
-                self.messages.append("pause")
+                pass
 
         with TemporaryDirectory() as tmp:
             exam_file = Path(tmp) / "考试链接.json"
@@ -323,7 +294,7 @@ class LauncherControllerTests(unittest.TestCase):
                 self.messages.append(message)
 
             def pause(self):
-                self.messages.append("pause")
+                pass
 
         state = type(
             "State", (), {"has_credential": False, "credential_expired": True}
@@ -339,9 +310,8 @@ class LauncherControllerTests(unittest.TestCase):
             handle_refresh_credential(state, ui)
 
         self.assertIn("已手动关闭浏览器，未完成登录，登录凭证未更新", ui.messages)
-        self.assertIn("pause", ui.messages)
 
-    def test_handle_manual_selection_cancel_returns_to_menu(self):
+    def test_handle_manual_selection_reports_cancelled_input(self):
         from core.abort import UserCancelRequested
         from core.app.launcher_controller import handle_manual_selection
 
@@ -356,14 +326,13 @@ class LauncherControllerTests(unittest.TestCase):
                 self.messages.append(message)
 
             def pause(self):
-                self.messages.append("pause")
+                pass
 
         ui = FakeUi()
 
         handle_manual_selection(["请粘贴入口链接。"], ui)
 
         self.assertIn("已取消手动选择课程 / 录入链接", ui.messages)
-        self.assertIn("pause", ui.messages)
 
     def test_handle_manual_selection_confirms_link_categories_before_browser(self):
         from core.app.launcher_controller import handle_manual_selection
@@ -409,34 +378,14 @@ class LauncherControllerTests(unittest.TestCase):
         self.assertEqual(default, "Y")
         workflow.assert_not_awaited()
 
-    def test_handle_manual_selection_shows_ok_summary_after_browser(self):
+    def test_handle_manual_selection_publishes_summary_without_result_confirmation(self):
         from core.app.launcher_controller import handle_manual_selection
+        from core.app.runtime import ApplicationRuntime
 
-        class FakeUi:
-            def __init__(self):
-                self.result_summary = None
-                self.waited_handle = None
-
-            def prompt_multiline_input(self, _prompts):
-                return "https://example.com/entry"
-
-            def prompt_summary_confirmation(self, *_args, **_kwargs):
-                return True
-
-            def prompt_choice(self, *_args, **_kwargs):
-                return 2
-
-            def show_info(self, _message):
-                pass
-
-            def prepare_pause_with_summary(self, title, rows, message):
-                self.result_summary = (title, dict(rows), message)
-                return "prepared-result"
-
-            def wait_prepared_prompt(self, handle):
-                self.waited_handle = handle
-
-        ui = FakeUi()
+        runtime = ApplicationRuntime()
+        self.addCleanup(runtime.frontend.close)
+        ui = runtime.frontend
+        ui.options = {"input_text": "https://example.com/entry"}
         result = {
             "input_url_count": 1,
             "direct_learning_count": 0,
@@ -451,10 +400,14 @@ class LauncherControllerTests(unittest.TestCase):
             "learning_total": 3,
             "exam_total": 2,
         }
-        with patch(
-            "core.app.workflows.run_manual_course_selection",
-            new=unittest.mock.AsyncMock(return_value=result),
-        ) as workflow:
+        with (
+            patch.object(ui, "prompt_summary_confirmation", return_value=True),
+            patch.object(ui.session, "prepare_prompt", side_effect=AssertionError("结果不应等待返回总览")),
+            patch(
+                "core.app.workflows.run_manual_course_selection",
+                new=unittest.mock.AsyncMock(return_value=result),
+            ) as workflow,
+        ):
             handle_manual_selection(["请粘贴入口链接。"], ui)
 
         workflow.assert_awaited_once_with(
@@ -463,16 +416,16 @@ class LauncherControllerTests(unittest.TestCase):
             status_callback=ui.show_info,
             result_ready_callback=unittest.mock.ANY,
         )
-        title, rows, message = ui.result_summary
-        self.assertEqual(title, "链接解析完成")
+        snapshot = ui.session.snapshot()
+        self.assertIsNone(snapshot["prompt"])
+        self.assertEqual(snapshot["summary"]["title"], "链接解析完成")
+        rows = dict(snapshot["summary"]["rows"])
         self.assertEqual(rows["浏览器记录的学习链接"], "2")
         self.assertEqual(rows["浏览器记录的考试链接"], "1")
         self.assertEqual(rows["当前学习链接总数"], "3")
         self.assertEqual(rows["当前考试链接总数"], "2")
-        self.assertIn("确认结果", message)
-        self.assertEqual(ui.waited_handle, "prepared-result")
 
-    def test_handle_reference_collection_cancel_returns_to_menu(self):
+    def test_handle_reference_collection_reports_cancelled_input(self):
         from core.abort import UserCancelRequested
         from core.app.launcher_controller import handle_reference_collection
 
@@ -487,14 +440,13 @@ class LauncherControllerTests(unittest.TestCase):
                 self.messages.append(message)
 
             def pause(self):
-                self.messages.append("pause")
+                pass
 
         ui = FakeUi()
 
         handle_reference_collection(ui)
 
         self.assertIn("已取消保存课程课件 / AI导学资料", ui.messages)
-        self.assertIn("pause", ui.messages)
 
     def test_handle_reference_collection_reports_invalid_subject_url(self):
         from core.app.launcher_controller import handle_reference_collection
@@ -513,7 +465,7 @@ class LauncherControllerTests(unittest.TestCase):
                 self.messages.append(message)
 
             def pause(self):
-                self.messages.append("pause")
+                pass
 
         ui = FakeUi()
 
@@ -526,7 +478,6 @@ class LauncherControllerTests(unittest.TestCase):
             handle_reference_collection(ui)
 
         self.assertIn("未识别到有效的知学云学习专区链接", ui.messages)
-        self.assertIn("pause", ui.messages)
 
     def test_handle_reference_collection_shows_summary(self):
         from core.app.launcher_controller import handle_reference_collection
@@ -549,7 +500,7 @@ class LauncherControllerTests(unittest.TestCase):
                 self.summary = (title, rows)
 
             def pause(self):
-                self.messages.append("pause")
+                pass
 
         ui = FakeUi()
         result = {
@@ -581,7 +532,6 @@ class LauncherControllerTests(unittest.TestCase):
         self.assertIn(("文档保存成功", "1"), ui.summary[1])
         self.assertIn(("其中 PDF", "1"), ui.summary[1])
         self.assertIn(("有AI导学内容的视频", "1"), ui.summary[1])
-        self.assertIn("pause", ui.messages)
 
 
 if __name__ == "__main__":

@@ -38,12 +38,16 @@ class ActivityHost:
             self.scopes.pop(run["run_id"], None)
 
 
-async def new_learning_batch(test, name):
+async def assert_learning_batch(test, scenario):
     from tempfile import TemporaryDirectory
     from unittest.mock import patch
     from core.app.service import ApplicationService
     from core.workflow.contracts import TaskOutcome, Status
     from core.abort import UserCancelRequested, UserAbortRequested, WafBlockError
+
+    test.assertIn(scenario, {"completed", "failed_url", "only_course_tab",
+                            "keyboard_interrupt", "abort_with_save", "cancelled",
+                            "application_stop", "waf"})
 
     urls = [
         "https://kc.zhixueyun.com/#/study/course/detail/"
@@ -54,28 +58,25 @@ async def new_learning_batch(test, name):
 
         async def activity(host, payload):
             index = urls.index(host.repository.task(payload["task_id"])["url"])
-            if "application_stop" in name and index == 0:
+            if scenario == "application_stop" and index == 0:
                 return TaskOutcome(
                     payload["task_id"], Status.COMPLETED, stop_scope="batch"
                 )
-            if "waf" in name:
+            if scenario == "waf":
                 raise WafBlockError()
-            if "failed_url" in name and index == 0:
+            if scenario == "failed_url" and index == 0:
                 return TaskOutcome(
                     payload["task_id"], Status.FAILED, ["retryable_error"]
                 )
-            if "only_course_tab" in name and index == 0:
+            if scenario == "only_course_tab" and index == 0:
                 return TaskOutcome(
                     payload["task_id"], Status.INTERRUPTED, ["course_page_closed"]
                 )
-            if "keyboard_interrupt" in name and index == 1:
+            if scenario == "keyboard_interrupt" and index == 1:
                 raise KeyboardInterrupt
-            if "abort_with_save" in name and index == 1:
+            if scenario == "abort_with_save" and index == 1:
                 raise UserAbortRequested("stop")
-            if any(
-                word in name
-                for word in ("browser_window", "during_setup", "cancelled_error")
-            ):
+            if scenario == "cancelled":
                 raise UserCancelRequested("closed")
             return TaskOutcome(
                 payload["task_id"], Status.COMPLETED, evidence_refs=["synthetic_server"]
@@ -89,18 +90,8 @@ async def new_learning_batch(test, name):
                     "INSERT INTO queue_items VALUES(?,?,?,?,?)",
                     ("课程链接.json", task_id, "queue", json.dumps({"url": url}), 0),
                 )
-        interrupted = any(
-            word in name
-            for word in (
-                "application_stop",
-                "waf",
-                "keyboard_interrupt",
-                "abort_with_save",
-                "browser_window",
-                "during_setup",
-                "cancelled_error",
-            )
-        )
+        interrupted = scenario in {"application_stop", "waf", "keyboard_interrupt",
+                                   "abort_with_save", "cancelled"}
         with (
             patch("core.workflow.host.get_host", return_value=host),
             patch("core.queues.learning.read_learning_urls", return_value=urls),
@@ -114,22 +105,22 @@ async def new_learning_batch(test, name):
             else:
                 await ApplicationService(host).learn()
         rows = host.repository.export()["queue_items"]
-        if "application_stop" in name:
+        if scenario == "application_stop":
             test.assertEqual(len(host.calls), 1)
             test.assertEqual(len(rows), 2)
-        elif "keyboard_interrupt" in name or "abort_with_save" in name:
+        elif scenario in {"keyboard_interrupt", "abort_with_save"}:
             test.assertEqual(len(rows), 2)
         elif interrupted:
             test.assertEqual(len(rows), 3)
             test.assertEqual(len(host.calls), 1)
-        elif "failed_url" in name or "only_course_tab" in name:
+        elif scenario in {"failed_url", "only_course_tab"}:
             test.assertEqual(len(rows), 1)
         else:
             test.assertEqual(len(rows), 0)
             test.assertEqual(len(host.calls), 3)
 
 
-async def new_selection(test, name):
+async def assert_selection_routing(test, scenario):
     from contextlib import asynccontextmanager, ExitStack
     from unittest.mock import patch, AsyncMock
     from core.config import DATA_DIR
@@ -146,6 +137,8 @@ async def new_selection(test, name):
         ZHIXUEYUN_SUBJECT_PREFIX,
         ZHIXUEYUN_TRAIN_CLASS_PREFIX,
     )
+
+    test.assertIn(scenario, {"mixed", "train_class", "subject", "zone_auto", "zone_manual"})
 
     uid = "11111111-1111-4111-8111-111111111111"
     course = ZHIXUEYUN_COURSE_PREFIX + uid
@@ -212,20 +205,22 @@ async def new_selection(test, name):
                 new=AsyncMock(return_value=(0, 0, 0)),
             )
         )
-        if "across_jobs" in name or "entry_phase" in name:
+        if scenario == "mixed":
             inputs = [subject, zone, training]
-        elif "train_class" in name:
+        elif scenario == "train_class":
             inputs = [training]
-        elif "subject" in name:
+        elif scenario == "subject":
             inputs = [subject]
         else:
             inputs = [zone]
-        mode = "manual" if "manual_mode" in name else "auto"
+        mode = "manual" if scenario == "zone_manual" else "auto"
         result = await run_manual_course_selection(
             "\n".join(inputs), learning_zone_mode=mode
         )
         test.assertEqual(result["input_url_count"], len(inputs))
         test.assertEqual(len(host.calls), len(inputs))
+        # Standalone fixtures verify routing and cleanup; application-owned
+        # context reuse is exercised by test_application_browser.py.
         test.assertEqual(len(contexts), len(inputs))
         test.assertEqual(len(closed), len(contexts))
         if subject in inputs:

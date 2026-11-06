@@ -128,17 +128,3 @@ class ClearControllerTests(QueueFixture):
         handle_clear_links(ui)
         self.assertEqual([json.loads(path.read_bytes()) for path in link_queue_paths().values()], [[], []])
         self.assertIn('clear-links-', ui.summaries[0][1][-1][1])
-
-    def test_management_menu_dispatches_only_the_selected_clear_scope(self):
-        from core.app.launcher_controller import handle_task_management
-        from types import SimpleNamespace
-        for choice, expected in ((3, False), (4, True), (5, None)):
-            with patch('core.app.launcher_controller.handle_clear_links') as clear:
-                ui = SimpleNamespace(prompt_choice=lambda *args: choice)
-                handle_task_management(None, None, None, ui)
-                if expected is None:
-                    clear.assert_not_called()
-                elif expected:
-                    clear.assert_called_once_with(ui, include_exams=True)
-                else:
-                    clear.assert_called_once_with(ui)

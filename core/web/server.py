@@ -34,7 +34,7 @@ class LocalServer:
         self.instance_path = None
         self.app = web.Application(middlewares=[self.boundary], client_max_size=65536)
         self.app.add_routes([
-            web.get("/", self.index), web.get("/app.js", self.asset), web.get("/style.css", self.asset),
+            web.get("/", self.index), web.get("/app.js", self.asset), web.get("/style.css", self.asset), web.get("/logo.svg", self.asset),
             web.post("/api/session", self.exchange), web.post("/api/reopen", self.reopen_handler),
             web.get("/api/state", self.state), web.get("/api/events", self.events),
             web.post("/api/operations", self.command),

@@ -164,7 +164,7 @@ def handle_show_login_state(state, ui) -> None:
                 owner.account_label or owner.account_name or owner.account_display_name,
             )
         )
-    ui.show_summary("本地登录状态", rows)
+    ui.show_summary("登录状态", rows)
     ui.pause()
 
 
@@ -173,7 +173,7 @@ def handle_clear_credentials(state, ui) -> None:
     from core.auth.credential import clear_local_credentials, load_credential_metadata
 
     if not COOKIES_FILE.exists():
-        ui.show_info("当前没有本地登录凭据")
+        ui.show_info("当前没有登录凭据")
         ui.pause()
         return
     metadata = load_credential_metadata()
@@ -187,13 +187,13 @@ def handle_clear_credentials(state, ui) -> None:
     )
     rows = [
         ("当前账号", metadata.account_label if metadata else "未登录或凭据异常"),
-        ("清空内容", "本地 Cookie 与登录信息"),
+        ("清空内容", "已保存的 Cookie 与登录信息"),
         ("保留内容", "课程、失败记录、考试待办、考试历史及资料"),
     ]
     if pending:
         rows.append(("待办归属", "保留所属账号，重新登录仍会核对归属"))
     if not ui.prompt_summary_confirmation(
-        "清空本地登录凭据", rows, "确认清空？下次操作需要重新登录。", default="N"
+        "清空登录凭据", rows, "确认清空？下次操作需要重新登录。", default="N"
     ):
         ui.show_info("已取消清空登录凭据")
         return
@@ -205,7 +205,7 @@ def handle_clear_credentials(state, ui) -> None:
         ui.show_error(f"清理登录凭据未完整完成，请重试：{exc}")
         ui.pause()
         return
-    ui.show_success("本地登录凭据已清空，请重新登录")
+    ui.show_success("登录凭据已清空，请重新登录")
     ui.pause()
 
 

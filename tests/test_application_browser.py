@@ -36,7 +36,7 @@ class ApplicationBrowserTests(unittest.IsolatedAsyncioTestCase):
         self.tmp = self.stack.enter_context(TemporaryDirectory())
         self.path = Path(self.tmp) / "cookies.json"
         self.save()
-        self.runtime = ApplicationRuntime(dispatcher=lambda kind, ui: ui.pause())
+        self.runtime = ApplicationRuntime(dispatcher=lambda kind, ui: None)
         self.runtime.start()
         self.stack.push_async_callback(self.runtime.close)
         self.server = LocalServer(self.runtime)

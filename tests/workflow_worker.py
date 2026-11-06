@@ -127,7 +127,7 @@ def main():
             host.repository.save_outcome = crash
         if MODE == "idle":
             host.submit(asyncio.sleep(0.3)).result(3)
-            event("menu_idle")
+            event("workflow_idle")
             return
         if MODE == "wrong-account":
 

@@ -260,7 +260,7 @@ class ApplicationLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(signal.getsignal(signal.SIGTERM),previous_term)
 
     async def test_pre_dispatch_cancel_unblocks_worker_and_new_batch_resets_stop(self):
-        runtime=ApplicationRuntime(dispatcher=lambda kind, ui: ui.pause())
+        runtime=ApplicationRuntime(dispatcher=lambda kind, ui: None)
         runtime.command(rid(),"operation",{"kind":"learn"})
         runtime.cancel()  # queued but worker not started yet
         runtime.start()

@@ -13,7 +13,8 @@ class DistributionFilesTests(unittest.TestCase):
             self.assertFalse(any(d.startswith(package) for d in dependencies))
         assets = project["tool"]["setuptools"]["package-data"]["core.web"]
         self.assertIn("static/*.js", assets)
-        for name in ("index.html", "style.css", "app.js"):
+        self.assertIn("static/*.svg", assets)
+        for name in ("index.html", "style.css", "app.js", "logo.svg"):
             self.assertTrue((config.PROJECT_ROOT / "core/web/static" / name).is_file())
         for name in ("tui_app.py", "tui_bridge.py", "terminal_compat.py"):
             self.assertFalse((config.PROJECT_ROOT / "core/ui" / name).exists())
