@@ -174,7 +174,7 @@ class StartupAccessTests(unittest.IsolatedAsyncioTestCase):
             result = subprocess.run(
                 [sys.executable, "-X", "utf8", "-c", code],
                 cwd=root,
-                env={**os.environ, "COURSE_AFK_DATA_DIR": tmp},
+                env={**os.environ, "COURSE_AFK_DATA_DIR": tmp, "COURSE_AFK_LOGS_DIR": str(Path(tmp) / "logs")},
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -192,7 +192,7 @@ class StartupAccessTests(unittest.IsolatedAsyncioTestCase):
             result = subprocess.run(
                 [sys.executable, "-X", "utf8", "-c", code],
                 cwd=Path(__file__).resolve().parents[1],
-                env={**os.environ, "COURSE_AFK_DATA_DIR": tmp},
+                env={**os.environ, "COURSE_AFK_DATA_DIR": tmp, "COURSE_AFK_LOGS_DIR": str(Path(tmp) / "logs")},
                 capture_output=True,
                 text=True,
                 encoding="utf-8",

@@ -24,11 +24,11 @@ _FILE_SETTINGS = dotenv_values(PROJECT_ROOT / ".env", encoding="utf-8-sig")
 def _env_raw(name: str):
     return os.environ.get(name, _FILE_SETTINGS.get(name))
 
-# 运行时数据按用途分目录，避免凭证、队列和日志混在 data/ 根目录。
+# 业务数据按用途分目录；运行日志独立放在项目根目录的 logs/。
 DATA_DIR = Path(_env_raw("COURSE_AFK_DATA_DIR") or PROJECT_ROOT / "data").expanduser().resolve()
 CREDENTIALS_DIR = DATA_DIR / "credentials"
 LINKS_DIR = DATA_DIR / "links"
-LOGS_DIR = DATA_DIR / "logs"
+LOGS_DIR = Path(_env_raw("COURSE_AFK_LOGS_DIR") or PROJECT_ROOT / "logs").expanduser().resolve()
 REFERENCE_OUTPUT_DIR = DATA_DIR / "references"
 
 COOKIES_FILE = CREDENTIALS_DIR / "cookies.json"

@@ -1,5 +1,7 @@
 """Offline browser integration using synthetic DOM; no credentials or platform traffic."""
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import AsyncMock, patch
 
 from playwright.async_api import async_playwright
@@ -7,6 +9,7 @@ from core.exam.actions import read_existing_answers, select_answers
 from core.exam.parsing import extract_multi_questions_data
 from core.runtime import close_safely, own_playwright_driver
 from core.browser.session import launch_async_browser
+from core.browser.profile import seed_automation_profile
 
 
 class BrowserDomTests(unittest.IsolatedAsyncioTestCase):
@@ -14,11 +17,13 @@ class BrowserDomTests(unittest.IsolatedAsyncioTestCase):
         manager = async_playwright()
         browser = None
         job = None
+        profile = TemporaryDirectory(prefix="browser-dom-")
         try:
+            seed_automation_profile(Path(profile.name))
             playwright = await manager.start()
             job = own_playwright_driver(playwright)
             self.assertIsNotNone(job, "pinned Playwright driver adapter must expose an owned pid")
-            browser = await launch_async_browser(playwright, headless=False)
+            browser = await launch_async_browser(playwright, headless=False, user_data_dir=profile.name)
             page = await browser.new_page()
             await page.route("**/*", lambda route: route.abort())
             await page.set_content('''<dl class="preview-list">
@@ -48,6 +53,7 @@ class BrowserDomTests(unittest.IsolatedAsyncioTestCase):
             await close_safely(manager.__aexit__())
             if job is not None:
                 await close_safely(job.terminate())
+            profile.cleanup()
 
 
 if __name__ == "__main__":

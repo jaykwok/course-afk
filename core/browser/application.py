@@ -172,7 +172,8 @@ async def application_browser():
         raise RuntimeError("应用浏览器已启动")
     async with create_isolated_browser_context(cookies_path=None) as (browser, context):
         await context.add_init_script(_TAB_POPUPS)
-        management = await context.new_page()
+        # A seeded persistent Chromium context opens one initial blank tab.
+        management = context.pages[0] if context.pages else await context.new_page()
         owner = ApplicationBrowser(browser, context, management)
         _owner = owner
         try:

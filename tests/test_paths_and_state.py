@@ -6,10 +6,28 @@ from core import config
 
 
 class PathConfigTests(unittest.TestCase):
-    def test_runtime_files_live_under_data_dir(self):
+    def test_default_logs_are_project_relative_even_with_custom_data_root(self):
+        import os
+        import subprocess
+        from tempfile import TemporaryDirectory
+        from pathlib import Path
+
+        with TemporaryDirectory() as tmp:
+            env = {**os.environ, "COURSE_AFK_DATA_DIR": tmp}
+            env.pop("COURSE_AFK_LOGS_DIR", None)
+            code = ("from unittest.mock import patch; "
+                    "p=patch('dotenv.dotenv_values',return_value={}); p.start(); "
+                    "from core import config; print(config.LOGS_DIR)")
+            result = subprocess.run([sys.executable, "-c", code], env=env,
+                                    cwd=config.PROJECT_ROOT, capture_output=True,
+                                    text=True, encoding="utf-8", timeout=20, check=True)
+            self.assertEqual(Path(result.stdout.strip()), config.PROJECT_ROOT / "logs")
+
+    def test_business_data_and_logs_use_independent_roots(self):
         import os
         from pathlib import Path
         self.assertEqual(config.DATA_DIR, Path(os.environ["COURSE_AFK_DATA_DIR"]).resolve())
+        self.assertEqual(config.LOGS_DIR, Path(os.environ["COURSE_AFK_LOGS_DIR"]).resolve())
         self.assertEqual(config.LEARNING_URLS_FILE.parent, config.LINKS_DIR)
         self.assertEqual(config.LEARNING_FAILURES_FILE.parent, config.LINKS_DIR)
         self.assertEqual(config.EXAM_URLS_FILE.parent, config.LINKS_DIR)

@@ -86,7 +86,7 @@ class PlatformBootstrapTests(unittest.IsolatedAsyncioTestCase):
         for cookies_path in (None,"placeholder"):
             c=FakeContext()
             c.add_cookies=AsyncMock();c.add_init_script=AsyncMock();c.close=AsyncMock()
-            browser=SimpleNamespace(new_context=AsyncMock(return_value=c),close=AsyncMock())
+            browser=SimpleNamespace(new_context=AsyncMock(return_value=c),contexts=[c],close=AsyncMock())
             manager=SimpleNamespace(__aenter__=AsyncMock(return_value=object()),__aexit__=AsyncMock())
             with (patch.object(session,"async_playwright",return_value=manager),
                   patch.object(session,"own_playwright_driver",return_value=None),

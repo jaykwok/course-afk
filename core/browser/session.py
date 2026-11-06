@@ -5,6 +5,8 @@ import asyncio
 import logging
 import re
 import sys
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from playwright.async_api import async_playwright
 
@@ -211,15 +213,26 @@ async def apply_async_browser_stealth(context) -> None:
         await add_init_script(BROWSER_STEALTH_INIT_SCRIPT)
 
 
-async def launch_async_browser(playwright, *, headless: bool, slow_mo=None, extra_args=None):
+def requires_seeded_profile() -> bool:
+    return sys.platform == "win32" and BROWSER_TYPE == "chromium"
+
+
+async def launch_async_browser(playwright, *, headless: bool, slow_mo=None, extra_args=None, user_data_dir=None):
     browser_launcher = _get_browser_launcher(playwright)
-    return await browser_launcher.launch(
-        **build_browser_launch_options(
-            headless=headless,
-            slow_mo=slow_mo,
-            extra_args=extra_args,
-        )
+    options = build_browser_launch_options(
+        headless=headless, slow_mo=slow_mo, extra_args=extra_args,
     )
+    if requires_seeded_profile():
+        from core.browser.profile import validate_automation_profile
+        if user_data_dir is None:
+            raise RuntimeError("Windows Chromium 必须通过预置安全缓存的自动化目录启动")
+        validate_automation_profile(Path(user_data_dir))
+        context = await browser_launcher.launch_persistent_context(
+            str(user_data_dir), **options,
+            **build_browser_context_options(headless=headless),
+        )
+        return context.browser
+    return await browser_launcher.launch(**options)
 
 
 
@@ -314,12 +327,24 @@ async def create_isolated_browser_context(
     cookies = load_cookies(cookies_path) if cookies_path is not None else []
     manager = async_playwright()
     browser = context = driver_job = None
+    profile = None
+    driver_enter_started = False
     try:
+        launch_kwargs = {}
+        if requires_seeded_profile():
+            from core.browser.profile import seed_automation_profile
+            profile = TemporaryDirectory(prefix="course-afk-browser-")
+            seed_automation_profile(Path(profile.name))
+            launch_kwargs["user_data_dir"] = profile.name
         async with asyncio.timeout(90):
+            driver_enter_started = True
             p = await asyncio.wait_for(manager.__aenter__(), 30)
             driver_job = own_playwright_driver(p)
-            browser = await asyncio.wait_for(launch_async_browser(p, headless=headless, slow_mo=slow_mo), 30)
-            context = await asyncio.wait_for(browser.new_context(**build_browser_context_options(headless=headless)), 30)
+            browser = await asyncio.wait_for(launch_async_browser(p, headless=headless, slow_mo=slow_mo, **launch_kwargs), 30)
+            if profile is not None:
+                context = browser.contexts[0]
+            else:
+                context = await asyncio.wait_for(browser.new_context(**build_browser_context_options(headless=headless)), 30)
             from core.browser.course_links import install_course_source_tracker
             on = getattr(context,'on',None)
             if callable(on):
@@ -339,7 +364,7 @@ async def create_isolated_browser_context(
         capture = getattr(driver_job, "capture", None)
         if callable(capture):
             capture()
-        if driver_job is None:
+        if driver_job is None and driver_enter_started:
             # __aenter__ may start a transport before timing out or being
             # cancelled. The manager still owns that partially started driver.
             try:
@@ -354,11 +379,19 @@ async def create_isolated_browser_context(
                     release_platform_session(context)
             if browser is not None:
                 await close_safely(browser.close(), label="browser")
-            await close_safely(manager.__aexit__(*exception_info), label="Playwright driver")
+            if driver_enter_started:
+                await close_safely(manager.__aexit__(*exception_info), label="Playwright driver")
         try:
             await close_safely(cleanup(), timeout=18, label="browser lifecycle")
         finally:
             if context is not None:
                 release_platform_session(context)
-            if driver_job is not None:
-                await close_safely(driver_job.terminate(), label="browser process tree")
+            try:
+                if driver_job is not None:
+                    await close_safely(driver_job.terminate(), label="browser process tree")
+            finally:
+                if profile is not None:
+                    try:
+                        profile.cleanup()
+                    except OSError:
+                        logging.warning("自动化临时浏览器目录尚被占用，未能完整清理：%s", profile.name)

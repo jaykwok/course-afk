@@ -10,11 +10,12 @@ from core import config
 
 class LoggingConfigTests(unittest.TestCase):
     def setUp(self):
+        self.original_data_dir = config.DATA_DIR
         self.temp_dir = TemporaryDirectory()
         data_dir = Path(self.temp_dir.name) / "data"
         credentials_dir = data_dir / "credentials"
         links_dir = data_dir / "links"
-        logs_dir = data_dir / "logs"
+        logs_dir = Path(self.temp_dir.name) / "logs"
         references_dir = data_dir / "references"
         self.path_patcher = patch.multiple(
             config,
@@ -253,7 +254,10 @@ class LoggingConfigTests(unittest.TestCase):
         from core.workflow.host import get_host
         async def noop():
             return 'coroutine-result'
-        self.assertEqual(config.run_async(noop()),'coroutine-result')
+        # The process-wide workflow host outlives this test's logging fixture.
+        # Keep its SQLite files in the process-wide isolated data root.
+        with patch.object(config, "DATA_DIR", self.original_data_dir):
+            self.assertEqual(config.run_async(noop()),'coroutine-result')
         host=get_host()
         handler=host.loop.get_exception_handler()
         class TargetClosedError(Exception):

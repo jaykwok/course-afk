@@ -37,8 +37,8 @@ def report_fatal_error(exc):
     config = sys.modules.get("core.config")
     path = getattr(config, "ERROR_LOG_FILE", None)
     if path is None:
-        root = Path(os.environ.get("COURSE_AFK_DATA_DIR") or Path(__file__).resolve().parents[1] / "data")
-        path = root / "logs" / "app-error.log"
+        root = Path(os.environ.get("COURSE_AFK_LOGS_DIR") or Path(__file__).resolve().parents[1] / "logs")
+        path = root / "app-error.log"
     path = Path(path).resolve()
     summary = redact_text(f"{type(exc).__name__}: {exc}").replace("\r", " ").split("\n")[0]
     message = f"程序未能继续：{summary}\n错误日志：{path}\n"

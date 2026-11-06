@@ -18,6 +18,7 @@ tempfile.tempdir = str(_test_temp)
 _test_data = TemporaryDirectory(prefix="course-afk-tests-")
 atexit.register(_test_data.cleanup)
 os.environ["COURSE_AFK_DATA_DIR"] = _test_data.name
+os.environ["COURSE_AFK_LOGS_DIR"] = str(Path(_test_data.name) / "logs")
 os.environ["OPENAI_COMPLETION_API_KEY"] = "test-isolated-key"
 os.environ["OPENAI_COMPLETION_BASE_URL"] = "http://127.0.0.1:9/v1"
 os.environ["MODEL_NAME"] = "test-model"

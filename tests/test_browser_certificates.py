@@ -32,7 +32,7 @@ class CertificateErrorTests(unittest.IsolatedAsyncioTestCase):
             add_init_script=AsyncMock(), add_cookies=AsyncMock(), close=AsyncMock()
         )
         browser = SimpleNamespace(
-            new_context=AsyncMock(return_value=context), close=AsyncMock()
+            new_context=AsyncMock(return_value=context), contexts=[context], close=AsyncMock()
         )
         manager = SimpleNamespace(
             __aenter__=AsyncMock(return_value=object()), __aexit__=AsyncMock()
