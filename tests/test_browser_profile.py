@@ -70,6 +70,7 @@ class SafeLaunchTests(unittest.IsolatedAsyncioTestCase):
             self.assertIs(launched, self.browser)
             self.assertEqual(self.launcher.launch_persistent_context.await_args.args, (tmp,))
             self.assertTrue(self.launcher.launch_persistent_context.await_args.kwargs["no_viewport"])
+            self.assertTrue(self.launcher.launch_persistent_context.await_args.kwargs["chromium_sandbox"])
             self.launcher.launch_persistent_context.side_effect = RuntimeError("launch failed")
             with self.assertRaisesRegex(RuntimeError, "launch failed"):
                 await session.launch_async_browser(self.playwright, headless=False, user_data_dir=tmp)

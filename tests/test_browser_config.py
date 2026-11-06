@@ -45,6 +45,8 @@ class BrowserLaunchConfigTests(unittest.TestCase):
         self.assertEqual(options["args"], ["--mute-audio", "--start-maximized"])
         self.assertEqual(options["slow_mo"], 300)
         self.assertFalse(options["headless"])
+        self.assertTrue(options["chromium_sandbox"])
+        self.assertNotIn("--no-sandbox", options["args"])
 
     def test_build_browser_launch_options_skips_channel_and_args_for_webkit(self):
         with (

@@ -183,6 +183,8 @@ def build_browser_launch_options(
     options = {"headless": headless}
 
     if BROWSER_TYPE == "chromium":
+        # Playwright otherwise adds --no-sandbox by default, including for Edge.
+        options["chromium_sandbox"] = True
         args = list(BROWSER_ARGS)
         if _START_MAXIMIZED_ARG not in args:
             args.append(_START_MAXIMIZED_ARG)
