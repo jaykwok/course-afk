@@ -21,6 +21,7 @@ import {
   catalogManifest,
   type DiscoveryContext,
 } from "../../src/platform/discovery.ts";
+import { playbackChecks } from "./live-checks.ts";
 
 /** Reuses the caller's Browser; all pages here are synthetic and local. */
 export async function platformChecks(runtime: BrowserRuntime) {
@@ -95,6 +96,7 @@ export async function platformChecks(runtime: BrowserRuntime) {
       '<title>安全知识考试</title><h1>考试</h1><div class="question-type-item"><h2>请完成验证是什么意思？</h2><div class="stem-content-main">短信验证码、安全验证、同时学习、课程已下架</div></div><p>人机验证与短信验证码课程说明</p>',
     );
     await inspectAccess(tab, signal);
+    await playbackChecks(tab);
     await tab.setContent(
       `<html><body><div class="question-type-item" data-dynamic-key="q1"><span class="o-score">多选题</span><div class="stem-content-main">选择一和三</div><dl class="preview-list"><dd><label><input type="checkbox"><span class="option-num">A.</span><span class="answer-options">一</span></label></dd><dd><label><input type="checkbox"><span class="option-num">B.</span><span class="answer-options">二</span></label></dd><dd><label><input type="checkbox"><span class="option-num">C.</span><span class="answer-options">三</span></label></dd></dl></div></body></html>`,
     );

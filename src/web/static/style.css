@@ -698,11 +698,11 @@ button.plain .icon {
 
 .spinner {
   display: none;
-  animation: spin 0.9s steps(8) infinite;
 }
 
 .hero[data-phase="active"] .spinner {
   display: block;
+  animation: spin 0.9s steps(8) infinite;
 }
 
 .hero[data-phase="active"] .glyph {
@@ -847,6 +847,11 @@ progress::-webkit-progress-value {
 progress::-moz-progress-bar {
   border-radius: 3px;
   background: var(--accent);
+}
+
+.progress-state {
+  color: var(--label-2);
+  font-size: 12px;
 }
 
 /* Cards */
@@ -2093,6 +2098,10 @@ dialog.sheet > form {
   dialog.sheet[open]::backdrop {
     animation: none !important;
     transition: none !important;
+  }
+  /* Keep a quiet activity cue without rotation or sliding motion. */
+  .hero[data-phase="active"] .spinner {
+    animation: pulse 2s ease-in-out infinite !important;
   }
 }
 

@@ -98,6 +98,11 @@ export class Repository {
   close() {
     this.db.close();
   }
+  get revision() {
+    return Number(
+      this.db.prepare("SELECT total_changes() AS revision").get()!.revision,
+    );
+  }
   upsert(url: string, account: string): Task {
     if (!account || account === "unbound") throw new Error("请先核验登录账号");
     const e = entry(url, account);

@@ -351,7 +351,7 @@
           <div class="task-controls" id="task-controls" hidden>
             <button type="button" id="stop">
               <svg class="icon" aria-hidden="true"><use href="#i-pause" /></svg>
-              本课后停止
+              <span id="stop-label">本课后停止</span>
             </button>
             <button type="button" id="cancel" class="destructive">
               <svg class="icon" aria-hidden="true"><use href="#i-stop" /></svg>
@@ -365,6 +365,7 @@
             <span id="progress-time"></span>
           </div>
           <progress id="progress" max="1" value="0"></progress>
+          <p id="progress-state" class="progress-state" role="status"></p>
         </div>
       </section>
 

@@ -16,6 +16,7 @@ import { platformChecks } from "./platform-checks.ts";
 import { loginChecks } from "./login-checks.ts";
 import { modelChecks } from "./model-checks.ts";
 import { queueDialogChecks } from "./queue-dialog-checks.ts";
+import { liveWorkbenchChecks, liveQueueChecks } from "./live-checks.ts";
 import { acquireInstance } from "../../src/application/instance.ts";
 
 test(
@@ -388,6 +389,10 @@ test(
         { timeout: 5000 },
       );
       const learningOperation = app.operationId;
+      t.diagnostic(
+        "Checking live playback, motion, reconnection and queue counts",
+      );
+      await liveWorkbenchChecks(page, app, server);
       await (await page.query("#workbench-input"))!.fill("下一批课程草稿");
       await (await page.query("#tasks-open"))!.click();
       await waitLocalDialog();
@@ -440,10 +445,30 @@ test(
         );
       });
       await page.screenshot({ path: "build/browser-check/failures.png" });
+      repo.review(blockedTask, "partial_course_failure", {
+        recovery: "blocked",
+        message: "后台更新的异常原因",
+      });
+      await page.waitForFunction(
+        () =>
+          document
+            .getElementById("queue-issue-list")!
+            .textContent!.includes("后台更新的异常原因"),
+        undefined,
+        { timeout: 5000 },
+      );
       await page.keyboard.press("Escape");
       assert.equal(app.operationId, learningOperation);
       await (await page.query("#cancel"))!.click();
       await until(async () => !app!.operationId, 5000);
+      await page.waitForFunction(
+        () =>
+          document.getElementById("progress-area")!.hidden &&
+          document.getElementById("task-banner")!.dataset.phase === "idle" &&
+          document.querySelector(".spinner")!.getAnimations().length === 0,
+        undefined,
+        { timeout: 5000 },
+      );
       await (await page.query("#tasks-open"))!.click();
       await waitLocalDialog();
       await page.waitForFunction(
@@ -472,6 +497,10 @@ test(
       await repo.clear("another-account", "courses");
       t.diagnostic("Checking delayed and out-of-order local dialogs");
       await queueDialogChecks(page, app);
+      t.diagnostic(
+        "Checking that live queue refresh preserves the selected scope",
+      );
+      await liveQueueChecks(page, app);
       t.diagnostic("Checking settings and session isolation");
       await modelChecks(page, config.settingsPath);
       await page.setEnvironment({ viewport: { width: 1280, height: 900 } });

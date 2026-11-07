@@ -1,5 +1,6 @@
 "use strict";
 import type { TaskIssue } from "../storage/transfer.ts";
+import type { LearningProgress } from "../platform/playback.ts";
 type ElementFor<T extends string> = T extends "auto-submit" | "queue-import"
   ? HTMLInputElement
   : T extends "workbench-input"
@@ -39,6 +40,7 @@ interface Prompt {
 type Tone = "success" | "error" | "info";
 interface Snapshot {
   seq: number;
+  queues_revision: number;
   operation_id: string | null;
   title: string;
   status: string;
@@ -50,7 +52,7 @@ interface Snapshot {
     stop_after_current: boolean;
   };
   dashboard?: Record<string, any>;
-  progress?: { description: string; completed: number; total: number };
+  progress: LearningProgress | null;
   prompt: Prompt | null;
   notification: { id: string; tone: Tone; message: string } | null;
   summary?: {
@@ -70,6 +72,7 @@ let state: Snapshot | undefined,
 let generation: string | null = null,
   socket: WebSocket | null = null,
   canControl = false,
+  live = false,
   replaced = false,
   activePrompt: string | null = null;
 let lastLogSeq = -1,
@@ -84,6 +87,7 @@ const accountMenu = $("account-menu");
 type LocalDialogKind =
   "clear_queues" | "clear_credentials" | "export_queues" | "tasks";
 interface LocalQueues {
+  revision: number;
   currentAccount: string;
   accounts: {
     id: string;
@@ -97,7 +101,12 @@ interface LocalQueues {
 }
 let localKind: LocalDialogKind;
 let localRequest = 0;
-let localQueues: LocalQueues = { currentAccount: "", accounts: [] };
+let localRefreshRequest: number | null = null;
+let localQueues: LocalQueues = {
+  revision: -1,
+  currentAccount: "",
+  accounts: [],
+};
 const LOCAL_DIALOGS: Record<
   LocalDialogKind,
   {
@@ -241,7 +250,11 @@ function availability() {
     !canControl ||
     pending ||
     state?.control.kind !== "learn" ||
+    state?.control.cancelled ||
     state?.control.stop_after_current;
+  $("stop-label").textContent = state?.control.stop_after_current
+    ? "已设为本课后停止"
+    : "本课后停止";
   $("cancel").disabled =
     !canControl || pending || !state?.operation_id || state?.control.cancelled;
   $("exit").disabled =
@@ -472,6 +485,9 @@ async function loadLocalQueues(): Promise<LocalQueues> {
   return response.json();
 }
 function renderLocalAccounts(queues: LocalQueues, selected?: string) {
+  const selection = [...queueAccount.options].find(
+    (option) => option.value === selected,
+  );
   localQueues = queues;
   queueAccount.replaceChildren(
     ...localQueues.accounts.map(
@@ -480,6 +496,13 @@ function renderLocalAccounts(queues: LocalQueues, selected?: string) {
   );
   if (localQueues.accounts.length !== 1)
     queueAccount.add(new Option("全部本地账号", "all"));
+  // A running task can empty the selected account. Keep that scope instead of
+  // silently switching a clear/export form to another account.
+  if (
+    selection &&
+    ![...queueAccount.options].some((option) => option.value === selected)
+  )
+    queueAccount.add(selection);
   const preferred = selected ?? localQueues.currentAccount;
   queueAccount.value = [...queueAccount.options].some(
     (option) => option.value === preferred,
@@ -487,7 +510,7 @@ function renderLocalAccounts(queues: LocalQueues, selected?: string) {
     ? preferred
     : localQueues.accounts[0]?.id || "all";
   $("queue-account-field").hidden =
-    localQueues.accounts.length <= 1 || localKind === "clear_credentials";
+    queueAccount.options.length <= 1 || localKind === "clear_credentials";
 }
 async function openLocalDialog(kind: LocalDialogKind) {
   const request = ++localRequest;
@@ -548,19 +571,24 @@ queueDialog.addEventListener("cancel", (event) => {
   event.preventDefault();
   closeLocalDialog();
 });
-$("queue-refresh").onclick = async () => {
-  const request = ++localRequest;
+async function refreshLocalDialog() {
+  const request = localRequest;
+  if (localRefreshRequest === request) return;
+  localRefreshRequest = request;
   try {
     const queues = await loadLocalQueues();
-    if (request !== localRequest) return;
+    if (request !== localRequest || !queueDialog.open) return;
     renderLocalAccounts(queues, queueAccount.value);
     renderLocalIssues();
     updateLocalDialog();
   } catch (e) {
-    if (request === localRequest)
+    if (request === localRequest && queueDialog.open)
       $("queue-error").textContent = (e as Error).message;
+  } finally {
+    if (localRefreshRequest === request) localRefreshRequest = null;
   }
-};
+}
+$("queue-refresh").onclick = refreshLocalDialog;
 async function submitLocal(payload: Record<string, unknown>) {
   if (
     await send("/api/operations", {
@@ -610,6 +638,7 @@ const PHASES: Record<string, { label: string; tone: string; glyph: string }> = {
   cancel: { label: "正在取消", tone: "danger", glyph: "i-xmark" },
   prompt: { label: "等待确认", tone: "warn", glyph: "i-question" },
   active: { label: "运行中", tone: "active", glyph: "i-check" },
+  offline: { label: "等待连接", tone: "warn", glyph: "i-warning" },
 };
 function setHero(
   phase: string,
@@ -627,21 +656,30 @@ function setHero(
   $("status").textContent = status;
 }
 function renderHero(snapshot: Snapshot, d: Record<string, any>) {
-  const phase = snapshot.control.exit_requested
-    ? "exit"
-    : snapshot.control.cancelled
-      ? "cancel"
-      : snapshot.prompt
-        ? "prompt"
-        : snapshot.operation_id
-          ? "active"
-          : "idle";
+  const phase =
+    !live && snapshot.operation_id
+      ? "offline"
+      : snapshot.control.exit_requested
+        ? "exit"
+        : snapshot.control.cancelled
+          ? "cancel"
+          : snapshot.prompt
+            ? "prompt"
+            : snapshot.operation_id
+              ? "active"
+              : "idle";
   let view = { label: "空闲", tone: "ready", glyph: "i-check" },
     title = "准备就绪",
     status = snapshot.status;
   if (phase !== "idle") {
     view = PHASES[phase];
     title = snapshot.operation_id ? snapshot.title : view.label;
+    if (phase === "offline")
+      status = replaced
+        ? "当前窗口已断开，请在新的控制窗口查看任务状态。"
+        : "连接中断，暂时无法确认任务状态；恢复连接后自动更新。";
+    else if (phase === "active" && snapshot.control.stop_after_current)
+      view = { ...view, label: "本课后停止" };
   } else if (d.credential?.status === "expired") {
     view = { ...view, tone: "warn", glyph: "i-warning" };
     title = "登录凭证已过期";
@@ -677,9 +715,27 @@ function renderHero(snapshot: Snapshot, d: Record<string, any>) {
     const p = snapshot.progress;
     $("progress-label").textContent = p.description;
     $("progress-time").textContent =
-      `${clock(p.completed)} / ${clock(p.total)}`;
+      p.total === null
+        ? p.state === "reading"
+          ? `已用 ${clock(p.completed)}`
+          : `${clock(p.completed)} / 时长待获取`
+        : `${clock(p.completed)} / ${clock(p.total)}`;
+    $("progress-state").textContent = live
+      ? {
+          playing: "正在播放",
+          paused: "播放已暂停",
+          buffering: "正在缓冲",
+          syncing: "播放结束，等待平台确认",
+          reading: "正在阅读，等待平台确认",
+        }[p.state]
+      : "连接中断，显示最后收到的进度";
+    $("progress").hidden = p.total === null;
     $("progress").max = p.total || 1;
     $("progress").value = p.completed;
+    $("progress").setAttribute(
+      "aria-valuetext",
+      `${$("progress-time").textContent}，${$("progress-state").textContent}`,
+    );
   }
 }
 
@@ -751,6 +807,8 @@ function render(snapshot: Snapshot) {
   const d = state.dashboard || {};
   renderAccount(d);
   renderHero(state, d);
+  if (queueDialog.open && state.queues_revision !== localQueues.revision)
+    void refreshLocalDialog();
 
   const aiBadge = $("ai-badge");
   if (d.ai_configured === true) {
@@ -845,6 +903,7 @@ function connect() {
     const data = JSON.parse(event.data);
     generation = data.generation;
     canControl = !!data.controller;
+    live = true;
     setConnection(
       canControl ? "已连接 · 控制窗口" : "已连接 · 只读",
       canControl ? "online" : "readonly",
@@ -853,6 +912,7 @@ function connect() {
   };
   socket.onclose = (event) => {
     canControl = false;
+    live = false;
     generation = null;
     replaced = event.code === 4001;
     setConnection(
@@ -863,6 +923,7 @@ function connect() {
           : "连接中断 · 正在重连",
       "offline",
     );
+    if (state) renderHero(state, state.dashboard || {});
     availability();
     if (!replaced && !state?.control.exit_requested) setTimeout(connect, 1500);
   };

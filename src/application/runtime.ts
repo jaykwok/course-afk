@@ -180,6 +180,7 @@ export class Application extends EventEmitter {
   }
   localQueues() {
     return {
+      revision: this.repo.revision,
       currentAccount: this.account,
       accounts: this.repo.queueAccounts().map((account) => ({
         id: account,
@@ -231,6 +232,7 @@ export class Application extends EventEmitter {
         exit_requested: this.exitRequested,
       },
       ...this.view,
+      queues_revision: this.repo.revision,
       dashboard: this.dashboard(),
       logs: this.logs,
       dropped_logs: this.droppedLogs,

@@ -21,6 +21,11 @@ import type { DiscoveryContext } from "./discovery.ts";
 import { discover, subjectManifest } from "./discovery.ts";
 import { examState, readExamState } from "./exam.ts";
 import {
+  playbackSnapshot,
+  learningProgress,
+  type LearningProgress,
+} from "./playback.ts";
+import {
   clickText,
   clickPlayerControl,
   dismissOverlays,
@@ -229,7 +234,7 @@ async function resumeMedia(tab: Tab, selector: string, ctx: DiscoveryContext) {
     selector,
     { timeout: 5000, signal: ctx.lease.signal },
   );
-  if (!focused) return { focused: false, videos: [] };
+  if (!focused) return;
   // Video.js needs a genuine input gesture to unlock playback on a fresh profile.
   const play = await tab.query(
     ".video-js.vjs-paused .vjs-big-play-button,.video-js.vjs-paused .vjs-play-control",
@@ -239,11 +244,10 @@ async function resumeMedia(tab: Tab, selector: string, ctx: DiscoveryContext) {
     await clickPlayerControl(tab, play, ctx.lease.signal, () =>
       ctx.auth.assert(ctx.lease),
     );
-  return tab.evaluate(
+  await tab.evaluate(
     async (selector) => {
       const target = document.querySelector(selector);
-      if (!target?.classList.contains("focus"))
-        return { focused: false, videos: [] };
+      if (!target?.classList.contains("focus")) return;
       const videos = [...document.querySelectorAll("video")].filter(
         (v) => v.getBoundingClientRect().height > 0,
       );
@@ -253,16 +257,6 @@ async function resumeMedia(tab: Tab, selector: string, ctx: DiscoveryContext) {
             await v.play();
           } catch {}
         }
-      return {
-        focused: true,
-        videos: videos.map((v) => ({
-          time: v.currentTime,
-          duration: v.duration,
-          paused: v.paused,
-          ended: v.ended,
-          error: !!v.error,
-        })),
-      };
     },
     selector,
     { timeout: 5000, signal: ctx.lease.signal },
@@ -272,7 +266,7 @@ export async function learn(
   task: Task,
   ctx: DiscoveryContext,
   config: Configuration,
-  onProgress: (value: unknown) => void,
+  onProgress: (value: LearningProgress | null) => void,
 ) {
   if (task.kind !== "course") {
     await discover([task.url], ctx);
@@ -336,6 +330,7 @@ export async function learn(
         continue;
       }
       try {
+        onProgress(null);
         ctx.report(`正在学习：${s.name || s.id}`);
         const selector = await activate(tab, s, ctx),
           video = [5, 6].includes(Number(s.sectionType));
@@ -345,45 +340,58 @@ export async function learn(
             : Math.min(config.sectionTimeout, 300) * 1000;
         let lastTime = -1,
           lastAdvance = Date.now(),
+          nextCheck = 0,
           finished = false;
         while (Date.now() - start < timeout) {
           ctx.auth.assert(ctx.lease);
-          await inspectAccess(tab, ctx.lease.signal);
-          await rating(tab, ctx);
-          await dismissOverlays(tab, ctx.lease.signal);
-          const playback = await resumeMedia(tab, selector, ctx);
+          const checkPlatform = Date.now() >= nextCheck;
+          if (checkPlatform) {
+            await inspectAccess(tab, ctx.lease.signal);
+            await rating(tab, ctx);
+            await dismissOverlays(tab, ctx.lease.signal);
+            await resumeMedia(tab, selector, ctx);
+          }
+          const playback = await tab.evaluate(playbackSnapshot, selector, {
+            timeout: 5000,
+            signal: ctx.lease.signal,
+          });
           if (!playback.focused)
             throw new ReviewRequired(
               "section_focus_lost",
               "当前章节焦点已变化",
             );
-          const media = playback.videos[0];
+          const media = playback.media;
           if (video) {
             if (media?.error)
               throw new ReviewRequired("video_error", "视频播放失败");
             if (media && media.time > lastTime + 0.1) {
-              lastTime = media.time;
               lastAdvance = Date.now();
             }
+            if (media) lastTime = media.time;
             if (
               Date.now() - lastAdvance > config.stallLimit * 1000 &&
               !media?.ended
             )
               throw new ReviewRequired("video_stalled", "视频长时间未推进");
           }
-          states = await progress(http, task, sections);
-          if (String(states.get(s.id.toLowerCase())?.finishStatus) === "2") {
-            finished = true;
-            break;
-          }
-          onProgress({
-            description: s.name || "学习进度",
-            completed: Math.floor((Date.now() - start) / 1000),
-            total: Math.ceil(
-              video && media?.duration ? media.duration : timeout / 1000,
+          onProgress(
+            learningProgress(
+              s.name || "学习进度",
+              video,
+              (Date.now() - start) / 1000,
+              media,
             ),
-          });
-          await sleep(config.watchSlice * 1000, ctx.lease.signal);
+          );
+          if (checkPlatform) {
+            states = await progress(http, task, sections);
+            if (String(states.get(s.id.toLowerCase())?.finishStatus) === "2") {
+              finished = true;
+              break;
+            }
+            nextCheck = Date.now() + config.watchSlice * 1000;
+          }
+          // UI sampling is independent of the slower platform sync interval.
+          await sleep(1000, ctx.lease.signal);
         }
         if (!finished)
           throw new ReviewRequired("sync_timeout", "平台尚未确认本节完成");
@@ -395,6 +403,8 @@ export async function learn(
           message: e instanceof Error ? e.message : "章节学习失败",
           recovery: failureRecovery(e),
         });
+      } finally {
+        onProgress(null);
       }
     }
     states = await progress(http, task, sections);
