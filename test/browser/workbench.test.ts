@@ -35,6 +35,7 @@ test(
       app: Application | undefined;
     let releaseProfile: (() => Promise<void>) | undefined;
     try {
+      await mkdir("build/browser-check", { recursive: true });
       const testDirectory = join(config.root, "build", "browser-tests");
       const lock = await acquireInstance(testDirectory);
       if (!lock.owned) throw new Error("已有浏览器测试正在使用测试配置");
@@ -270,7 +271,6 @@ test(
         ),
         false,
       );
-      await mkdir("build/browser-check", { recursive: true });
       await page.screenshot({ path: "build/browser-check/transfer.png" });
       repo.review(
         repo.upsert(COURSE.replaceAll("11111111", "aaaaaaaa"), IMPORT_INBOX),
@@ -590,7 +590,6 @@ test(
         undefined,
         { timeout: 15000 },
       );
-      await mkdir("build/browser-check", { recursive: true });
       await page.screenshot({ path: "build/browser-check/workbench.png" });
       assert.deepEqual(created, []);
       assert.deepEqual(
