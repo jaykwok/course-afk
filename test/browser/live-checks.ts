@@ -112,6 +112,32 @@ export async function liveWorkbenchChecks(
     undefined,
     { timeout: 5000 },
   );
+  const rotation = await page.evaluate(() => {
+    const spinner = document.querySelector(".spinner")!;
+    const animation = spinner.getAnimations()[0];
+    const time = animation.currentTime;
+    animation.pause();
+    try {
+      // Sample inside a former 45-degree step, independent of the CI frame rate.
+      return [20, 40, 60, 80].map((sample) => {
+        animation.currentTime = sample;
+        const matrix = new DOMMatrixReadOnly(
+          getComputedStyle(spinner).transform,
+        );
+        return (Math.atan2(matrix.b, matrix.a) * 180) / Math.PI;
+      });
+    } finally {
+      animation.currentTime = time;
+      animation.play();
+    }
+  });
+  for (let i = 1; i < rotation.length; i++) {
+    const advance = rotation[i] - rotation[i - 1];
+    assert.ok(
+      advance > 0 && advance < 10,
+      `rotation must advance smoothly: ${rotation}`,
+    );
+  }
   assert.equal(
     await page.evaluate(
       () => document.getElementById("progress-time")!.textContent,

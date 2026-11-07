@@ -698,11 +698,12 @@ button.plain .icon {
 
 .spinner {
   display: none;
+  transform-origin: center;
 }
 
 .hero[data-phase="active"] .spinner {
   display: block;
-  animation: spin 0.9s steps(8) infinite;
+  animation: spin 1.2s linear infinite;
 }
 
 .hero[data-phase="active"] .glyph {
