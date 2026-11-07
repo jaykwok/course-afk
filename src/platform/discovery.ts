@@ -28,6 +28,7 @@ export interface Manifest {
   links: string[];
   complete: boolean;
   message?: string;
+  recovery?: Recovery;
   residual?: boolean;
   /** URL activity destinations are collected, but do not define that activity's completion. */
   optionalLinks?: string[];
@@ -365,6 +366,8 @@ export async function traverse(
         failure(
           task,
           manifest.message || "子入口尚未完整解析，已发现任务已保留",
+          "discovery_incomplete",
+          manifest.recovery,
         );
       else defer(task, "子入口待解析或处理，已发现课程可正常学习");
       return visited.get(task.id)!;
@@ -662,65 +665,113 @@ async function classManifest(
   }
   const prefix = "/api/v1/training/student/class-info/safe";
   const chapters = list(
-    await http.json(`${prefix}/chapter/paas?classId=${task.businessId}`),
+    await http.json(`${prefix}/chapter?classId=${task.businessId}`),
   );
   if (!chapters.length)
     return { links: [], complete: false, message: "培训班章节清单为空" };
   const links: string[] = [];
-  let complete = true;
+  const problems: { message: string; recovery: Recovery }[] = [];
   for (const chapter of chapters) {
+    const label = `章节「${chapter.name || chapter.id || "缺少 ID"}」`;
+    let page = 1;
     try {
       if (!UUID.test(String(chapter.id))) {
-        complete = false;
+        problems.push({ message: `${label}：章节 ID 无效`, recovery: "retry" });
         continue;
       }
       const seen = new Set<string>();
       let ended = false;
-      for (let page = 1; page <= 200; page++) {
-        const items = list(
-          await http.json(
-            `${prefix}/chapter-activity-list/paas${page > 1 ? "/more" : ""}?classId=${task.businessId}&chapterId=${chapter.id}&page=${page}&pageSize=5`,
-          ),
+      let expected: number | undefined;
+      for (; page <= 200; page++) {
+        // The standard list exposes the total; the PAAS preview/more endpoints
+        // report a preview count and zero respectively, not the chapter total.
+        const payload = await http.json(
+          `${prefix}/chapter-activity-list?classId=${task.businessId}&chapterId=${chapter.id}&page=${page}&pageSize=10`,
         );
+        const items = list(payload);
         let added = 0;
         for (const item of items) {
-          const key = String(
-            item.id || item.businessId || item.businessValue || "",
-          );
-          if (!key || seen.has(key)) continue;
+          const key = String(item.id || "");
+          if (!key) {
+            problems.push({
+              message: `${label}第 ${page} 页：活动缺少 ID`,
+              recovery: "retry",
+            });
+            continue;
+          }
+          if (seen.has(key)) continue;
           seen.add(key);
           added++;
           try {
             if (item.businessValue) {
               const value = normalize(decodeURIComponent(item.businessValue));
               links.push(value);
-            } else {
-              const kind = (
-                { "1": "course", "8": "course", "2": "subject" } as const
-              )[String(item.businessType) as "1" | "8" | "2"];
-              if (kind) links.push(resource(kind, item.businessId));
-              else complete = false;
-            }
-          } catch {
-            complete = false;
+            } else if (String(item.businessType) === "8")
+              links.push(
+                normalize(
+                  `${resource("course", item.businessId)}/5/${item.required}/${task.businessId}`,
+                ),
+              );
+            else if (["1", "7", "9"].includes(String(item.businessType)))
+              links.push(resource("exam", item.businessId));
+            else
+              throw new ReviewRequired(
+                "class_activity_manual",
+                `活动类型 ${item.businessType} 需要在平台处理`,
+                "blocked",
+              );
+          } catch (error) {
+            problems.push({
+              message: `${label}第 ${page} 页，活动 ${item.id || key}：${error instanceof Error ? error.message : String(error)}`,
+              recovery: failureRecovery(error),
+            });
           }
         }
-        if (items.length < 5) {
+        if (
+          !Number.isSafeInteger(payload.recordCount) ||
+          payload.recordCount < 0
+        )
+          throw new Error("平台未返回有效的活动总数");
+        if (expected !== undefined && expected !== payload.recordCount)
+          throw new Error("分页期间活动总数发生变化，请重新解析");
+        expected = payload.recordCount as number;
+        if (seen.size === expected) {
           ended = true;
           break;
         }
-        if (!added) break;
+        if (seen.size > expected)
+          throw new Error(
+            `已读取 ${seen.size} 个活动，超过平台声明的 ${expected} 个`,
+          );
+        if (!added)
+          throw new Error(
+            `已读取 ${seen.size}/${expected} 个活动，接口未返回新的活动`,
+          );
       }
-      if (!ended) complete = false;
+      if (!ended && page > 200)
+        problems.push({
+          message: `${label}：已读取 200 页，仍未确认列表结束`,
+          recovery: "retry",
+        });
     } catch (e) {
       if (ctx.lease.signal.aborted || e instanceof AuthenticationError) throw e;
-      complete = false;
+      problems.push({
+        message: `${label}第 ${page} 页：${e instanceof Error ? e.message : String(e)}`,
+        recovery: failureRecovery(e),
+      });
     }
   }
   return {
     links,
-    complete,
-    message: complete ? undefined : "培训班部分活动未完整确认",
+    complete: problems.length === 0,
+    message: problems.length
+      ? `培训班活动解析未完成：${problems.map((problem) => problem.message).join("；")}`
+      : undefined,
+    recovery: problems.length
+      ? problems.some((problem) => problem.recovery === "retry")
+        ? "retry"
+        : "blocked"
+      : undefined,
   };
 }
 export interface CatalogSnapshot {

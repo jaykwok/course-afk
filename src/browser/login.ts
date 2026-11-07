@@ -32,7 +32,10 @@ export async function applyLoginPreferences(tab: Tab, signal: AbortSignal) {
       })) {
         const selected = await group.evaluate(durationSelected);
         if (!selected) {
-          const menu = await group.query(".login-select", options);
+          const menu = await group.query(".login-select", {
+            ...options,
+            visible: true,
+          });
           if (!menu) continue;
           await menu.hover(options);
           let option = await group.query('.option[data-time="3"]', {
@@ -49,7 +52,10 @@ export async function applyLoginPreferences(tab: Tab, signal: AbortSignal) {
           if (option) await option.click(options);
         }
         if (!(await group.evaluate(durationSelected))) continue;
-        const checkbox = await group.query('i[id^="j-auto-login"]', options);
+        const checkbox = await group.query('i[id^="j-auto-login"]', {
+          ...options,
+          visible: true,
+        });
         if (
           checkbox &&
           !(await checkbox.evaluate(
@@ -80,16 +86,19 @@ export async function applyLoginPreferences(tab: Tab, signal: AbortSignal) {
         if (cleanup.status !== "completed") throw error;
         error = error.cause;
       }
-      // User mode changes and SSO can replace a frame between observation and input.
+      // A mode switch can hide an attached node after the visible query, before
+      // native scrolling. The next login poll must locate the current controls.
       if (
         frame.detached ||
         error instanceof StaleElementError ||
         error instanceof ActionabilityError ||
         error instanceof TimeoutError ||
         (error instanceof ProtocolError &&
-          /context.*(?:destroyed|not found)|cannot find context|no frame with given id/i.test(
-            error.message,
-          ))
+          ((error.method === "DOM.scrollIntoViewIfNeeded" &&
+            error.message.includes("Node does not have a layout object")) ||
+            /context.*(?:destroyed|not found)|cannot find context|no frame with given id/i.test(
+              error.message,
+            )))
       )
         continue;
       throw error;

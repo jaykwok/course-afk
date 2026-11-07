@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { BrowserRuntime } from "../../src/browser/runtime.ts";
+import { ProtocolError } from "nodriver-ts";
 import { applyLoginPreferences } from "../../src/browser/login.ts";
 import { until } from "../../src/utils.ts";
 
@@ -147,6 +148,55 @@ export async function loginChecks(runtime: BrowserRuntime) {
       ),
       "3",
     );
+    for (const selector of [
+      "#j-auto-group-qr .login-select",
+      '#j-auto-group-qr .option[data-time="3"]',
+      "#j-auto-login-qr",
+      "#j-agreement-box-qr",
+    ]) {
+      await (await frame.query("#reset"))!.click({ signal });
+      const target = (await frame.query(selector))!;
+      const session = frame.session;
+      const send = session.sendWith;
+      let hidden = false;
+      let scrollFailure: unknown;
+      session.sendWith = (async (...args: Parameters<typeof send>) => {
+        const [method, , params] = args;
+        if (
+          !hidden &&
+          method === "DOM.scrollIntoViewIfNeeded" &&
+          (params as { backendNodeId: number }).backendNodeId ===
+            target.backendNodeId
+        ) {
+          hidden = true;
+          // Keep the node attached, but remove its layout after observation.
+          await frame.evaluate((selector) => {
+            (document.querySelector(selector) as HTMLElement).hidden = true;
+          }, selector);
+        }
+        try {
+          return await send.apply(session, args);
+        } catch (error) {
+          if (method === "DOM.scrollIntoViewIfNeeded") scrollFailure = error;
+          throw error;
+        }
+      }) as typeof send;
+      try {
+        await applyLoginPreferences(tab, signal);
+        assert.equal(hidden, true);
+        assert.ok(scrollFailure instanceof ProtocolError);
+        assert.match(
+          scrollFailure.message,
+          /Node does not have a layout object/,
+        );
+      } finally {
+        session.sendWith = send;
+      }
+      await frame.evaluate((selector) => {
+        (document.querySelector(selector) as HTMLElement).hidden = false;
+      }, selector);
+      await waitForSelected("-qr");
+    }
   } finally {
     await scope.close();
     server.closeAllConnections();

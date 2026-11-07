@@ -1,9 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { runInNewContext } from "node:vm";
 import type { Tab } from "nodriver-ts";
 import { PlatformHttp } from "../src/browser/http.ts";
 import type { Authentication, Lease } from "../src/browser/auth.ts";
-import { AuthenticationError } from "../src/utils.ts";
+import { AuthenticationError, ReviewRequired } from "../src/utils.ts";
 
 function fixture(statuses: number[]) {
   const abort = new AbortController();
@@ -38,6 +39,7 @@ function fixture(statuses: number[]) {
   } as unknown as Tab;
   return {
     http: new PlatformHttp(tab, auth, lease),
+    tab,
     abort,
     stats: () => ({ sends, waits, invalidations }),
   };
@@ -57,6 +59,69 @@ test("API waits for readiness, retries reads but never retries writes", async ()
     /不可重试/,
   );
   assert.equal(write.stats().sends, 1);
+});
+
+test("API errors retain JSON business reasons and endpoint without exposing request queries", async (t) => {
+  for (const [status, body, contentType, expected] of [
+    [
+      422,
+      JSON.stringify({ errorCode: 60111, message: "Invalid input." }),
+      "",
+      /422.*60111.*您无权限参加该培训班/,
+    ],
+    [
+      422,
+      JSON.stringify({ errorCode: 69040, message: "培训班已关闭" }),
+      "application/json",
+      /422.*GET \/api\/class.*69040.*培训班已关闭/,
+    ],
+    [
+      422,
+      JSON.stringify({ code: 12, message: "参数无效" }),
+      "application/problem+json",
+      /422.*12.*参数无效/,
+    ],
+    [500, "<html>server error</html>", "text/html", /500.*GET \/api\/class/],
+  ] as const) {
+    const f = fixture([]);
+    let requests = 0;
+    t.mock.method(f.tab, "evaluate", async (fn: Function, arg: unknown) =>
+      runInNewContext(`(${fn.toString()})`, {
+        location: { origin: "https://kc.zhixueyun.com" },
+        document: { cookie: "authorization=test-token" },
+        AbortSignal,
+        window: {
+          require(name: string) {
+            assert.equal(name, "./app/util/errors");
+            return {
+              erorrMap: { 60111: "permission" },
+              get: () => "您无权限参加该培训班",
+            };
+          },
+        },
+        fetch: async () => {
+          requests++;
+          const response = new Response(body, {
+            status,
+            headers: { "Content-Type": contentType },
+          });
+          if (!contentType) response.headers.delete("Content-Type");
+          return response;
+        },
+      })(arg),
+    );
+    await assert.rejects(
+      f.http.json("/api/class?token=private-query"),
+      (error: Error) => {
+        assert.match(error.message, expected);
+        assert.doesNotMatch(error.message, /private-query|test-token|<html>/);
+        assert.ok(error instanceof ReviewRequired);
+        assert.equal(error.recovery, status === 422 ? "blocked" : "retry");
+        return true;
+      },
+    );
+    assert.equal(requests, 1, "business errors must not be retried blindly");
+  }
 });
 test("API authentication failure invalidates lease without retry; cancellation sends nothing", async () => {
   const denied = fixture([401, 200]);

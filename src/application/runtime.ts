@@ -582,14 +582,29 @@ export class Application extends EventEmitter {
         if (!urls.length) throw new Error("未找到可用的平台链接");
         if (kind === "links") {
           const result = await discover(urls, ctx);
+          const courses = result.found.filter(
+            (task) => task.kind === "course",
+          ).length;
+          const exams = result.found.filter(
+            (task) => task.kind === "exam",
+          ).length;
+          const retryable = result.issues.filter(
+            (issue) => issue.recovery === "retry",
+          ).length;
+          const blocked = result.issues.length - retryable;
+          report(
+            `解析完成：${courses} 门课程、${exams} 个考试；${retryable} 个入口可重试，${blocked} 个入口需处理`,
+          );
           this.update({
             summary: {
               id: token(),
               title: "解析结果",
               tone: result.issues.length ? "info" : "success",
               rows: [
-                ["已发现任务", result.found.length],
-                ["待复查入口", result.issues.length],
+                ["已解析课程", courses],
+                ["已解析考试", exams],
+                ["可重试入口", retryable],
+                ["需处理入口", blocked],
                 ...result.issues.map((issue) => [issue.url, issue.message]),
                 ["待继续解析", result.pending.length],
                 ["已解析入口", result.expanded],

@@ -1,6 +1,6 @@
 import type { Tab } from "nodriver-ts";
 import { PLATFORM } from "../config.ts";
-import { AuthenticationError, sleep } from "../utils.ts";
+import { AuthenticationError, ReviewRequired, sleep } from "../utils.ts";
 import type { Authentication, Lease } from "./auth.ts";
 
 export class PlatformHttp {
@@ -105,7 +105,26 @@ export class PlatformHttp {
                   body: typeof body === "string" ? body : JSON.stringify(body),
                 }),
           });
-          const value = response.ok ? await response.json() : null;
+          // Platform business errors can contain JSON without a Content-Type.
+          const text = await response.text();
+          let value = null;
+          try {
+            value = JSON.parse(text);
+          } catch (error) {
+            if (response.ok || !(error instanceof SyntaxError)) throw error;
+          }
+          if (!response.ok && value?.errorCode !== undefined) {
+            const errors = (
+              window as unknown as {
+                require: (name: string) => {
+                  erorrMap: Record<string, string>;
+                  get: (code: string | number) => string;
+                };
+              }
+            ).require("./app/util/errors");
+            if (Object.hasOwn(errors.erorrMap, value.errorCode))
+              value.message = errors.get(value.errorCode);
+          }
           return { status: response.status, value };
         },
         {
@@ -127,8 +146,23 @@ export class PlatformHttp {
         await sleep(250 * 2 ** attempt, this.lease.signal);
         continue;
       }
-      if (r.status < 200 || r.status >= 300)
-        throw new Error(`平台接口响应 ${r.status}`);
+      if (r.status < 200 || r.status >= 300) {
+        const code = r.value?.errorCode ?? r.value?.code;
+        const platformMessage = r.value?.message;
+        const reason =
+          typeof platformMessage === "string" ? platformMessage.trim() : "";
+        const message =
+          `平台接口响应 ${r.status}（${method} ${url.pathname}）` +
+          (code === undefined ? "" : `，错误码 ${code}`) +
+          (reason ? `：${reason}` : "");
+        throw new ReviewRequired(
+          "platform_rejected",
+          message,
+          r.status >= 400 && r.status < 500 && ![408, 429].includes(r.status)
+            ? "blocked"
+            : "retry",
+        );
+      }
       if (!r.value || typeof r.value !== "object")
         throw new Error("平台接口未返回有效对象");
       return r.value;

@@ -7,6 +7,7 @@ import { temporary, COURSE } from "./helpers.ts";
 
 const classId = "75c755b8-a236-45e3-b599-fdb54db0ccea";
 const classUrl = resource("class", classId);
+const classCourse = `${COURSE}/5/1/${classId}`;
 const paas = `https://kc.zhixueyun.com/#/paas-container?paasurl=${encodeURIComponent(`website/1645614858578771970/default?screen=desktop&type=4&isPreview=0&classId=${classId}`)}`;
 const root = "https://cms.mylearning.cn/topic/project/pc.html";
 
@@ -19,6 +20,8 @@ async function fixture(
     wrongClass?: boolean;
     info?: Record<string, unknown>;
     detailCode?: number;
+    chapters?: { id: string; name: string }[];
+    activities?: (url: URL) => { status: number; value: unknown };
   } = {},
 ) {
   const temp = await temporary(),
@@ -109,18 +112,23 @@ async function fixture(
                 "chapters must only be read after verified enrollment",
               );
               chapterReads++;
-              value = {
-                code: 0,
-                data: path.includes("/chapter/paas")
-                  ? [{ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }]
-                  : [
+              if (path.endsWith("/chapter-activity-list") && options.activities)
+                return options.activities(new URL(arg.url));
+              value = path.endsWith("/chapter")
+                ? options.chapters || [
+                    { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
+                  ]
+                : {
+                    items: [
                       {
                         id: "activity",
-                        businessType: 1,
+                        businessType: 8,
                         businessId: entry(COURSE, "a").businessId,
+                        required: 1,
                       },
                     ],
-              };
+                    recordCount: 1,
+                  };
             }
             return { status: 200, value };
           },
@@ -146,7 +154,7 @@ test("PAAS and recursively linked classes enroll automatically once, then collec
     try {
       const result = await discover([url], f.ctx);
       assert.equal(result.complete, true);
-      assert.equal(result.found[0].url, COURSE);
+      assert.equal(result.found[0].url, classCourse);
       assert.equal(f.stats().posts, 1);
       assert.equal(f.stats().confirmations, 0);
       assert.equal(
@@ -161,6 +169,67 @@ test("PAAS and recursively linked classes enroll automatically once, then collec
   }
 });
 
+test("class discovery preserves courses and the exact chapter failure instead of hiding the cause", async () => {
+  const chapters = [
+    { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", name: "第一章" },
+    { id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", name: "第二章" },
+    { id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", name: "第三章" },
+  ];
+  const f = await fixture({
+    status: 5,
+    chapters,
+    activities(url) {
+      const id = url.searchParams.get("chapterId");
+      if (id === chapters[0].id)
+        return {
+          status: 200,
+          value: {
+            items: [
+              {
+                id: "course",
+                businessType: 8,
+                businessId: entry(COURSE, "a").businessId,
+                required: 1,
+              },
+            ],
+            recordCount: 1,
+          },
+        };
+      if (id === chapters[1].id)
+        return {
+          status: 422,
+          value: { errorCode: 17, message: "章节不可访问" },
+        };
+      return {
+        status: 200,
+        value: {
+          items: [{ id: "broken-link", businessValue: "not a url" }],
+          recordCount: 1,
+        },
+      };
+    },
+  });
+  try {
+    const result = await discover([classUrl], f.ctx);
+    assert.equal(result.complete, false);
+    assert.deepEqual(
+      result.found.map((task) => task.url),
+      [classCourse],
+    );
+    assert.equal(result.issues.length, 1);
+    assert.match(
+      result.issues[0].message,
+      /第二章.*第 1 页.*422.*chapter-activity-list.*17.*章节不可访问/,
+    );
+    assert.match(result.issues[0].message, /第三章.*broken-link.*Invalid URL/);
+    const task = f.repo.upsert(classUrl, "a");
+    assert.equal(task.details.message, result.issues[0].message);
+    assert.equal(f.stats().posts, 0);
+  } finally {
+    await f.close();
+  }
+});
+
 test("already enrolled classes reconcile an old intent without submitting again", async () => {
   const f = await fixture({ status: 5 });
   try {
@@ -169,6 +238,124 @@ test("already enrolled classes reconcile an old intent without submitting again"
     assert.equal((await discover([paas], f.ctx)).complete, true);
     assert.equal(f.stats().posts, 0);
     assert.equal(f.repo.pending(task, "enroll").length, 0);
+  } finally {
+    await f.close();
+  }
+});
+
+const activity = (n: number) => ({
+  id: `activity-${n}`,
+  businessType: 8,
+  businessId: `11111111-1111-4111-8111-${n.toString(16).padStart(12, "0")}`,
+  required: n % 2,
+});
+
+test("class pagination follows the declared total across short pages and retains class source identity", async () => {
+  const items = Array.from({ length: 26 }, (_, n) => activity(n));
+  const pages = [
+    items.slice(0, 5),
+    items.slice(5, 15),
+    items.slice(15, 25),
+    items.slice(25),
+  ];
+  const requested: number[] = [];
+  const f = await fixture({
+    status: 5,
+    activities(url) {
+      assert.ok(url.pathname.endsWith("/chapter-activity-list"));
+      assert.equal(url.searchParams.get("pageSize"), "10");
+      const page = Number(url.searchParams.get("page"));
+      requested.push(page);
+      return {
+        status: 200,
+        value: { items: pages[page - 1], recordCount: 26 },
+      };
+    },
+  });
+  try {
+    const result = await discover([classUrl], f.ctx);
+    assert.equal(result.complete, true);
+    assert.deepEqual(requested, [1, 2, 3, 4]);
+    assert.equal(result.found.length, 26);
+    assert.equal(f.repo.queue("a", "learn").length, 26);
+    for (const [n, task] of result.found.entries()) {
+      assert.equal(task.sourceId, classId);
+      assert.equal(task.sourceType, "5");
+      assert.equal(task.required, String(n % 2));
+    }
+  } finally {
+    await f.close();
+  }
+});
+
+test("incomplete or changing page counts preserve discovered courses and remain retryable", async () => {
+  for (const mode of ["repeated", "empty", "changed", "missing-total"]) {
+    let reads = 0;
+    const f = await fixture({
+      status: 5,
+      activities(url) {
+        const page = Number(url.searchParams.get("page"));
+        reads++;
+        return {
+          status: 200,
+          value: {
+            items:
+              page === 1 || mode === "repeated"
+                ? [activity(0)]
+                : mode === "changed"
+                  ? [activity(1)]
+                  : [],
+            recordCount:
+              mode === "missing-total"
+                ? undefined
+                : mode === "changed" && page > 1
+                  ? 3
+                  : 2,
+          },
+        };
+      },
+    });
+    try {
+      const result = await discover([classUrl], f.ctx);
+      assert.equal(result.complete, false);
+      assert.equal(result.found.length, mode === "changed" ? 2 : 1);
+      assert.equal(result.issues[0].recovery, "retry");
+      assert.match(result.issues[0].message, /活动总数|未返回新的活动/);
+      assert.equal(reads, mode === "missing-total" ? 1 : 2);
+    } finally {
+      await f.close();
+    }
+  }
+});
+
+test("class exams are not courses and manual activities do not erase usable tasks", async () => {
+  const f = await fixture({
+    status: 5,
+    activities() {
+      return {
+        status: 200,
+        value: {
+          items: [
+            activity(0),
+            { ...activity(1), businessType: 1 },
+            { ...activity(2), businessType: 2 },
+          ],
+          recordCount: 3,
+        },
+      };
+    },
+  });
+  try {
+    const result = await discover([classUrl], f.ctx);
+    assert.equal(result.complete, false);
+    assert.deepEqual(
+      result.found.map((task) => task.kind),
+      ["course", "exam"],
+    );
+    assert.equal(f.repo.queue("a", "learn").length, 1);
+    assert.equal(f.repo.queue("a", "exam").length, 1);
+    assert.equal(result.issues[0].recovery, "blocked");
+    assert.match(result.issues[0].message, /活动类型 2 需要在平台处理/);
   } finally {
     await f.close();
   }
@@ -316,7 +503,7 @@ test("open signup windows enroll while enrolled students can read classes after 
     try {
       const result = await discover([paas], f.ctx);
       assert.equal(result.complete, true);
-      assert.equal(result.found[0].url, COURSE);
+      assert.equal(result.found[0].url, classCourse);
       assert.equal(f.stats().posts, options.status === 5 ? 0 : 1);
     } finally {
       await f.close();

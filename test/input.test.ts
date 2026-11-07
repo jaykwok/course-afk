@@ -210,14 +210,21 @@ test("link input, manual selection and reference download accept prose and repor
         assert.equal(f.repo.queue("a", "learn").length, 1);
         assert.equal(f.repo.queue("a", "exam").length, 1);
         assert.deepEqual(f.app.view.summary.rows, [
-          ["已发现任务", 2],
-          ["待复查入口", 0],
+          ["已解析课程", 1],
+          ["已解析考试", 1],
+          ["可重试入口", 0],
+          ["需处理入口", 0],
           ["待继续解析", 0],
           ["已解析入口", 0],
           ["已跳过占位或内容页", 0],
           ["延伸专题（未展开）", 0],
           ["已忽略无效链接", 1],
         ]);
+        assert.ok(
+          f.app.logs.some((log) =>
+            /解析完成：1 门课程、1 个考试/.test(log.message),
+          ),
+        );
       } else {
         assert.ok(opened.includes(COURSE));
         assert.ok(opened.includes(second));
