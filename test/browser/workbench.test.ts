@@ -20,7 +20,9 @@ import { acquireInstance } from "../../src/application/instance.ts";
 
 test(
   "one shared tab: platform, login, workbench, offline queues and session isolation",
-  { skip: process.env.COURSE_AFK_BROWSER_TEST !== "1", timeout: 120000 },
+  // One tab runs all native-input scenarios sequentially, including four login
+  // layout races. Keep the short per-action waits and allow slower CI runners.
+  { skip: process.env.COURSE_AFK_BROWSER_TEST !== "1", timeout: 240000 },
   async (t) => {
     const temp = await temporary(),
       config = {
