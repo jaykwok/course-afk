@@ -3,11 +3,11 @@
 自用网上大学的课程学习、AI 辅助答题和课件下载工具。使用 TypeScript、Node.js 与 [nodriver-ts](https://github.com/jaykwok/nodriver-ts)，启动后打开 Web 工作台。
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/readme/workbench-dark.png">
-  <img alt="工作台总览：添加课程、任务数据、课程学习与自动考试" src="assets/readme/workbench-light.png">
+  <source media="(prefers-color-scheme: dark)" srcset="assets/workbench-dark.png">
+  <img alt="工作台总览：添加课程、任务数据、课程学习与自动考试" src="assets/workbench-light.png">
 </picture>
 
-截图使用演示账号和模拟任务。下面按实际操作顺序介绍各个工作流。
+截图中的账号、任务与模型列表均为演示数据，图片统一保存在 `assets/`。下面按实际操作顺序介绍各个工作流。
 
 ## 安装与启动
 
@@ -49,7 +49,7 @@ Windows 默认查找 Edge，其次 Chrome；macOS 默认查找 Chrome，其次 E
 <details>
 <summary>查看 AI 设置界面</summary>
 
-![AI 设置：接口地址、API Key、模型选择与协议](assets/readme/settings.png)
+![AI 设置：接口地址、API Key、模型搜索选择与协议](assets/settings.png)
 
 </details>
 
@@ -84,7 +84,7 @@ flowchart TD
 <details>
 <summary>查看学习中的进度与操作按钮</summary>
 
-![课程学习中：章节进度、本课后停止和取消任务](assets/readme/learning.png)
+![课程学习中：章节进度、本课后停止和取消任务](assets/learning.png)
 
 </details>
 
@@ -139,7 +139,7 @@ flowchart TD
 <details>
 <summary>查看异常原因与重试入口</summary>
 
-![异常任务：可重试、需外部处理及对应操作](assets/readme/failures.png)
+![异常任务：章节编号、具体失败原因及重试操作](assets/failures.png)
 
 </details>
 
@@ -159,7 +159,7 @@ flowchart TD
 <details>
 <summary>查看清空队列的四种范围</summary>
 
-![清空队列：仅异常任务、全部课程、考试队列或全部待办](assets/readme/clear-queues.png)
+![清空队列：仅异常任务、全部课程、考试队列或全部待办](assets/clear-queues.png)
 
 </details>
 
@@ -189,7 +189,7 @@ flowchart TD
 <details>
 <summary>查看窄屏界面</summary>
 
-<img src="assets/readme/mobile.png" alt="窄屏工作台：卡片纵向排列，操作按钮全宽显示" width="380">
+<img src="assets/mobile.png" alt="窄屏工作台：卡片纵向排列，操作按钮全宽显示" width="380">
 
 </details>
 
