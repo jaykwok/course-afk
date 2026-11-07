@@ -1,12 +1,7 @@
 import { DatabaseSync, backup } from "node:sqlite";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import {
-  entry,
-  isPlaceholderEntry,
-  isPlatformHome,
-  type Entry,
-} from "../domain/identity.ts";
+import { entry, type Entry } from "../domain/identity.ts";
 import { token } from "../utils.ts";
 
 export type Queue = "learn" | "exam" | "review" | "failure" | "discover";
@@ -17,6 +12,7 @@ export type Status =
   | "WAITING_CHILDREN"
   | "WAITING_SYNC"
   | "NEEDS_REVIEW"
+  | "BLOCKED"
   | "FAILED"
   | "INTERRUPTED";
 export interface Task extends Entry {
@@ -29,12 +25,12 @@ export interface QueueItem extends Task {
   reason: string;
 }
 const APPLICATION_ID = 1128351307;
-const SCHEMA = 1;
+const SCHEMA = 2;
 const sql = `
 CREATE TABLE tasks(id TEXT PRIMARY KEY, account TEXT NOT NULL, kind TEXT NOT NULL, url TEXT NOT NULL,
  identity TEXT NOT NULL, status TEXT NOT NULL, details TEXT NOT NULL DEFAULT '{}', manual_submit INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE queues(task_id TEXT NOT NULL REFERENCES tasks(id), queue TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '', position INTEGER NOT NULL,
- PRIMARY KEY(task_id,queue,reason));
+ PRIMARY KEY(task_id,queue));
 CREATE TABLE edges(parent TEXT NOT NULL REFERENCES tasks(id), child TEXT NOT NULL REFERENCES tasks(id), required INTEGER NOT NULL, PRIMARY KEY(parent,child));
 CREATE TABLE runs(id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id), kind TEXT NOT NULL, status TEXT NOT NULL, outcome TEXT, created_at TEXT NOT NULL);
 CREATE UNIQUE INDEX active_run ON runs(task_id,kind) WHERE status='RUNNING';
@@ -122,12 +118,20 @@ export class Repository {
       manualSubmit: !!row.manual_submit,
     };
   }
-  queue(account: string, queue: Queue): QueueItem[] {
+  queueAccounts(): string[] {
     return this.db
       .prepare(
-        "SELECT t.id,q.reason FROM queues q JOIN tasks t ON t.id=q.task_id WHERE t.account=? AND q.queue=? ORDER BY q.position,q.rowid",
+        "SELECT DISTINCT t.account FROM tasks t JOIN queues q ON q.task_id=t.id ORDER BY t.account",
       )
-      .all(account, queue)
+      .all()
+      .map((row) => String(row.account));
+  }
+  queue(account: string | null, queue: Queue): QueueItem[] {
+    return this.db
+      .prepare(
+        "SELECT t.id,q.reason FROM queues q JOIN tasks t ON t.id=q.task_id WHERE (? IS NULL OR t.account=?) AND q.queue=? ORDER BY q.position,q.rowid",
+      )
+      .all(account, account, queue)
       .map((r) => ({
         ...this.task(String(r.id)),
         queue,
@@ -135,6 +139,13 @@ export class Repository {
       }));
   }
   enqueue(task: Task, queue: Queue, reason = "") {
+    if (
+      ["learn", "exam"].includes(queue) &&
+      this.task(task.id).status === "COMPLETED"
+    )
+      return;
+    if ((queue === "learn" || queue === "discover") && this.hasFailure(task.id))
+      return;
     this.db
       .prepare("INSERT OR IGNORE INTO queues VALUES(?,?,?,?)")
       .run(task.id, queue, reason, Date.now());
@@ -144,19 +155,22 @@ export class Repository {
       .prepare("DELETE FROM queues WHERE task_id=? AND queue=?")
       .run(id, queue);
   }
-  discardNonCatalogEntries(account: string) {
-    const rows = this.db
-      .prepare(
-        "SELECT id,url FROM tasks t WHERE account=? AND kind='entry' AND (EXISTS(SELECT 1 FROM queues WHERE task_id=t.id) OR EXISTS(SELECT 1 FROM edges WHERE parent=t.id OR child=t.id))",
-      )
-      .all(account);
-    const ignored = rows.filter(
-      (row) =>
-        isPlaceholderEntry(String(row.url)) || isPlatformHome(String(row.url)),
-    );
-    for (const row of ignored)
-      this.discardEntry(this.task(String(row.id)), "平台占位或错误页，已跳过");
-    return ignored.map((row) => String(row.url));
+  hasFailure(id: string) {
+    return !!this.db
+      .prepare("SELECT 1 FROM queues WHERE task_id=? AND queue='failure'")
+      .get(id);
+  }
+  retry(task: Task) {
+    this.transaction(() => {
+      this.remove(task.id, "failure");
+      this.outcome(task.id, "READY", {
+        reason: undefined,
+        message: undefined,
+        recovery: undefined,
+        sections: undefined,
+      });
+      this.enqueue(task, task.kind === "course" ? "learn" : "discover");
+    });
   }
   discardEntry(task: Task, message: string) {
     if (task.kind !== "entry") throw new Error("只能忽略非学习入口");
@@ -178,41 +192,6 @@ export class Repository {
     });
     for (const row of parents) this.reconcile(String(row.parent));
   }
-  /** Retain historical runs while moving active references off old URL aliases. */
-  canonicalizeEntries(account: string) {
-    const rows = this.db
-      .prepare(
-        "SELECT id,url FROM tasks t WHERE account=? AND kind='entry' AND (EXISTS(SELECT 1 FROM queues WHERE task_id=t.id) OR EXISTS(SELECT 1 FROM edges WHERE parent=t.id OR child=t.id))",
-      )
-      .all(account);
-    this.transaction(() => {
-      for (const row of rows) {
-        const id = String(row.id),
-          normalized = entry(String(row.url), account);
-        if (id === normalized.id) continue;
-        const target = this.upsert(normalized.url, account);
-        const edges = this.db
-          .prepare("SELECT * FROM edges WHERE parent=? OR child=?")
-          .all(id, id);
-        this.db
-          .prepare("DELETE FROM edges WHERE parent=? OR child=?")
-          .run(id, id);
-        for (const edge of edges)
-          this.link(
-            this.task(edge.parent === id ? target.id : String(edge.parent)),
-            this.task(edge.child === id ? target.id : String(edge.child)),
-            !!edge.required,
-          );
-        this.db
-          .prepare(
-            "INSERT OR IGNORE INTO queues SELECT ?,queue,reason,position FROM queues WHERE task_id=?",
-          )
-          .run(target.id, id);
-        this.db.prepare("DELETE FROM queues WHERE task_id=?").run(id);
-        this.outcome(id, "READY", { ignored: true, canonicalId: target.id });
-      }
-    });
-  }
   outcome(id: string, status: Status, details: Record<string, any> = {}) {
     const merged = { ...this.task(id).details, ...details };
     if (status === "COMPLETED") {
@@ -220,6 +199,7 @@ export class Repository {
       delete merged.reason;
       delete merged.message;
       delete merged.sections;
+      delete merged.recovery;
     }
     this.db
       .prepare("UPDATE tasks SET status=?,details=? WHERE id=?")
@@ -232,13 +212,27 @@ export class Repository {
     manual = false,
   ) {
     this.transaction(() => {
-      this.outcome(task.id, "NEEDS_REVIEW", { ...details, reason });
+      const recovery = details.recovery ?? "retry";
+      this.outcome(
+        task.id,
+        task.kind !== "exam" && recovery === "blocked"
+          ? "BLOCKED"
+          : "NEEDS_REVIEW",
+        { ...details, reason, recovery },
+      );
       if (manual)
         this.db
           .prepare("UPDATE tasks SET manual_submit=1 WHERE id=?")
           .run(task.id);
+      if (task.kind === "exam") {
+        this.remove(task.id, "exam");
+        this.remove(task.id, "review");
+      } else {
+        this.remove(task.id, "learn");
+        this.remove(task.id, "discover");
+        this.remove(task.id, "failure");
+      }
       this.enqueue(task, task.kind === "exam" ? "review" : "failure", reason);
-      if (task.kind === "exam") this.remove(task.id, "exam");
     });
   }
   complete(task: Task, evidence: Record<string, unknown>) {
@@ -399,20 +393,24 @@ export class Repository {
     await backup(this.db, path);
     return path;
   }
-  async clear(account: string, scope: "courses" | "exams" | "all") {
+  async clear(
+    account: string | null,
+    scope: "failures" | "courses" | "exams" | "all",
+  ) {
     await this.snapshot("queues");
-    const queues: Queue[] =
-      scope === "courses"
-        ? ["learn", "failure", "discover"]
-        : scope === "exams"
-          ? ["exam", "review"]
-          : ["learn", "failure", "discover", "exam", "review"];
-    this.db
+    const queues = {
+      failures: ["failure"],
+      courses: ["learn", "failure", "discover"],
+      exams: ["exam", "review"],
+      all: ["learn", "failure", "discover", "exam", "review"],
+    }[scope];
+    const result = this.db
       .prepare(
-        `DELETE FROM queues WHERE task_id IN (SELECT id FROM tasks WHERE account=?) AND queue IN (${queues.map(() => "?").join(",")})`,
+        `DELETE FROM queues WHERE task_id IN (SELECT id FROM tasks WHERE ? IS NULL OR account=?) AND queue IN (${queues.map(() => "?").join(",")})`,
       )
-      .run(account, ...queues);
+      .run(account, account, ...queues);
     // Exam history and uncertain intents survive queue clearing.
+    return Number(result.changes);
   }
   export() {
     return Object.fromEntries(

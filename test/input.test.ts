@@ -1,40 +1,61 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { application, COURSE, EXAM } from "./helpers.ts";
+import { application, COURSE, EXAM, SUBJECT } from "./helpers.ts";
 import { token } from "../src/utils.ts";
 import type { Queue } from "../src/storage/repository.ts";
+import { atomicJson } from "../src/storage/files.ts";
+import { accountId } from "../src/domain/identity.ts";
+import { readdir } from "node:fs/promises";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
-test("queue clearing respects exam/course scope, cancellation, accounts and submission records", async (t) => {
+test("empty link forms do not start an operation or request login", async (t) => {
+  const f = await application();
+  try {
+    const lease = t.mock.method(f.app.auth, "lease", async () => {
+      throw new Error("must not authenticate");
+    });
+    for (const kind of ["links", "references"]) {
+      assert.throws(
+        () => f.app.command(token(), "operation", { kind, input_text: "  " }),
+        /请先填写/,
+      );
+      assert.equal(f.app.operationId, null);
+      assert.equal(f.app.view.prompt, null);
+    }
+    assert.equal(lease.mock.callCount(), 0);
+  } finally {
+    await f.close();
+  }
+});
+
+test("queue clearing applies the submitted form scope without another prompt or login", async (t) => {
   const queues: Queue[] = ["learn", "failure", "discover", "exam", "review"];
-  for (const [kind, confirmed, removed] of [
-    ["clear_exams", false, []],
-    ["clear_exams", true, ["exam", "review"]],
-    ["clear_courses", true, ["learn", "failure", "discover"]],
-    ["clear_all", true, queues],
+  for (const [scope, removed] of [
+    ["exams", ["exam", "review"]],
+    ["failures", ["failure"]],
+    ["courses", ["learn", "failure", "discover"]],
+    ["all", queues],
   ] as const) {
     const f = await application();
     try {
-      t.mock.method(f.app.auth, "lease", async (scope: any) => ({
-        account: "a",
-        generation: 0,
-        fingerprint: "fixture",
-        signal: scope.signal,
-      }));
-      t.mock.method(f.app.auth, "assert", () => {});
-      t.mock.method(
-        f.app,
-        "prompt",
-        async (_type: string, fields: { message: string }) => {
-          if (kind === "clear_exams")
-            assert.match(fields.message, /待考科目和考试复查/);
-          return confirmed;
-        },
-      );
+      const lease = t.mock.method(f.app.auth, "lease", async () => {
+        throw new Error("Local operation requested login");
+      });
+      const prompt = t.mock.method(f.app, "prompt", async () => {
+        throw new Error("Must not ask another question");
+      });
       for (const account of ["a", "b"])
         for (const queue of queues)
           f.repo.enqueue(
             f.repo.upsert(
-              queue === "exam" || queue === "review" ? EXAM : COURSE,
+              queue === "exam" || queue === "review"
+                ? EXAM
+                : queue === "discover"
+                  ? SUBJECT
+                  : queue === "failure"
+                    ? COURSE.replaceAll("11111111", "aaaaaaaa")
+                    : COURSE,
               account,
             ),
             queue,
@@ -45,8 +66,26 @@ test("queue clearing respects exam/course scope, cancellation, accounts and subm
       f.repo.db
         .prepare("UPDATE tasks SET manual_submit=1 WHERE id=?")
         .run(exam.id);
-      f.app.command(token(), "operation", { kind });
+      for (const invalid of [undefined, "everything"])
+        assert.throws(
+          () =>
+            f.app.command(token(), "operation", {
+              kind: "clear_queues",
+              account: "a",
+              scope: invalid,
+            }),
+          /清空范围无效/,
+        );
+      assert.equal(f.app.operationId, null);
+      f.app.command(token(), "operation", {
+        kind: "clear_queues",
+        account: "a",
+        scope,
+      });
       await f.app.settled();
+      assert.equal(lease.mock.callCount(), 0);
+      assert.equal(prompt.mock.callCount(), 0);
+      assert.match(f.app.view.notification.message, /已清空/);
       for (const queue of queues) {
         assert.equal(
           f.repo.queue("a", queue).length,
@@ -60,6 +99,73 @@ test("queue clearing respects exam/course scope, cancellation, accounts and subm
     } finally {
       await f.close();
     }
+  }
+});
+
+test("clearing course failures removes retryable and blocked work while keeping healthy queues and a backup", async (t) => {
+  const f = await application();
+  try {
+    t.mock.method(f.app.auth, "lease", async () => {
+      throw new Error("Local operation requested login");
+    });
+    const ready = f.repo.upsert(COURSE, "a"),
+      pending = f.repo.upsert(SUBJECT, "a"),
+      exam = f.repo.upsert(EXAM, "a");
+    f.repo.enqueue(ready, "learn");
+    f.repo.enqueue(pending, "discover");
+    f.repo.enqueue(exam, "exam");
+    for (const [url, recovery] of [
+      [COURSE.replaceAll("11111111", "aaaaaaaa"), "retry"],
+      ["https://cms.mylearning.cn/topic/blocked.html", "blocked"],
+    ])
+      f.repo.review(f.repo.upsert(url, "a"), "unavailable", {
+        message: "暂时无法学习",
+        recovery,
+      });
+    assert.deepEqual(f.app.localQueues().accounts[0].counts, {
+      learn: 1,
+      discover: 1,
+      failure: 2,
+      exam: 1,
+      review: 0,
+    });
+    assert.equal(f.app.operationId, null);
+    f.app.command(token(), "operation", {
+      kind: "clear_queues",
+      account: "a",
+      scope: "failures",
+    });
+    await f.app.settled();
+    assert.equal(f.repo.queue("a", "failure").length, 0);
+    assert.deepEqual(
+      f.repo.queue("a", "learn").map((task) => task.id),
+      [ready.id],
+    );
+    assert.deepEqual(
+      f.repo.queue("a", "discover").map((task) => task.id),
+      [pending.id],
+    );
+    assert.deepEqual(
+      f.repo.queue("a", "exam").map((task) => task.id),
+      [exam.id],
+    );
+    const backups = await readdir(join(f.app.config.dataDir, "backups"));
+    const saved = new DatabaseSync(
+      join(f.app.config.dataDir, "backups", backups[0]),
+      { readOnly: true },
+    );
+    try {
+      assert.equal(
+        saved
+          .prepare("SELECT count(*) n FROM queues WHERE queue='failure'")
+          .get()?.n,
+        2,
+      );
+    } finally {
+      saved.close();
+    }
+  } finally {
+    await f.close();
   }
 });
 
@@ -123,5 +229,54 @@ test("link input, manual selection and reference download accept prose and repor
     f.chrome.assertDone();
   } finally {
     await f.close();
+  }
+});
+
+test("expired or absent credentials never gate local clearing, and selecting all accounts produces a recoverable backup", async (t) => {
+  for (const expired of [false, true]) {
+    const f = await application();
+    try {
+      const account = accountId("center:local");
+      if (expired)
+        await atomicJson(f.app.auth.path, {
+          version: 2,
+          account: "center:local",
+          name: "Local",
+          expires: "2000-01-01T00:00:00Z",
+          cookies: [
+            { name: "session", value: "synthetic", domain: ".mylearning.cn" },
+          ],
+        });
+      for (const owner of [account, "other"])
+        f.repo.enqueue(f.repo.upsert(COURSE, owner), "learn");
+      const lease = t.mock.method(f.app.auth, "lease", async () => {
+        throw new Error("must not authenticate");
+      });
+      f.app.command(token(), "operation", {
+        kind: "clear_queues",
+        scope: "all",
+        account: null,
+      });
+      await f.app.settled();
+      assert.equal(lease.mock.callCount(), 0);
+      assert.equal(f.repo.queue(account, "learn").length, 0);
+      assert.equal(f.repo.queue("other", "learn").length, 0);
+      const backups = await readdir(join(f.app.config.dataDir, "backups"));
+      const saved = new DatabaseSync(
+        join(f.app.config.dataDir, "backups", backups[0]),
+        { readOnly: true },
+      );
+      try {
+        assert.equal(
+          saved.prepare("SELECT count(*) n FROM queues").get()?.n,
+          2,
+        );
+      } finally {
+        saved.close();
+      }
+      f.chrome.assertDone();
+    } finally {
+      await f.close();
+    }
   }
 });

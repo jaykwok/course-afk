@@ -10,6 +10,11 @@ import {
 } from "../../src/platform/dom.ts";
 import { AuthenticationError, ReviewRequired } from "../../src/utils.ts";
 import {
+  extractQuestions,
+  applyAnswers,
+  selectedAnswers,
+} from "../../src/platform/exam.ts";
+import {
   catalogSnapshot,
   extractLinks,
   catalogPageState,
@@ -90,6 +95,26 @@ export async function platformChecks(runtime: BrowserRuntime) {
       '<title>安全知识考试</title><h1>考试</h1><div class="question-type-item"><h2>请完成验证是什么意思？</h2><div class="stem-content-main">短信验证码、安全验证、同时学习、课程已下架</div></div><p>人机验证与短信验证码课程说明</p>',
     );
     await inspectAccess(tab, signal);
+    await tab.setContent(
+      `<html><body><div class="question-type-item" data-dynamic-key="q1"><span class="o-score">多选题</span><div class="stem-content-main">选择一和三</div><dl class="preview-list"><dd><label><input type="checkbox"><span class="option-num">A.</span><span class="answer-options">一</span></label></dd><dd><label><input type="checkbox"><span class="option-num">B.</span><span class="answer-options">二</span></label></dd><dd><label><input type="checkbox"><span class="option-num">C.</span><span class="answer-options">三</span></label></dd></dl></div></body></html>`,
+    );
+    const parsed = await extractQuestions(tab, signal);
+    assert.equal(parsed.questions.length, 1);
+    assert.equal(parsed.questions[0].type, "multiple");
+    const ctx = {
+      lease: { signal },
+      auth: { assert: () => signal.throwIfAborted() },
+    } as unknown as DiscoveryContext;
+    assert.equal(
+      await applyAnswers(tab, parsed.questions[0], ["A", "C"], ctx),
+      true,
+    );
+    assert.deepEqual(await selectedAnswers(tab, parsed.questions[0], signal), [
+      "A",
+      "C",
+    ]);
+    assert.equal(tab.inputBehavior.policy.mode, "human");
+    assert.ok(tab.inputBehavior.lastReport?.events);
     await tab.setContent(
       '<title>Player fixture</title><div style="height:1200px"></div><button id="play" onclick="this.dataset.trusted=String(event.isTrusted)">播放</button>',
     );

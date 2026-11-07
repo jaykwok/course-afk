@@ -2,605 +2,893 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <meta name="color-scheme" content="light dark" />
     <title>网上大学 · 自动化挂课工作台</title>
+    <link
+      rel="icon"
+      type="image/svg+xml"
+      sizes="any"
+      href="/favicon.svg"
+      media="(prefers-color-scheme: light)"
+    />
+    <link
+      rel="icon"
+      type="image/svg+xml"
+      sizes="any"
+      href="/favicon-dark.svg"
+      media="(prefers-color-scheme: dark)"
+    />
     <link rel="stylesheet" href="/style.css" />
     <script src="/app.js" type="module"></script>
   </head>
   <body>
-    <div class="app-shell">
-      <!-- Top Application Bar -->
-      <header class="app-header">
-        <div class="brand-group">
-          <img
-            src="/logo.svg"
-            class="brand-logo"
-            alt="中国电信"
-            width="112"
-            height="32"
-          />
-          <div class="brand-divider" aria-hidden="true"></div>
-          <div class="brand-title">
-            <h1>网上大学</h1>
-            <span>自动化挂课工作台</span>
-          </div>
-          <span
-            id="connection"
-            role="status"
-            class="pill"
-            data-state="connecting"
-            >正在连接</span
-          >
+    <!-- SF Symbols–style glyphs, referenced with <use href="#i-…"> -->
+    <svg class="sprite" aria-hidden="true" focusable="false">
+      <symbol id="i-play" viewBox="0 0 24 24">
+        <path
+          d="M8 5.6v12.8a1 1 0 0 0 1.53.85l10.2-6.4a1 1 0 0 0 0-1.7L9.53 4.75A1 1 0 0 0 8 5.6z"
+          fill="currentColor"
+          stroke="none"
+        />
+      </symbol>
+      <symbol id="i-play-rect" viewBox="0 0 24 24">
+        <rect x="3" y="5" width="18" height="14" rx="3.5" />
+        <path
+          d="M10.2 9.3v5.4a.5.5 0 0 0 .76.43l4.3-2.7a.5.5 0 0 0 0-.86l-4.3-2.7a.5.5 0 0 0-.76.43z"
+          fill="currentColor"
+          stroke="none"
+        />
+      </symbol>
+      <symbol id="i-exam" viewBox="0 0 24 24">
+        <rect x="4.5" y="4.5" width="15" height="16.5" rx="3" />
+        <path d="M9 3.5h6v2.5H9z" />
+        <path d="m8.8 13 2.3 2.3 4.3-4.6" />
+      </symbol>
+      <symbol id="i-link" viewBox="0 0 24 24">
+        <path
+          d="M10 13.5a4.5 4.5 0 0 0 6.8.5l2.9-2.9a4.6 4.6 0 0 0-6.5-6.5L11.6 6.2"
+        />
+        <path
+          d="M14 10.5a4.5 4.5 0 0 0-6.8-.5l-2.9 2.9a4.6 4.6 0 0 0 6.5 6.5l1.6-1.6"
+        />
+      </symbol>
+      <symbol id="i-plus" viewBox="0 0 24 24">
+        <path d="M12 5v14M5 12h14" />
+      </symbol>
+      <symbol id="i-pointer" viewBox="0 0 24 24">
+        <path d="m6 3.8 12.2 8-5.2 1.3 3 5.9-2.4 1.2-3-5.9-4.1 3.6z" />
+      </symbol>
+      <symbol id="i-download" viewBox="0 0 24 24">
+        <path d="M12 4v10.5" />
+        <path d="m7.5 10 4.5 4.5 4.5-4.5" />
+        <path d="M5 19.5h14" />
+      </symbol>
+      <symbol id="i-import" viewBox="0 0 24 24">
+        <path d="M12 3.5v11" />
+        <path d="m8 10.5 4 4 4-4" />
+        <path
+          d="M7.5 7.5H6.5a2.5 2.5 0 0 0-2.5 2.5v8a2.5 2.5 0 0 0 2.5 2.5h11a2.5 2.5 0 0 0 2.5-2.5v-8a2.5 2.5 0 0 0-2.5-2.5h-1"
+        />
+      </symbol>
+      <symbol id="i-export" viewBox="0 0 24 24">
+        <path d="M12 14.5v-11" />
+        <path d="m8 7.5 4-4 4 4" />
+        <path
+          d="M7.5 10H6.5A2.5 2.5 0 0 0 4 12.5v5.5a2.5 2.5 0 0 0 2.5 2.5h11a2.5 2.5 0 0 0 2.5-2.5v-5.5a2.5 2.5 0 0 0-2.5-2.5h-1"
+        />
+      </symbol>
+      <symbol id="i-trash" viewBox="0 0 24 24">
+        <path d="M4.5 6.5h15" />
+        <path d="M9.5 6.5V5a1.5 1.5 0 0 1 1.5-1.5h2A1.5 1.5 0 0 1 14.5 5v1.5" />
+        <path d="m6.5 6.5.8 12a2 2 0 0 0 2 1.9h5.4a2 2 0 0 0 2-1.9l.8-12" />
+        <path d="M10 10.5v6M14 10.5v6" />
+      </symbol>
+      <symbol id="i-stack" viewBox="0 0 24 24">
+        <path d="M3.8 8.9 12 4.5l8.2 4.4L12 13.3z" />
+        <path d="m3.8 12.6 8.2 4.4 8.2-4.4" />
+        <path d="m3.8 16.3 8.2 4.4 8.2-4.4" />
+      </symbol>
+      <symbol id="i-gear" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="3" />
+        <path
+          d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"
+        />
+      </symbol>
+      <symbol id="i-power" viewBox="0 0 24 24">
+        <path d="M12 3.5v8" />
+        <path d="M7.1 6.6a7.5 7.5 0 1 0 9.8 0" />
+      </symbol>
+      <symbol id="i-person" viewBox="0 0 24 24">
+        <circle cx="12" cy="8.5" r="3.6" />
+        <path d="M5.2 19.6a6.8 6.8 0 0 1 13.6 0" />
+      </symbol>
+      <symbol id="i-chevron-right" viewBox="0 0 24 24">
+        <path d="m9.5 5.5 6.5 6.5-6.5 6.5" />
+      </symbol>
+      <symbol id="i-chevron-down" viewBox="0 0 24 24">
+        <path d="m5.5 9.5 6.5 6.5 6.5-6.5" />
+      </symbol>
+      <symbol id="i-xmark" viewBox="0 0 24 24">
+        <path d="M6.5 6.5l11 11M17.5 6.5l-11 11" />
+      </symbol>
+      <symbol id="i-check" viewBox="0 0 24 24">
+        <path d="m5 12.5 4.5 4.5L19 7.5" />
+      </symbol>
+      <symbol id="i-check-circle" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="9" fill="currentColor" stroke="none" />
+        <path d="m8.3 12.3 2.5 2.5 4.9-5.2" stroke="#fff" />
+      </symbol>
+      <symbol id="i-warning" viewBox="0 0 24 24">
+        <path
+          d="M10.3 4.3 2.9 17.1A2 2 0 0 0 4.6 20h14.8a2 2 0 0 0 1.7-2.9L13.7 4.3a2 2 0 0 0-3.4 0z"
+        />
+        <path d="M12 9.5v4.2" />
+        <path d="M12 16.9v.1" />
+      </symbol>
+      <symbol id="i-warning-fill" viewBox="0 0 24 24">
+        <path
+          d="M10.3 4.3 2.9 17.1A2 2 0 0 0 4.6 20h14.8a2 2 0 0 0 1.7-2.9L13.7 4.3a2 2 0 0 0-3.4 0z"
+          fill="currentColor"
+          stroke="none"
+        />
+        <path d="M12 9.5v4.2M12 16.9v.1" stroke="#fff" />
+      </symbol>
+      <symbol id="i-info-fill" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="9" fill="currentColor" stroke="none" />
+        <path d="M12 11v5.2M12 7.9v.1" stroke="#fff" />
+      </symbol>
+      <symbol id="i-question" viewBox="0 0 24 24">
+        <path d="M9.4 9.2a2.7 2.7 0 0 1 5.2 1c0 1.9-2.6 2.4-2.6 4.1" />
+        <path d="M12 18.1v.1" />
+      </symbol>
+      <symbol id="i-pause" viewBox="0 0 24 24">
+        <rect
+          x="7"
+          y="5.5"
+          width="3.4"
+          height="13"
+          rx="1.2"
+          fill="currentColor"
+          stroke="none"
+        />
+        <rect
+          x="13.6"
+          y="5.5"
+          width="3.4"
+          height="13"
+          rx="1.2"
+          fill="currentColor"
+          stroke="none"
+        />
+      </symbol>
+      <symbol id="i-stop" viewBox="0 0 24 24">
+        <rect
+          x="6.5"
+          y="6.5"
+          width="11"
+          height="11"
+          rx="2.4"
+          fill="currentColor"
+          stroke="none"
+        />
+      </symbol>
+      <symbol id="i-refresh" viewBox="0 0 24 24">
+        <path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3" />
+        <path d="M19.5 4.5v4h-4" />
+      </symbol>
+      <symbol id="i-terminal" viewBox="0 0 24 24">
+        <rect x="3" y="4.5" width="18" height="15" rx="3.5" />
+        <path d="m7.5 9.5 3 2.5-3 2.5" />
+        <path d="M12.5 15h4" />
+      </symbol>
+    </svg>
+
+    <header class="toolbar">
+      <div class="brand">
+        <img
+          src="/logo.svg"
+          class="brand-logo"
+          alt="中国电信"
+          width="88"
+          height="25"
+        />
+        <span class="brand-divider" aria-hidden="true"></span>
+        <div class="brand-title">
+          <h1>网上大学</h1>
+          <span>自动化挂课工作台</span>
         </div>
+      </div>
+      <span
+        id="connection"
+        class="connection"
+        role="status"
+        data-state="connecting"
+        >正在连接</span
+      >
+      <div class="toolbar-actions">
+        <button
+          type="button"
+          id="account-card"
+          class="account-button"
+          data-status="missing"
+          popovertarget="account-menu"
+          aria-label="账号与登录凭证"
+        >
+          <span class="avatar" aria-hidden="true">
+            <span class="avatar-initial" id="account-initial"></span>
+            <svg class="icon avatar-glyph"><use href="#i-person" /></svg>
+          </span>
+          <span class="account-text">
+            <strong id="account">未登录</strong>
+            <small id="credential-tag">待登录</small>
+          </span>
+          <svg class="icon chevron" aria-hidden="true">
+            <use href="#i-chevron-down" />
+          </svg>
+        </button>
+        <button
+          type="button"
+          id="settings-open"
+          class="icon-button"
+          aria-label="设置"
+          title="设置"
+          disabled
+        >
+          <svg class="icon" aria-hidden="true"><use href="#i-gear" /></svg>
+        </button>
+      </div>
+    </header>
 
-        <div class="header-right">
-          <div class="account-bar" id="account-card" data-status="missing">
-            <div class="account-meta">
-              <div class="account-line">
-                <svg
-                  width="14"
-                  height="14"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  aria-hidden="true"
-                >
-                  <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-                  <circle cx="12" cy="7" r="4" />
-                </svg>
-                <strong id="account">未登录</strong>
-                <span class="status-tag" id="credential-tag">待登录</span>
-              </div>
-              <small id="credential">正在读取登录状态</small>
-            </div>
-            <div class="account-actions">
-              <button type="button" data-kind="login" class="btn-sm">
-                登录 / 更新凭证
-              </button>
-              <button
-                type="button"
-                data-kind="switch_account"
-                class="btn-sm subtle"
-              >
-                切换账号
-              </button>
-              <button
-                type="button"
-                data-kind="clear_credentials"
-                class="btn-sm subtle"
-                id="clear-cred-btn"
-              >
-                清除凭证
-              </button>
-            </div>
-          </div>
-
-          <div class="header-divider" aria-hidden="true"></div>
-          <button
-            type="button"
-            id="settings-open"
-            class="btn-sm subtle"
-            disabled
-          >
-            设置
-          </button>
-
-          <button
-            type="button"
-            id="exit"
-            class="btn-sm subtle exit-btn"
-            title="安全停止任务并关闭后台服务"
-          >
-            <svg
-              width="14"
-              height="14"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              aria-hidden="true"
-            >
-              <path d="M18.36 6.64a9 9 0 1 1-12.73 0" />
-              <line x1="12" y1="2" x2="12" y2="12" />
-            </svg>
-            <span>关闭服务</span>
-          </button>
+    <div id="account-menu" class="menu" popover role="group" aria-label="账号">
+      <div class="menu-header" data-status="missing" id="account-summary">
+        <span class="avatar avatar-large" aria-hidden="true">
+          <span class="avatar-initial" id="menu-initial"></span>
+          <svg class="icon avatar-glyph"><use href="#i-person" /></svg>
+        </span>
+        <div class="menu-header-text">
+          <strong id="menu-account">未登录</strong>
+          <small id="credential">正在读取登录状态</small>
         </div>
-      </header>
+      </div>
+      <hr class="menu-separator" />
+      <button type="button" class="menu-item" data-kind="login">
+        登录 / 更新凭证
+      </button>
+      <button type="button" class="menu-item" data-kind="switch_account">
+        切换账号
+      </button>
+      <hr class="menu-separator" />
+      <button
+        type="button"
+        class="menu-item destructive"
+        data-kind="clear_credentials"
+        id="clear-cred-btn"
+      >
+        清除凭证…
+      </button>
+      <hr class="menu-separator" />
+      <button
+        type="button"
+        id="exit"
+        class="menu-item"
+        title="安全停止任务并关闭后台服务"
+      >
+        关闭服务
+      </button>
+    </div>
 
-      <main class="workspace">
-        <!-- Dynamic Status & Active Task Control Bar -->
-        <section class="task-banner" id="task-banner" data-active="false">
-          <div class="task-banner-main">
-            <div class="task-status-group">
-              <span id="phase" class="pill" data-phase="idle">空闲</span>
-              <h2 id="operation-title">系统就绪</h2>
-              <span class="task-sep" aria-hidden="true">·</span>
-              <p id="status" role="status">等待连接</p>
-            </div>
-
-            <div class="task-right">
-              <div class="recommended-box" id="recommended-box">
-                <small>下一步建议</small>
-                <button type="button" id="recommended" class="btn-sm" disabled>
-                  等待连接
-                </button>
-              </div>
-
-              <div class="task-controls" id="task-controls" hidden>
-                <button type="button" id="stop" class="btn-sm">
-                  <svg
-                    width="13"
-                    height="13"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    aria-hidden="true"
-                  >
-                    <rect x="6" y="4" width="4" height="16" />
-                    <rect x="14" y="4" width="4" height="16" />
-                  </svg>
-                  本课后停止
-                </button>
-                <button type="button" id="cancel" class="btn-sm danger">
-                  <svg
-                    width="13"
-                    height="13"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    aria-hidden="true"
-                  >
-                    <circle cx="12" cy="12" r="10" />
-                    <line x1="15" y1="9" x2="9" y2="15" />
-                    <line x1="9" y1="9" x2="15" y2="15" />
-                  </svg>
-                  取消任务
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <div id="progress-area" hidden>
-            <label id="progress-label" for="progress"></label>
-            <progress id="progress" max="1" value="0"></progress>
-          </div>
-        </section>
-
-        <!-- Error Alert -->
-        <p id="error" role="alert"></p>
-
-        <!-- Interactive Confirmation Card (Only visible when backend awaits human confirmation) -->
-        <section
-          id="prompt"
-          class="panel prompt-card"
-          hidden
-          aria-live="polite"
-        ></section>
-
-        <!-- Core Bento Workbench Grid -->
-        <div class="workbench-grid" aria-label="业务工作台">
-          <!-- Card 1: Course Learning -->
-          <section class="panel module-card">
-            <div class="module-head">
-              <div class="module-title">
-                <span class="module-icon" aria-hidden="true">
-                  <svg
-                    width="16"
-                    height="16"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                  >
-                    <polygon points="5 3 19 12 5 21 5 3" />
-                  </svg>
-                </span>
-                <div>
-                  <h2>课程学习</h2>
-                  <small>自动按队列完成视频播放与文档章节</small>
-                </div>
-              </div>
-              <button
-                type="button"
-                data-kind="clear_courses"
-                class="btn-sm subtle"
-              >
-                清空队列
-              </button>
-            </div>
-
-            <div class="metric-pair" aria-label="课程队列统计">
-              <article class="metric-box" data-tone="info">
-                <small>待学课程</small>
-                <strong id="learning_count">—</strong>
-                <span class="metric-note">等待学习的队列</span>
-              </article>
-              <article class="metric-box" data-tone="warn">
-                <small>学习异常</small>
-                <strong id="learning_failure_count">—</strong>
-                <span class="metric-note" id="failure-note"
-                  >挂课失败或待重试</span
-                >
-              </article>
-            </div>
-
-            <div class="module-note">
-              <span
-                >学习进行中可随时点击顶部「本课后停止」，当前课程完成后将安全停机。</span
-              >
-            </div>
-
-            <div class="module-actions">
-              <button type="button" data-kind="learn" class="primary">
-                <svg
-                  width="14"
-                  height="14"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  aria-hidden="true"
-                >
-                  <polygon points="5 3 19 12 5 21 5 3" />
-                </svg>
-                开始学习
-              </button>
-              <button type="button" data-kind="tasks">异常统计与重试</button>
-            </div>
-          </section>
-
-          <!-- Card 2: AI Exam -->
-          <section class="panel module-card">
-            <div class="module-head">
-              <div class="module-title">
-                <span class="module-icon" aria-hidden="true">
-                  <svg
-                    width="16"
-                    height="16"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                  >
-                    <path d="M9 11l3 3L22 4" />
-                    <path
-                      d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"
-                    />
-                  </svg>
-                </span>
-                <div>
-                  <h2>自动考试</h2>
-                  <small>AI 辅助解析试题并自动填写答案</small>
-                </div>
-              </div>
-              <div class="module-head-actions">
-                <span class="status-tag" id="ai-badge">AI 待检测</span>
-                <button
-                  type="button"
-                  data-kind="clear_exams"
-                  class="btn-sm subtle"
-                  aria-label="清空考试队列"
-                >
-                  清空队列
-                </button>
-              </div>
-            </div>
-
-            <div class="metric-pair" aria-label="考试队列统计">
-              <article class="metric-box" data-tone="info">
-                <small>待考科目</small>
-                <strong id="exam_count">—</strong>
-                <span class="metric-note">等待答题的队列</span>
-              </article>
-              <article class="metric-box" data-tone="warn">
-                <small>考试复查</small>
-                <strong id="manual_exam_count">—</strong>
-                <span class="metric-note">需人工确认或交卷</span>
-              </article>
-            </div>
-
-            <label class="switch-row" for="auto-submit">
-              <div class="switch-text">
-                <span>答题后自动交卷</span>
-                <small>关闭时仅保存已答题目，留待人工复查交卷</small>
-              </div>
-              <input type="checkbox" id="auto-submit" />
-            </label>
-
-            <div class="module-actions">
-              <button type="button" data-kind="exam" class="primary">
-                <svg
-                  width="14"
-                  height="14"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  aria-hidden="true"
-                >
-                  <path d="M9 11l3 3L22 4" />
-                  <path
-                    d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"
-                  />
-                </svg>
-                开始考试
-              </button>
-            </div>
-          </section>
-
-          <!-- Card 3: Link Discovery & Course Material Workbench -->
-          <section class="panel module-card workbench-card">
-            <div class="module-head">
-              <div class="module-title">
-                <span class="module-icon" aria-hidden="true">
-                  <svg
-                    width="16"
-                    height="16"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                  >
-                    <path
-                      d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"
-                    />
-                    <path
-                      d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"
-                    />
-                  </svg>
-                </span>
-                <div>
-                  <h2>链接录入与资料下载</h2>
-                  <small
-                    >粘贴课程、专区、培训班或考试链接，支持批量解析入队或下载课件</small
-                  >
-                </div>
-              </div>
-              <button type="button" id="clear-workbench" class="btn-sm subtle">
-                清空输入
-              </button>
-            </div>
-
-            <textarea
-              id="workbench-input"
-              aria-label="链接输入框"
-              placeholder="粘贴 HTTP/HTTPS 链接或包含链接的通知文字&#10;· 解析入队：支持课程、主题、考试、培训班、学习专区及案例库链接&#10;· 资料下载：支持课程及主题链接，保存课件与导学"
-            ></textarea>
-
-            <div class="module-actions">
-              <button type="button" data-kind="links" class="primary">
-                <svg
-                  width="14"
-                  height="14"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  aria-hidden="true"
-                >
-                  <line x1="12" y1="5" x2="12" y2="19" />
-                  <line x1="5" y1="12" x2="19" y2="12" />
-                </svg>
-                解析并加入队列
-              </button>
-              <button type="button" data-kind="select">在平台选择课程</button>
-              <button type="button" data-kind="references">
-                <svg
-                  width="14"
-                  height="14"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  aria-hidden="true"
-                >
-                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                  <polyline points="7 10 12 15 17 10" />
-                  <line x1="12" y1="15" x2="12" y2="3" />
-                </svg>
-                下载课件与导学
-              </button>
-            </div>
-          </section>
+    <main class="workspace">
+      <section
+        class="hero"
+        id="task-banner"
+        data-active="false"
+        data-phase="idle"
+        aria-labelledby="operation-title"
+      >
+        <div class="hero-glyph" aria-hidden="true">
+          <svg class="icon glyph"><use id="hero-glyph" href="#i-check" /></svg>
+          <svg class="spinner" viewBox="0 0 24 24">
+            <g stroke="currentColor" stroke-width="2.4" stroke-linecap="round">
+              <path d="M12 2.8v4.4" />
+              <path
+                d="M12 2.8v4.4"
+                transform="rotate(45 12 12)"
+                opacity=".18"
+              />
+              <path
+                d="M12 2.8v4.4"
+                transform="rotate(90 12 12)"
+                opacity=".27"
+              />
+              <path
+                d="M12 2.8v4.4"
+                transform="rotate(135 12 12)"
+                opacity=".36"
+              />
+              <path
+                d="M12 2.8v4.4"
+                transform="rotate(180 12 12)"
+                opacity=".47"
+              />
+              <path
+                d="M12 2.8v4.4"
+                transform="rotate(225 12 12)"
+                opacity=".59"
+              />
+              <path
+                d="M12 2.8v4.4"
+                transform="rotate(270 12 12)"
+                opacity=".72"
+              />
+              <path
+                d="M12 2.8v4.4"
+                transform="rotate(315 12 12)"
+                opacity=".86"
+              />
+            </g>
+          </svg>
         </div>
-
-        <!-- Summary Result Panel (Shown when an operation outputs summary rows) -->
-        <section id="summary" class="panel summary-card" hidden></section>
-
-        <!-- Live Logs & Global Maintenance -->
-        <section class="panel logs-panel">
-          <div class="section-head">
-            <div class="section-title-group">
-              <svg
-                width="15"
-                height="15"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                aria-hidden="true"
-              >
-                <polyline points="4 17 10 11 4 5" />
-                <line x1="12" y1="19" x2="20" y2="19" />
-              </svg>
-              <h2>运行日志</h2>
-              <small id="log-meta">最近 400 条</small>
-            </div>
+        <div class="hero-text">
+          <span id="phase" class="phase" data-phase="idle">空闲</span>
+          <h2 id="operation-title">系统就绪</h2>
+          <p id="status" role="status">等待连接</p>
+        </div>
+        <div class="hero-actions">
+          <div class="recommended" id="recommended-box">
             <button
               type="button"
-              data-kind="clear_all"
-              class="btn-sm danger-subtle"
+              id="recommended"
+              class="primary large"
+              disabled
             >
-              清空全部待办（含考试）
+              等待连接
             </button>
           </div>
-          <div id="logs" role="log" aria-label="活动日志"></div>
-        </section>
+          <div class="task-controls" id="task-controls" hidden>
+            <button type="button" id="stop">
+              <svg class="icon" aria-hidden="true"><use href="#i-pause" /></svg>
+              本课后停止
+            </button>
+            <button type="button" id="cancel" class="destructive">
+              <svg class="icon" aria-hidden="true"><use href="#i-stop" /></svg>
+              取消任务
+            </button>
+          </div>
+        </div>
+        <div class="progress" id="progress-area" hidden>
+          <div class="progress-meta">
+            <label id="progress-label" for="progress"></label>
+            <span id="progress-time"></span>
+          </div>
+          <progress id="progress" max="1" value="0"></progress>
+        </div>
+      </section>
 
-        <footer class="app-footer">
-          <span>统一管理课程学习、考试与资料下载</span>
-          <span
-            >最小化或切换标签页不影响后台执行；直接关闭此窗口即可安全保存进度并退出</span
+      <section
+        id="summary"
+        class="card summary"
+        aria-live="polite"
+        hidden
+      ></section>
+
+      <section class="card composer" aria-labelledby="composer-title">
+        <header class="card-head">
+          <svg class="icon card-icon" aria-hidden="true">
+            <use href="#i-link" />
+          </svg>
+          <div class="card-title">
+            <h2 id="composer-title">添加课程</h2>
+            <p>
+              粘贴课程、专题、培训班、专区、案例库或考试链接，也可以粘贴包含链接的通知原文
+            </p>
+          </div>
+          <button type="button" id="clear-workbench" class="plain">清空</button>
+        </header>
+        <textarea
+          id="workbench-input"
+          aria-labelledby="composer-title"
+          aria-describedby="link-error composer-hint"
+          spellcheck="false"
+          placeholder="https://…&#10;每行一个链接，或直接粘贴通知全文"
+        ></textarea>
+        <p id="link-error" class="field-error" role="alert"></p>
+        <div class="card-foot composer-foot">
+          <p class="hint" id="composer-hint">
+            资料下载支持课程与专题链接，保存课件、导学与资料索引
+          </p>
+          <div class="button-row">
+            <button type="button" data-kind="select">
+              <svg class="icon" aria-hidden="true">
+                <use href="#i-pointer" />
+              </svg>
+              在平台选择
+            </button>
+            <button type="button" data-kind="references">
+              <svg class="icon" aria-hidden="true">
+                <use href="#i-download" />
+              </svg>
+              下载课件与导学
+            </button>
+            <button type="button" data-kind="links" class="primary">
+              <svg class="icon" aria-hidden="true"><use href="#i-plus" /></svg>
+              解析并加入队列
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <section class="card data-card" aria-labelledby="data-title">
+        <header class="card-head">
+          <svg class="icon card-icon" aria-hidden="true">
+            <use href="#i-stack" />
+          </svg>
+          <div class="card-title">
+            <h2 id="data-title">任务数据</h2>
+            <p>本地队列，无需登录即可管理</p>
+          </div>
+        </header>
+        <div class="row-list">
+          <button type="button" class="row" data-kind="import_queues">
+            <svg class="icon row-icon" aria-hidden="true">
+              <use href="#i-import" />
+            </svg>
+            <span class="row-text">
+              <strong>导入任务</strong>
+              <small id="import-note">从分享的 JSON 文件加入队列</small>
+            </span>
+            <svg class="icon chevron" aria-hidden="true">
+              <use href="#i-chevron-right" />
+            </svg>
+          </button>
+          <button type="button" class="row" data-kind="export_queues">
+            <svg class="icon row-icon" aria-hidden="true">
+              <use href="#i-export" />
+            </svg>
+            <span class="row-text">
+              <strong>导出任务</strong>
+              <small>生成可分享的 JSON 文件</small>
+            </span>
+            <svg class="icon chevron" aria-hidden="true">
+              <use href="#i-chevron-right" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            class="row destructive"
+            data-kind="clear_queues"
           >
-        </footer>
-      </main>
+            <svg class="icon row-icon" aria-hidden="true">
+              <use href="#i-trash" />
+            </svg>
+            <span class="row-text">
+              <strong>清空队列</strong>
+              <small>清空前自动备份，保留考试记录</small>
+            </span>
+            <svg class="icon chevron" aria-hidden="true">
+              <use href="#i-chevron-right" />
+            </svg>
+          </button>
+        </div>
+        <input
+          type="file"
+          id="queue-import"
+          accept=".json,application/json"
+          hidden
+        />
+      </section>
+
+      <section class="card module learning" aria-labelledby="learning-title">
+        <header class="card-head">
+          <svg class="icon card-icon" aria-hidden="true">
+            <use href="#i-play-rect" />
+          </svg>
+          <div class="card-title">
+            <h2 id="learning-title">课程学习</h2>
+            <p>按队列完成视频与文档章节</p>
+          </div>
+        </header>
+        <div class="stats" aria-label="课程队列统计">
+          <div class="stat">
+            <strong id="learning_count">—</strong>
+            <span>待学课程</span>
+            <small id="learning-note"></small>
+          </div>
+          <div class="stat">
+            <strong id="discovery_count">—</strong>
+            <span>待解析入口</span>
+          </div>
+          <div class="stat" data-tone="warn">
+            <strong id="learning_failure_count">—</strong>
+            <span>异常任务</span>
+            <small id="failure-note"></small>
+          </div>
+        </div>
+        <button type="button" id="tasks-open" class="link-row">
+          <span class="switch-text">
+            <span>查看异常任务</span>
+            <small>查看失败原因，重新排队可恢复的任务</small>
+          </span>
+          <svg class="icon chevron" aria-hidden="true">
+            <use href="#i-chevron-right" />
+          </svg>
+        </button>
+        <div class="card-foot">
+          <p class="hint">学习中可选择「本课后停止」，当前课程结束后暂停</p>
+          <button type="button" data-kind="learn" class="primary">
+            <svg class="icon" aria-hidden="true"><use href="#i-play" /></svg>
+            开始学习
+          </button>
+        </div>
+      </section>
+
+      <section class="card module exam" aria-labelledby="exam-title">
+        <header class="card-head">
+          <svg class="icon card-icon" aria-hidden="true">
+            <use href="#i-exam" />
+          </svg>
+          <div class="card-title">
+            <h2 id="exam-title">自动考试</h2>
+            <p>AI 辅助解析试题并填写答案</p>
+          </div>
+          <span class="badge" id="ai-badge">AI 待检测</span>
+        </header>
+        <div class="stats" aria-label="考试队列统计">
+          <div class="stat">
+            <strong id="exam_count">—</strong>
+            <span>待考科目</span>
+          </div>
+          <div class="stat" data-tone="warn">
+            <strong id="manual_exam_count">—</strong>
+            <span>考试复查</span>
+            <small>需人工确认或交卷</small>
+          </div>
+        </div>
+        <label class="switch-row" for="auto-submit">
+          <span class="switch-text">
+            <span>答题后自动交卷</span>
+            <small>关闭时保留试卷，供人工复查后交卷</small>
+          </span>
+          <input type="checkbox" id="auto-submit" role="switch" />
+        </label>
+        <div class="card-foot">
+          <p class="hint">题目不完整或结果不确定时保留试卷</p>
+          <button type="button" data-kind="exam" class="primary">
+            <svg class="icon" aria-hidden="true"><use href="#i-check" /></svg>
+            开始考试
+          </button>
+        </div>
+      </section>
+
+      <section class="card logs" aria-labelledby="logs-title">
+        <details id="log-details">
+          <summary>
+            <svg class="icon card-icon" aria-hidden="true">
+              <use href="#i-terminal" />
+            </svg>
+            <span id="logs-title" class="logs-title">运行日志</span>
+            <small id="log-meta">最近 400 条</small>
+            <span class="disclosure" aria-hidden="true">
+              <span class="disclosure-show">显示</span
+              ><span class="disclosure-hide">隐藏</span>
+              <svg class="icon"><use href="#i-chevron-down" /></svg>
+            </span>
+          </summary>
+          <div id="logs" role="log" aria-label="活动日志"></div>
+        </details>
+      </section>
+
+      <footer class="footer">
+        最小化或切换标签页不影响后台执行；直接关闭此窗口即可安全保存进度并退出。
+      </footer>
+    </main>
+
+    <div class="toasts">
+      <div id="notification" class="toast" role="status" hidden></div>
+      <div id="error-toast" class="toast" data-tone="error" hidden>
+        <svg class="icon toast-icon" aria-hidden="true">
+          <use href="#i-warning-fill" />
+        </svg>
+        <p id="error" role="alert"></p>
+        <button
+          type="button"
+          id="error-close"
+          class="toast-close"
+          aria-label="关闭提示"
+        >
+          <svg class="icon" aria-hidden="true"><use href="#i-xmark" /></svg>
+        </button>
+      </div>
     </div>
+
+    <dialog
+      id="prompt"
+      class="sheet alert"
+      aria-labelledby="prompt-title"
+    ></dialog>
+
+    <dialog
+      id="queue-dialog"
+      class="sheet"
+      aria-labelledby="queue-title"
+      aria-describedby="queue-description"
+    >
+      <form id="queue-form">
+        <div class="sheet-head">
+          <h2 id="queue-title"></h2>
+          <p id="queue-description" class="sheet-description"></p>
+        </div>
+        <div class="sheet-body">
+          <label id="queue-account-field" class="field">
+            <span class="group-title">账号范围</span>
+            <select id="queue-account"></select>
+          </label>
+          <fieldset id="queue-scope" class="choice-group">
+            <legend class="group-title">选择范围</legend>
+            <div id="queue-options" class="group-box choices"></div>
+          </fieldset>
+          <p id="queue-count" class="group-footnote" aria-live="polite"></p>
+          <div id="queue-issues" hidden>
+            <div class="issues-head">
+              <span class="group-title">失败原因</span>
+              <button type="button" id="queue-refresh" class="plain">
+                <svg class="icon" aria-hidden="true">
+                  <use href="#i-refresh" />
+                </svg>
+                刷新
+              </button>
+            </div>
+            <ul id="queue-issue-list" class="group-box issue-list"></ul>
+            <p id="queue-empty" class="group-box empty-state">暂无异常任务</p>
+            <p class="group-footnote">
+              权限、报名期限等条件改变后，再重新检查受阻任务。重新排队后，点击“开始学习”继续。
+            </p>
+          </div>
+          <p id="queue-error" class="field-error" role="alert"></p>
+        </div>
+        <div class="sheet-foot">
+          <button type="button" id="queue-close">取消</button>
+          <div id="queue-retry-actions" class="button-row" hidden>
+            <button type="button" data-recovery="blocked">
+              重新检查受阻任务
+            </button>
+            <button type="button" data-recovery="retry" class="primary">
+              重试可恢复任务
+            </button>
+          </div>
+          <button type="submit" id="queue-submit"></button>
+        </div>
+      </form>
+    </dialog>
+
     <dialog
       id="settings-dialog"
-      class="settings-dialog"
+      class="sheet wide"
       aria-labelledby="settings-title"
     >
       <form id="settings-form">
-        <div class="section-head">
-          <h2 id="settings-title">工作台设置</h2>
-          <button type="button" id="settings-close" aria-label="关闭设置">
-            关闭
-          </button>
+        <div class="sheet-head">
+          <h2 id="settings-title">设置</h2>
+          <p class="sheet-description">
+            保存后自动记住。AI
+            和学习参数在下次任务生效，浏览器路径在重启后生效。
+          </p>
         </div>
-        <p class="settings-note">
-          保存后自动记住配置。AI
-          和学习参数在下次任务生效，浏览器路径在重启后生效。
-        </p>
-        <fieldset>
-          <legend>AI 自动考试</legend>
-          <div class="settings-grid">
-            <label class="settings-field"
-              >协议<select data-setting="openai.protocol">
-                <option value="responses">Responses</option>
-                <option value="chat">Chat Completions</option>
-              </select></label
-            >
-            <label class="settings-field"
-              >模型名称<input
-                data-setting="openai.model"
-                maxlength="256"
-                placeholder="填写服务提供的模型名称"
-            /></label>
-            <label class="settings-field settings-wide"
-              >接口地址<input
-                data-setting="openai.baseURL"
-                type="url"
-                required
-                maxlength="2048"
-            /></label>
-            <label class="settings-field settings-wide"
-              >API Key<input
-                data-setting="openai.apiKey"
-                type="password"
-                autocomplete="new-password"
-                maxlength="4096"
-                placeholder="未配置"
-              /><small>留空保留已有密钥。</small></label
-            >
-            <label class="settings-wide settings-key-clear"
-              ><input id="settings-clear-key" type="checkbox" /> 清除已保存的
-              API Key</label
-            >
-          </div>
-        </fieldset>
-        <details>
-          <summary>高级设置</summary>
-          <fieldset>
-            <legend>请求与答案</legend>
-            <div class="settings-grid">
-              <label class="settings-field"
-                >输出格式<select data-setting="openai.output">
-                  <option value="prompt_json">JSON 提示词</option>
-                  <option value="json_schema">JSON Schema</option>
-                </select></label
-              >
-              <label class="settings-field"
-                >失败重试次数<input
-                  data-setting="openai.retries"
-                  type="number"
-                  min="0"
-                  max="5"
+        <div class="sheet-body">
+          <section class="form-group" aria-labelledby="settings-ai-title">
+            <h3 class="group-title" id="settings-ai-title">AI 自动考试</h3>
+            <div class="group-box">
+              <label class="form-row">
+                <span class="form-label">接口地址</span>
+                <input
+                  id="settings-base-url"
+                  data-setting="openai.baseURL"
+                  type="url"
                   required
-              /></label>
-              <label class="settings-field"
-                >单次请求超时（秒）<input
-                  data-setting="openai.timeout"
-                  type="number"
-                  min="1"
-                  max="3600"
-                  required
-              /></label>
-              <label class="settings-field"
-                >每题总期限（秒）<input
-                  data-setting="openai.totalTimeout"
-                  type="number"
-                  min="1"
-                  max="3600"
-                  required
-              /></label>
+                  maxlength="2048"
+                  spellcheck="false"
+                />
+              </label>
+              <div class="form-row">
+                <label class="form-label" for="settings-api-key">API Key</label>
+                <div class="form-control">
+                  <input
+                    id="settings-api-key"
+                    data-setting="openai.apiKey"
+                    type="password"
+                    autocomplete="new-password"
+                    maxlength="4096"
+                    placeholder="未配置"
+                    aria-describedby="settings-api-key-note"
+                  />
+                  <div class="form-note-row">
+                    <small id="settings-api-key-note">留空保留已有密钥。</small>
+                    <label class="checkbox"
+                      ><input
+                        id="settings-clear-key"
+                        type="checkbox"
+                      />清除已保存的 API Key</label
+                    >
+                  </div>
+                </div>
+              </div>
+              <div class="form-row">
+                <label class="form-label" for="settings-model">模型名称</label>
+                <div class="form-control">
+                  <div class="model-row">
+                    <div id="model-picker" class="model-picker">
+                      <div class="model-input-row">
+                        <input
+                          id="settings-model"
+                          data-setting="openai.model"
+                          role="combobox"
+                          aria-autocomplete="list"
+                          aria-expanded="false"
+                          aria-controls="model-options"
+                          aria-describedby="models-status"
+                          autocomplete="off"
+                          spellcheck="false"
+                          maxlength="256"
+                          placeholder="输入模型名称，或获取后搜索选择"
+                        />
+                        <button
+                          type="button"
+                          id="models-toggle"
+                          aria-label="展开模型列表"
+                          aria-controls="model-options"
+                          aria-expanded="false"
+                          disabled
+                        >
+                          <svg class="icon" aria-hidden="true">
+                            <use href="#i-chevron-down" />
+                          </svg>
+                        </button>
+                      </div>
+                      <div id="model-popup" class="model-popup" hidden>
+                        <div
+                          id="model-options"
+                          role="listbox"
+                          aria-label="可用模型"
+                        ></div>
+                        <p id="models-empty" hidden>
+                          没有匹配的模型，可继续手动填写。
+                        </p>
+                      </div>
+                    </div>
+                    <button type="button" id="models-fetch">获取模型</button>
+                  </div>
+                  <small id="models-status" role="status"
+                    >填写接口地址和 API Key
+                    后可获取模型，也可直接手动填写。</small
+                  >
+                </div>
+              </div>
+              <label class="form-row">
+                <span class="form-label">协议</span>
+                <select data-setting="openai.protocol">
+                  <option value="responses">Responses</option>
+                  <option value="chat">Chat Completions</option>
+                </select>
+              </label>
             </div>
-          </fieldset>
-          <fieldset>
-            <legend>课程学习</legend>
-            <div class="settings-grid">
-              <label class="settings-field"
-                >进度检查间隔（秒）<input
-                  data-setting="learning.watchSlice"
-                  type="number"
-                  min="1"
-                  max="120"
-                  required
-              /></label>
-              <label class="settings-field"
-                >播放停滞期限（秒）<input
-                  data-setting="learning.stallLimit"
-                  type="number"
-                  min="30"
-                  max="3600"
-                  required
-              /></label>
-              <label class="settings-field"
-                >单章节期限（秒）<input
-                  data-setting="learning.sectionTimeout"
-                  type="number"
-                  min="60"
-                  max="86400"
-                  required
-              /></label>
-            </div>
-          </fieldset>
-          <label class="settings-field"
-            >浏览器可执行文件路径<input
-              data-setting="browser.executable"
-              maxlength="4096"
-              placeholder="留空自动查找 Edge / Chrome"
-          /></label>
-        </details>
-        <p id="settings-error" role="alert"></p>
-        <div class="settings-footer">
+          </section>
+          <details class="advanced">
+            <summary>
+              高级设置
+              <svg class="icon" aria-hidden="true">
+                <use href="#i-chevron-down" />
+              </svg>
+            </summary>
+            <section
+              class="form-group"
+              aria-labelledby="settings-request-title"
+            >
+              <h3 class="group-title" id="settings-request-title">
+                请求与答案
+              </h3>
+              <div class="group-box">
+                <label class="form-row">
+                  <span class="form-label">输出格式</span>
+                  <select data-setting="openai.output">
+                    <option value="prompt_json">JSON 提示词</option>
+                    <option value="json_schema">JSON Schema</option>
+                  </select>
+                </label>
+                <label class="form-row">
+                  <span class="form-label">失败重试次数</span>
+                  <input
+                    data-setting="openai.retries"
+                    type="number"
+                    min="0"
+                    max="5"
+                    required
+                  />
+                </label>
+                <label class="form-row">
+                  <span class="form-label">单次请求超时（秒）</span>
+                  <input
+                    data-setting="openai.timeout"
+                    type="number"
+                    min="1"
+                    max="3600"
+                    required
+                  />
+                </label>
+                <label class="form-row">
+                  <span class="form-label">每题总期限（秒）</span>
+                  <input
+                    data-setting="openai.totalTimeout"
+                    type="number"
+                    min="1"
+                    max="3600"
+                    required
+                  />
+                </label>
+              </div>
+            </section>
+            <section
+              class="form-group"
+              aria-labelledby="settings-learning-title"
+            >
+              <h3 class="group-title" id="settings-learning-title">课程学习</h3>
+              <div class="group-box">
+                <label class="form-row">
+                  <span class="form-label">进度检查间隔（秒）</span>
+                  <input
+                    data-setting="learning.watchSlice"
+                    type="number"
+                    min="1"
+                    max="120"
+                    required
+                  />
+                </label>
+                <label class="form-row">
+                  <span class="form-label">播放停滞期限（秒）</span>
+                  <input
+                    data-setting="learning.stallLimit"
+                    type="number"
+                    min="30"
+                    max="3600"
+                    required
+                  />
+                </label>
+                <label class="form-row">
+                  <span class="form-label">单章节期限（秒）</span>
+                  <input
+                    data-setting="learning.sectionTimeout"
+                    type="number"
+                    min="60"
+                    max="86400"
+                    required
+                  />
+                </label>
+              </div>
+            </section>
+            <section
+              class="form-group"
+              aria-labelledby="settings-browser-title"
+            >
+              <h3 class="group-title" id="settings-browser-title">浏览器</h3>
+              <div class="group-box">
+                <label class="form-row">
+                  <span class="form-label">可执行文件路径</span>
+                  <input
+                    data-setting="browser.executable"
+                    maxlength="4096"
+                    spellcheck="false"
+                    placeholder="留空自动查找 Edge / Chrome"
+                  />
+                </label>
+              </div>
+            </section>
+          </details>
+          <p id="settings-error" class="field-error" role="alert"></p>
+        </div>
+        <div class="sheet-foot">
+          <button type="button" id="settings-close">取消</button>
           <button type="submit" id="settings-save" class="primary">
             保存设置
           </button>

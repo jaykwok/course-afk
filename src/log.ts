@@ -13,7 +13,7 @@ export function redact(input: unknown): string {
       "$1[已隐藏]",
     )
     .replace(
-      /((?:authorization|cookie|x-token|api[_-]?key|access[_-]?token|password)\s*[:=]\s*)[^\r\n,;]+/gi,
+      /((?:authorization|cookie|x-token|api[_-]?key|access[_-]?token|token|ticket|bootstrap|password)\s*[:=]\s*)[^\r\n,;]+/gi,
       "$1[已隐藏]",
     )
     .replace(/\bBearer(?:__|\s+)[\w.\-]+/gi, "Bearer [已隐藏]")

@@ -221,3 +221,31 @@ test("reference runs leave learning completion and queues unchanged", async () =
     await temp.close();
   }
 });
+
+test("failure queues stay exclusive across restart and explicit requeue preserves pending enrollment", async () => {
+  const temp = await temporary();
+  let repo = new Repository(temp.dir);
+  try {
+    const task = repo.upsert(SUBJECT, "a");
+    repo.enqueue(task, "discover");
+    repo.enqueue(task, "learn");
+    repo.intent(task, "enroll", { registerStatus: 0 });
+    repo.review(task, "opaque-one", { recovery: "retry" });
+    repo.review(task, "opaque-two", { recovery: "blocked" });
+    repo.enqueue(task, "discover"); // Even a stale Task object cannot reopen a failure.
+    assert.equal(repo.queue("a", "failure").length, 1);
+    assert.equal(repo.queue("a", "discover").length, 0);
+    assert.equal(repo.queue("a", "learn").length, 0);
+    repo.close();
+    repo = new Repository(temp.dir);
+    assert.equal(repo.queue("a", "discover").length, 0);
+    assert.equal(repo.task(task.id).details.recovery, "blocked");
+    repo.retry(task);
+    assert.equal(repo.queue("a", "discover").length, 1);
+    assert.equal(repo.queue("a", "failure").length, 0);
+    assert.equal(repo.pending(task, "enroll").length, 1);
+  } finally {
+    repo.close();
+    await temp.close();
+  }
+});

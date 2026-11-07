@@ -39,11 +39,16 @@ export function list(value: unknown): any[] {
   if (!Array.isArray(result)) throw new Error("平台响应缺少完整列表");
   return result;
 }
+export type Recovery = "retry" | "blocked";
 export class ReviewRequired extends Error {
   readonly reason: string;
-  constructor(reason: string, message: string) {
+  readonly recovery: Recovery;
+  constructor(reason: string, message: string, recovery: Recovery = "retry") {
     super(message);
     this.reason = reason;
+    this.recovery = recovery;
   }
 }
+export const failureRecovery = (error: unknown): Recovery =>
+  error instanceof ReviewRequired ? error.recovery : "retry";
 export class AuthenticationError extends Error {}

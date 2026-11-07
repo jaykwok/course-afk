@@ -72,6 +72,7 @@ export class BrowserRuntime {
   readonly profile?: string;
   private readonly temporaryProfile: boolean;
   private startupTab?: Tab;
+  private readonly startupTabId?: string;
   management?: Tab;
   readonly retained = new Set<Tab>();
   private origins = new Set([
@@ -100,6 +101,7 @@ export class BrowserRuntime {
         tab.url === "about:blank" &&
         !browser.targetInfo.get(tab.id)?.openerId,
     );
+    this.startupTabId = this.startupTab?.id;
     this.unsubscribe = browser.cdp.on(
       "Target.targetInfoChanged",
       ({ targetInfo }) => this.note(targetInfo.url),
@@ -152,13 +154,20 @@ export class BrowserRuntime {
         this.origins.add(u.origin);
     } catch {}
   }
-  async openManagement(url: string) {
+  async acquireTab() {
     const startup = this.startupTab;
     this.startupTab = undefined;
-    if (startup && !startup.closed && startup.url === "about:blank") {
-      await startup.goto(url);
-      this.management = startup;
-    } else this.management = await this.context.newTab(url);
+    return startup && !startup.closed ? startup : this.context.newTab();
+  }
+  async releaseTab(tab: Tab) {
+    // Sequential work before the workbench opens reuses the launch tab.
+    if (!this.management && tab.id === this.startupTabId && !tab.closed)
+      this.startupTab = tab;
+    else await tab.close();
+  }
+  async openManagement(url: string) {
+    this.management = await this.acquireTab();
+    await this.management.goto(url);
     await this.management.bringToFront();
     return this.management;
   }
@@ -231,10 +240,10 @@ export class TabScope {
   }
   async open(url?: string, timeout = 30000) {
     this.signal.throwIfAborted();
-    const tab = await this.runtime.context.newTab();
+    const tab = await this.runtime.acquireTab();
     this.tabs.add(tab);
     if (this.cancelled || this.signal.aborted) {
-      await tab.close();
+      await this.runtime.releaseTab(tab);
       this.signal.throwIfAborted();
     }
     if (url) {
@@ -242,7 +251,7 @@ export class TabScope {
       try {
         await navigateDocument(tab, url, this.signal, timeout);
       } catch (e) {
-        await tab.close().catch(() => {});
+        await this.runtime.releaseTab(tab).catch(() => {});
         this.tabs.delete(tab);
         throw e;
       }
@@ -261,7 +270,7 @@ export class TabScope {
         .filter(
           (t) => !this.runtime.retained.has(t) && t !== this.runtime.management,
         )
-        .map((t) => t.close()),
+        .map((t) => this.runtime.releaseTab(t)),
     );
     this.tabs.clear();
     const failed = errors.find((r) => r.status === "rejected");

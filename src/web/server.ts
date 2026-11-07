@@ -9,7 +9,8 @@ import { timingSafeEqual } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
 import { token } from "../utils.ts";
 import { Application, ProtocolError } from "../application/runtime.ts";
-import { publicSettings } from "../config.ts";
+import { publicSettings, readSettings, validateSettings } from "../config.ts";
+import { listModels } from "../ai/models.ts";
 
 const equal = (a: unknown, b: string) =>
   typeof a === "string" &&
@@ -121,12 +122,12 @@ export class WebServer {
     )
       throw new ProtocolError("当前窗口只读或连接已失效");
   }
-  private async payload(req: IncomingMessage) {
+  private async payload(req: IncomingMessage, limit = 65536) {
     const chunks: Buffer[] = [];
     let size = 0;
     for await (const chunk of req) {
       size += chunk.length;
-      if (size > 65536) throw new ProtocolError("请求内容过长", 413);
+      if (size > limit) throw new ProtocolError("请求内容过长", 413);
       chunks.push(Buffer.from(chunk));
     }
     let value;
@@ -162,7 +163,14 @@ export class WebServer {
       const path = req.url || "/";
       if (
         req.method === "GET" &&
-        ["/", "/app.js", "/style.css", "/logo.svg"].includes(path)
+        [
+          "/",
+          "/app.js",
+          "/style.css",
+          "/logo.svg",
+          "/favicon.svg",
+          "/favicon-dark.svg",
+        ].includes(path)
       ) {
         const name = path === "/" ? "index.html" : path.slice(1),
           file =
@@ -191,6 +199,23 @@ export class WebServer {
         this.json(res, 200, publicSettings(this.app.config.settingsPath));
         return;
       }
+      if (req.method === "GET" && path === "/api/queues") {
+        this.json(res, 200, this.app.localQueues());
+        return;
+      }
+      const exportId = path.match(/^\/api\/exports\/([\w-]+)$/)?.[1];
+      if (req.method === "GET" && exportId) {
+        const file = this.app.exports.get(exportId);
+        if (!file) throw new ProtocolError("导出链接已失效，请重新导出", 404);
+        const body = await readFile(file.path);
+        this.headers(res);
+        res.writeHead(200, {
+          "Content-Type": "application/json; charset=utf-8",
+          "Content-Disposition": `attachment; filename="${file.filename}"`,
+        });
+        res.end(body);
+        return;
+      }
       if (req.method !== "POST") throw new ProtocolError("路径不存在", 404);
       if (path === "/api/session") {
         const p = await this.payload(req);
@@ -213,11 +238,55 @@ export class WebServer {
         return;
       }
       this.writerCheck(req);
-      const p = await this.payload(req);
+      const p = await this.payload(
+        req,
+        path === "/api/import" ? Infinity : 65536,
+      );
       this.writerCheck(req);
+      if (path === "/api/models") {
+        const saved = readSettings(this.app.config.settingsPath);
+        let settings;
+        try {
+          settings = validateSettings({
+            ...saved,
+            openai: { ...saved.openai, baseURL: p.baseURL, apiKey: p.apiKey },
+          }).openai;
+        } catch (error) {
+          throw new ProtocolError((error as Error).message, 400);
+        }
+        if (
+          !settings.apiKey &&
+          !p.clearKey &&
+          settings.baseURL === saved.openai.baseURL
+        )
+          settings.apiKey = saved.openai.apiKey;
+        if (p.clearKey)
+          throw new ProtocolError(
+            "请先取消勾选“清除已保存的 API Key”，再获取模型。",
+            400,
+          );
+        if (!settings.apiKey)
+          throw new ProtocolError("请先填写该接口的 API Key。", 400);
+        const abort = new AbortController();
+        const cancel = () => abort.abort();
+        res.once("close", cancel);
+        try {
+          const models = await listModels(settings, abort.signal);
+          this.json(res, 200, { models });
+        } catch (error) {
+          if (!abort.signal.aborted)
+            throw new ProtocolError((error as Error).message, 502);
+        } finally {
+          res.off("close", cancel);
+        }
+        return;
+      }
       let action = "";
       if (path === "/api/operations") action = "operation";
-      else if (/^\/api\/control\/[\w-]+$/.test(path))
+      else if (path === "/api/import") {
+        action = "operation";
+        p.kind = "import_queues";
+      } else if (/^\/api\/control\/[\w-]+$/.test(path))
         action = path.split("/").at(-1)!;
       else {
         const match = path.match(/^\/api\/prompts\/([\w-]+)\/answer$/);
@@ -229,7 +298,8 @@ export class WebServer {
       if (!action) throw new ProtocolError("路径不存在", 404);
       const id = p.request_id;
       delete p.request_id;
-      this.json(res, 200, this.app.command(id, action, p));
+      const result = this.app.command(id, action, p);
+      this.json(res, 200, { result, snapshot: this.app.snapshot() });
     } catch (e) {
       this.json(res, e instanceof ProtocolError ? e.status : 500, {
         error:

@@ -267,7 +267,11 @@ export async function inspectAccess(tab: Tab, signal: AbortSignal) {
       "平台提示已有其他学习会话，请结束其他会话后继续",
     );
   if (problem === "denied")
-    throw new ReviewRequired("access_denied", "当前账号无法访问此课程");
+    throw new ReviewRequired(
+      "access_denied",
+      "当前账号无法访问此课程",
+      "blocked",
+    );
 }
 export async function dismissOverlays(tab: Tab, signal: AbortSignal) {
   const elements = await tab.queryAll(

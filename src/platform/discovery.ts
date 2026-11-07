@@ -18,6 +18,8 @@ import type { Repository, Task } from "../storage/repository.ts";
 import {
   AuthenticationError,
   ReviewRequired,
+  failureRecovery,
+  type Recovery,
   data,
   list,
   sleep,
@@ -38,7 +40,6 @@ export interface DiscoveryContext {
   lease: Lease;
   scope: TabScope;
   report: (text: string) => void;
-  confirm: (message: string) => Promise<boolean>;
 }
 
 export function subjectSectionCompleted(
@@ -188,12 +189,13 @@ export async function traverse(
   const observed = new Map<string, { task: Task; children: string[] }>();
   let expanded = 0;
   const found: Task[] = [],
-    issues: { url: string; message: string }[] = [],
+    issues: { url: string; message: string; recovery: Recovery }[] = [],
     pending: { url: string; message: string }[] = [];
   const failure = (
     task: Task,
     message: string,
     reason = "discovery_incomplete",
+    recovery: Recovery = "retry",
   ) => {
     ctx.repo.remove(task.id, "failure");
     ctx.repo.review(task, reason, {
@@ -201,8 +203,12 @@ export async function traverse(
       ignored: undefined,
       discoveryComplete: false,
       ownDiscoveryComplete: false,
+      recovery,
     });
-    issues.push({ url: task.url, message });
+    issues.push({ url: task.url, message, recovery });
+    ctx.report(
+      `${recovery === "blocked" ? "入口受阻" : "入口解析未完成"}：${message}（${task.url}）`,
+    );
     visited.set(task.id, "failed");
   };
   const defer = (task: Task, message: string, direct = false) => {
@@ -211,6 +217,7 @@ export async function traverse(
       reason: "discovery_pending",
       ignored: undefined,
       message,
+      recovery: undefined,
       discoveryComplete: false,
       ownDiscoveryComplete: !direct,
     });
@@ -218,9 +225,9 @@ export async function traverse(
     visited.set(task.id, "pending");
     if (direct) pending.push({ url: task.url, message });
   };
-  ctx.repo.canonicalizeEntries(ctx.lease.account);
-  const ignored = new Set(ctx.repo.discardNonCatalogEntries(ctx.lease.account));
+  const ignored = new Set<string>();
   const inScope = discoveryBoundary(roots);
+  const explicit = new Set(roots.map(normalize));
   const related = new Set<string>();
   const usable = (url: string) => {
     if (!isPlaceholderEntry(url) && !isPlatformHome(url)) return true;
@@ -231,6 +238,24 @@ export async function traverse(
     ctx.lease.signal.throwIfAborted();
     if (visited.has(task.id)) return visited.get(task.id)!;
     if (active.has(task.id)) return "complete";
+    // Explicitly resubmitting a failed entry is a recheck. Merely encountering
+    // it through another branch must not silently reactivate a blocked task.
+    if (ctx.repo.hasFailure(task.id)) {
+      if (
+        explicit.has(task.url) ||
+        (task.kind !== "course" && task.details.recovery === "retry")
+      )
+        ctx.repo.retry(task);
+      else if (task.kind !== "course" && task.kind !== "exam") {
+        issues.push({
+          url: task.url,
+          message: task.details.message,
+          recovery: task.details.recovery,
+        });
+        visited.set(task.id, "failed");
+        return "failed";
+      }
+    }
     if (task.kind === "course" || task.kind === "exam") {
       ctx.repo.enqueue(
         task,
@@ -331,6 +356,7 @@ export async function traverse(
             residual: !!manifest.residual,
             reason: undefined,
             message: undefined,
+            recovery: undefined,
           },
         );
         ctx.repo.reconcile(task.id);
@@ -348,6 +374,7 @@ export async function traverse(
         task,
         e instanceof Error ? e.message : "入口解析失败",
         e instanceof ReviewRequired ? e.reason : "discovery_incomplete",
+        failureRecovery(e),
       );
       return "failed";
     } finally {
@@ -517,7 +544,8 @@ async function classManifest(
         "4": "培训班报名待缴费，请在平台处理",
       } as Record<string, string>
     )[String(p.registerStatus)];
-    if (message) throw new ReviewRequired("enrollment_blocked", message);
+    if (message)
+      throw new ReviewRequired("enrollment_blocked", message, "blocked");
   };
   const pending = ctx.repo.pending(task, "enroll");
   if (String(p.registerStatus) === "5") {
@@ -576,16 +604,19 @@ async function classManifest(
       throw new ReviewRequired(
         "enrollment_closed",
         `培训班报名已结束（截止 ${format(end)}，北京时间），请联系班务人员`,
+        "blocked",
       );
     if (start !== undefined && now < start)
       throw new ReviewRequired(
         "enrollment_not_open",
         `培训班报名尚未开始（${format(start)}，北京时间），请在开放后重试`,
+        "blocked",
       );
     if (pending.length)
       throw new ReviewRequired(
         "enrollment_blocked",
         "上次报名结果尚未确认，已重新查询状态，请在平台核实后重试",
+        "blocked",
       );
     const options = p.classInfoVo;
     if (
@@ -598,6 +629,7 @@ async function classManifest(
       throw new ReviewRequired(
         "enrollment_blocked",
         "此培训班需要额外报名资料或付费，请在平台报名",
+        "blocked",
       );
     ctx.report("培训班尚未报名，正在自动报名");
     ctx.auth.assert(ctx.lease);

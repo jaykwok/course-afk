@@ -12,6 +12,7 @@ import {
   digest,
   AuthenticationError,
   ReviewRequired,
+  failureRecovery,
 } from "../utils.ts";
 import { redact, type Logger } from "../log.ts";
 import type { Repository, Queue } from "../storage/repository.ts";
@@ -24,6 +25,13 @@ import { discover, type DiscoveryContext } from "../platform/discovery.ts";
 import { learn } from "../platform/learning.ts";
 import { runExam } from "../platform/exam.ts";
 import { references } from "../platform/references.ts";
+import {
+  adoptImports,
+  exportBundle,
+  importBundle,
+  IMPORT_INBOX,
+  taskIssue,
+} from "../storage/transfer.ts";
 
 export class ProtocolError extends Error {
   status: number;
@@ -39,15 +47,31 @@ export const OPERATIONS = [
   "select",
   "settings",
   "references",
-  "tasks",
+  "retry_tasks",
   "login",
   "switch_account",
   "clear_credentials",
-  "clear_courses",
-  "clear_exams",
-  "clear_all",
+  "clear_queues",
+  "export_queues",
+  "import_queues",
 ] as const;
 type Operation = (typeof OPERATIONS)[number];
+const CLEAR_SCOPES = ["failures", "courses", "exams", "all"] as const;
+const OPERATION_TITLES: Record<Operation, string> = {
+  learn: "课程学习",
+  exam: "自动考试",
+  links: "解析链接",
+  select: "在平台选择课程",
+  settings: "保存设置",
+  references: "下载资料",
+  retry_tasks: "重新排队",
+  login: "登录账号",
+  switch_account: "切换账号",
+  clear_credentials: "清除登录信息",
+  clear_queues: "清空队列",
+  export_queues: "导出任务",
+  import_queues: "导入任务",
+};
 export class Application extends EventEmitter {
   readonly repo: Repository;
   readonly browser: BrowserRuntime;
@@ -55,6 +79,7 @@ export class Application extends EventEmitter {
   readonly logger: Logger;
   readonly auth: Authentication;
   readonly instanceId = token();
+  readonly exports = new Map<string, { path: string; filename: string }>();
   seq = 0;
   operationId: string | null = null;
   kind: Operation | null = null;
@@ -68,6 +93,7 @@ export class Application extends EventEmitter {
     summary: null,
     progress: null,
     prompt: null,
+    notification: null,
   };
   logs: { seq: number; message: string; level: string }[] = [];
   droppedLogs = 0;
@@ -107,36 +133,74 @@ export class Application extends EventEmitter {
     return accountId(this.auth.read()?.account || "");
   }
   dashboard() {
+    const account = this.account === "unbound" ? null : this.account;
     const counts = Object.fromEntries(
       (["learn", "failure", "exam", "review", "discover"] as Queue[]).map(
-        (q) => [
-          q,
-          this.account === "unbound"
-            ? 0
-            : this.repo.queue(this.account, q).length,
-        ],
+        (q) => [q, this.repo.queue(account, q).length],
       ),
     );
     const auth = this.auth.dashboard();
+    const failures = this.repo.queue(account, "failure");
+    const importedLearning =
+      this.repo.queue(IMPORT_INBOX, "learn").length +
+      this.repo.queue(IMPORT_INBOX, "discover").length;
+    const importedExams = this.repo.queue(IMPORT_INBOX, "exam").length;
     return {
       ...auth,
-      learning_count: counts.learn + counts.discover,
+      pending_owner:
+        account === null && this.repo.queueAccounts().length
+          ? "本地队列（无需登录即可管理）"
+          : undefined,
+      learning_count: counts.learn,
+      discovery_count: counts.discover,
       learning_failure_count: counts.failure,
       exam_count: counts.exam,
       manual_exam_count: counts.review,
-      retriable_failure_count: counts.failure,
+      retriable_failure_count: failures.filter(
+        (t) => t.details.recovery === "retry",
+      ).length,
+      blocked_failure_count: failures.filter(
+        (t) => t.details.recovery === "blocked",
+      ).length,
+      import_count: importedLearning + importedExams,
       ai_configured: aiConfigured(
         readSettings(this.config.settingsPath).openai,
       ),
       recommended:
-        auth.credential.status !== "valid"
-          ? "切换账号 / 更新登录凭证"
-          : counts.learn || counts.discover
-            ? "仅挂课"
-            : counts.exam
-              ? "AI 自动考试"
-              : "手动选择课程 / 录入课程或考试链接",
+        auth.credential.status === "missing"
+          ? { kind: "login", label: "登录账号" }
+          : auth.credential.status !== "valid"
+            ? { kind: "login", label: "更新登录凭证" }
+            : counts.learn || counts.discover || importedLearning
+              ? { kind: "learn", label: "开始课程学习" }
+              : counts.exam || importedExams
+                ? { kind: "exam", label: "开始考试" }
+                : { kind: "links", label: "添加课程链接" },
     };
+  }
+  localQueues() {
+    return {
+      currentAccount: this.account,
+      accounts: this.repo.queueAccounts().map((account) => ({
+        id: account,
+        label: this.localAccountLabel(account),
+        counts: Object.fromEntries(
+          (["learn", "discover", "failure", "exam", "review"] as Queue[]).map(
+            (queue) => [queue, this.repo.queue(account, queue).length],
+          ),
+        ),
+        failures: this.repo.queue(account, "failure").map((task) => ({
+          url: task.url,
+          ...taskIssue(task),
+        })),
+      })),
+    };
+  }
+  private notify(
+    message: string,
+    tone: "success" | "error" | "info" = "success",
+  ) {
+    this.update({ notification: { id: token(), message, tone } });
   }
   update(fields: Record<string, unknown> = {}) {
     Object.assign(this.view, fields);
@@ -151,6 +215,17 @@ export class Application extends EventEmitter {
       operation_id: this.operationId,
       control: {
         kind: this.kind,
+        cancellable:
+          this.kind !== null &&
+          [
+            "learn",
+            "exam",
+            "links",
+            "select",
+            "references",
+            "login",
+            "switch_account",
+          ].includes(this.kind),
         cancelled: this.abort?.signal.aborted || false,
         stop_after_current: this.stopAfter,
         exit_requested: this.exitRequested,
@@ -217,23 +292,25 @@ export class Application extends EventEmitter {
           payload.input_text.length > 50000)
       )
         throw new ProtocolError("链接输入过长或无效", 400);
+      if (
+        payload.kind === "clear_queues" &&
+        !CLEAR_SCOPES.includes(payload.scope)
+      )
+        throw new ProtocolError("清空范围无效", 400);
+      if (
+        (payload.kind === "links" || payload.kind === "references") &&
+        !payload.input_text?.trim()
+      )
+        throw new ProtocolError("请先填写课程或考试链接", 400);
       this.operationId = token();
       this.kind = payload.kind;
       this.abort = new AbortController();
       this.stopAfter = false;
       this.update({
-        title:
-          (
-            {
-              learn: "课程学习",
-              exam: "自动考试",
-              links: "解析链接",
-              select: "手动选择课程",
-              references: "下载资料",
-            } as any
-          )[payload.kind] || "账号与任务管理",
+        title: OPERATION_TITLES[this.kind!],
         status: "正在准备",
         summary: null,
+        notification: null,
       });
       result = { ok: true, operation_id: this.operationId };
       this.active = this.execute(payload.kind, payload)
@@ -263,17 +340,7 @@ export class Application extends EventEmitter {
       )
         throw new ProtocolError("提示已失效");
       const value = payload.value;
-      if (!(
-        (p.kind === "confirm" && typeof value === "boolean") ||
-        (p.kind === "multiline" &&
-          typeof value === "string" &&
-          !!value.trim() &&
-          value.length <= 50000) ||
-        (p.kind === "choice" &&
-          Number.isInteger(value) &&
-          value >= 1 &&
-          value <= p.options.length)
-      ))
+      if (typeof value !== "boolean")
         throw new ProtocolError("回答格式不正确", 400);
       const waiter = this.promptWaiter;
       this.promptWaiter = undefined;
@@ -283,7 +350,7 @@ export class Application extends EventEmitter {
       if (!this.operationId || payload.operation_id !== this.operationId)
         throw new ProtocolError("操作已失效");
       if (action === "cancel") {
-        this.abort?.abort(new Error("已取消本轮，待办保留"));
+        this.abort?.abort(new Error("任务已取消，待处理任务已保留"));
         this.promptWaiter?.reject(this.abort?.signal.reason);
         this.promptWaiter = undefined;
         this.update({ prompt: null });
@@ -311,10 +378,7 @@ export class Application extends EventEmitter {
   async settled() {
     await this.active;
   }
-  async prompt(
-    kind: "confirm" | "multiline" | "choice",
-    fields: any,
-  ): Promise<any> {
+  async prompt(kind: "confirm", fields: any): Promise<any> {
     this.abort?.signal.throwIfAborted();
     if (this.exitRequested || this.promptWaiter)
       throw new Error("当前无法请求确认");
@@ -348,121 +412,96 @@ export class Application extends EventEmitter {
         );
         await saveSettings(this.config.settingsPath, settings);
         Object.assign(this.config, settings.learning);
+        this.notify(
+          "设置已保存。AI 和学习参数在下次任务中生效，浏览器路径在重启后生效。",
+        );
+        return;
+      }
+      if (kind === "login" || kind === "switch_account") {
+        await this.auth.login(scope, report);
+        this.notify("账号已登录，登录信息已保存。");
+        return;
+      }
+      if (kind === "clear_credentials") {
+        await this.auth.forget();
+        this.notify("登录信息已清除，任务与资料已保留。");
+        return;
+      }
+      if (kind === "import_queues") {
+        const account =
+          this.account === "unbound" ? IMPORT_INBOX : this.account;
+        const result = importBundle(this.repo, payload.bundle, account);
         this.update({
           summary: {
             id: token(),
-            title: "设置已保存",
+            title: "任务已导入",
             rows: [
+              ["新加入队列", result.added],
+              ["已有任务（保留本地状态）", result.retained],
               [
-                "生效时间",
-                "AI 和学习参数将在下次任务中生效；浏览器路径将在重启后生效",
+                "下一步",
+                account === IMPORT_INBOX
+                  ? "登录后点击开始学习或开始考试，导入任务将归入该账号"
+                  : "点击开始学习或开始考试，平台会核验当前账号的权限与进度",
               ],
             ],
           },
         });
+        report(`已导入 ${result.added} 个任务`);
         return;
       }
-      if (kind === "login" || kind === "switch_account") {
-        if (
-          kind === "switch_account" &&
-          !(await this.prompt("confirm", {
-            title: "切换账号",
-            message: "当前账号的待办会保留，是否登录其他账号？",
-            default: false,
-          }))
-        )
-          return;
-        await this.auth.login(scope, report);
+      if (kind === "export_queues") {
+        const { account, selection } = payload;
+        const bundle = exportBundle(this.repo, account, selection);
+        const id = token(),
+          filename = `course-pilot-${selection}-${Date.now()}.json`;
+        const path = join(this.config.dataDir, "exports", filename);
+        await atomicJson(path, bundle);
+        this.exports.set(id, { path, filename });
+        this.update({
+          summary: {
+            id: token(),
+            title: "任务已导出",
+            rows: [
+              ["任务数量", bundle.tasks.length],
+              ["文件位置", path],
+            ],
+            download: { href: `/api/exports/${id}`, filename },
+          },
+        });
+        report(`任务已导出：${path}`);
         return;
       }
-      if (kind === "clear_credentials") {
-        if (
-          await this.prompt("confirm", {
-            title: "清除凭证",
-            message: "清除平台登录凭证，待办与资料仍保留。",
-            default: false,
-          })
-        )
-          await this.auth.forget();
+      if (kind === "clear_queues") {
+        const scope: (typeof CLEAR_SCOPES)[number] = payload.scope;
+        const removed = await this.repo.clear(payload.account, scope);
+        const message = `已清空 ${removed} 个${scope === "failures" ? "异常" : scope === "exams" ? "考试" : ""}任务，清空前的队列已备份。`;
+        report(message);
+        this.notify(message);
+        return;
+      }
+      if (kind === "retry_tasks") {
+        const selected = this.repo
+          .queue(payload.account, "failure")
+          .filter((task) => task.details.recovery === payload.recovery);
+        for (const task of selected) this.repo.retry(task);
+        this.notify(
+          `已将 ${selected.length} 个任务重新加入队列，点击“开始学习”继续。`,
+        );
         return;
       }
       const lease = await this.auth.lease(scope);
+      if (kind === "learn" || kind === "exam") {
+        const added = adoptImports(this.repo, lease.account);
+        if (added) report(`已将 ${added} 个导入任务归入当前账号`);
+      }
       const ctx: DiscoveryContext = {
         scope,
         lease,
         auth: this.auth,
         repo: this.repo,
         report,
-        confirm: (message) =>
-          this.prompt("confirm", { title: "请确认", message, default: false }),
       };
-      if (
-        kind === "clear_courses" ||
-        kind === "clear_exams" ||
-        kind === "clear_all"
-      ) {
-        if (
-          await ctx.confirm(
-            kind === "clear_all"
-              ? "清空当前账号的全部待办？"
-              : kind === "clear_exams"
-                ? "清空当前账号的待考科目和考试复查队列？考试历史与提交记录会保留。"
-                : "清空当前账号的学习队列和学习异常？",
-          )
-        ) {
-          this.auth.assert(lease);
-          await this.repo.clear(
-            lease.account,
-            kind === "clear_all"
-              ? "all"
-              : kind === "clear_exams"
-                ? "exams"
-                : "courses",
-          );
-          report("队列已备份并清空");
-        }
-        return;
-      }
-      if (kind === "tasks") {
-        const failed = this.repo.queue(lease.account, "failure");
-        const choice = await this.prompt("choice", {
-          title: "任务统计与重试",
-          message: "选择要进行的操作",
-          rows: [
-            ["学习异常", failed.length],
-            ["考试复查", this.repo.queue(lease.account, "review").length],
-          ],
-          options: ["重试学习异常", "导出队列明细", "返回工作台"],
-        });
-        this.auth.assert(lease);
-        if (choice === 1) {
-          for (const task of failed) {
-            this.repo.enqueue(
-              task,
-              task.kind === "course" ? "learn" : "discover",
-            );
-            this.repo.remove(task.id, "failure");
-          }
-          report("异常任务已重新加入队列");
-        }
-        if (choice === 2) {
-          const path = join(
-            this.config.dataDir,
-            "exports",
-            `queues-${Date.now()}.json`,
-          );
-          await atomicJson(
-            path,
-            Object.fromEntries(
-              (
-                ["learn", "failure", "exam", "review", "discover"] as Queue[]
-              ).map((q) => [q, this.repo.queue(lease.account, q)]),
-            ),
-          );
-          report(`队列已导出：${path}`);
-        }
-        return;
-      }
       if (kind === "select") {
         const collected = new Set<string>();
         const record = (url: string) => {
@@ -514,12 +553,16 @@ export class Application extends EventEmitter {
             record(tab.url);
             await tab.bringToFront();
           }
-          await this.prompt("confirm", {
-            title: "选择课程",
-            message:
-              "请在打开的平台页中点击所需课程或考试，工作台会记录访问的资源。选择完成后点击确认，已记录的任务会保留。",
-            default: false,
-          });
+          if (
+            !(await this.prompt("confirm", {
+              title: "选择课程",
+              message:
+                "请在打开的平台页中点击所需课程或考试，工作台会记录访问的资源。选择完成后点击确认；取消会结束选择，已记录的任务仍会保留。",
+              confirmLabel: "完成选择",
+              cancelLabel: "结束选择",
+            }))
+          )
+            return;
           this.update({
             summary: {
               id: token(),
@@ -533,12 +576,7 @@ export class Application extends EventEmitter {
         return;
       }
       if (kind === "links" || kind === "references") {
-        const text =
-          payload.input_text ||
-          (await this.prompt("multiline", {
-            title: "录入链接",
-            message: "粘贴平台链接或包含链接的通知文字",
-          }));
+        const text = payload.input_text;
         const { urls, rejected } = parseLinkInput(String(text));
         if (rejected) report(`已忽略 ${rejected} 条无效或不支持的链接`);
         if (!urls.length) throw new Error("未找到可用的平台链接");
@@ -548,9 +586,11 @@ export class Application extends EventEmitter {
             summary: {
               id: token(),
               title: "解析结果",
+              tone: result.issues.length ? "info" : "success",
               rows: [
                 ["已发现任务", result.found.length],
                 ["待复查入口", result.issues.length],
+                ...result.issues.map((issue) => [issue.url, issue.message]),
                 ["待继续解析", result.pending.length],
                 ["已解析入口", result.expanded],
                 ["已跳过占位或内容页", result.ignored],
@@ -584,6 +624,7 @@ export class Application extends EventEmitter {
             summary: {
               id: token(),
               title: "资料下载结果",
+              tone: failed ? "info" : "success",
               rows: [
                 ["已保存", saved],
                 ["失败", failed],
@@ -633,14 +674,21 @@ export class Application extends EventEmitter {
           else review++;
         } catch (e) {
           const status = lease.signal.aborted ? "INTERRUPTED" : "NEEDS_REVIEW";
-          this.repo.outcome(task.id, status, { message: redact(e) });
-          this.repo.end(run, status, { message: redact(e) });
-          if (lease.signal.aborted || e instanceof AuthenticationError) throw e;
+          if (lease.signal.aborted || e instanceof AuthenticationError) {
+            this.repo.outcome(task.id, status, { message: redact(e) });
+            this.repo.end(run, status, { message: redact(e) });
+            throw e;
+          }
           this.repo.review(
             task,
             e instanceof ReviewRequired ? e.reason : "operation_failed",
-            { message: redact(e) },
+            { message: redact(e), recovery: failureRecovery(e) },
             task.kind === "exam",
+          );
+          this.repo.end(
+            run,
+            this.repo.task(task.id).status,
+            this.repo.task(task.id).details,
           );
           review++;
           report(redact(e));
@@ -649,7 +697,8 @@ export class Application extends EventEmitter {
       this.update({
         summary: {
           id: token(),
-          title: "本轮结果",
+          title: kind === "learn" ? "学习结果" : "考试结果",
+          tone: review ? "info" : "success",
           rows: [
             ["已完成", completed],
             ["待继续或复查", review],
@@ -661,12 +710,21 @@ export class Application extends EventEmitter {
       this.update({
         summary: {
           id: token(),
-          title: "本轮已结束",
+          title: this.abort!.signal.aborted ? "任务已取消" : "操作未完成",
+          tone: this.abort!.signal.aborted ? "info" : "error",
           rows: [["状态", redact(e)]],
         },
       });
+      this.notify(redact(e), this.abort!.signal.aborted ? "info" : "error");
     } finally {
       await scope.close();
     }
+  }
+  private localAccountLabel(account: string) {
+    return account === IMPORT_INBOX
+      ? "待登录导入队列"
+      : account === this.account
+        ? `账号 ${this.auth.dashboard().account}`
+        : `本地账号 ${account.slice(0, 12)}`;
   }
 }

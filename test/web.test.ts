@@ -3,7 +3,10 @@ import assert from "node:assert/strict";
 import { WebSocket } from "ws";
 import { WebServer } from "../src/web/server.ts";
 import { token } from "../src/utils.ts";
-import { application } from "./helpers.ts";
+import { application, COURSE } from "./helpers.ts";
+import { IMPORT_INBOX } from "../src/storage/transfer.ts";
+import { defaults, readSettings, saveSettings } from "../src/config.ts";
+import { modelService } from "./model-service.ts";
 async function fixture() {
   const f = await application(),
     server = new WebServer(f.app),
@@ -60,6 +63,89 @@ async function fixture() {
     },
   };
 }
+test("model discovery uses draft credentials offline without saving settings", async () => {
+  const f = await fixture(),
+    provider = await modelService();
+  try {
+    const writer = await f.connect(),
+      generation = writer.snapshot.generation;
+    const draft = {
+      baseURL: provider.baseURL,
+      apiKey: "draft-secret",
+      clearKey: false,
+    };
+    const response = await f.post("/api/models", draft, generation);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      models: ["atlas-chat", "atlas-mini", "orbit-reasoner"],
+    });
+    assert.deepEqual(provider.requests, [
+      { path: "/v1/models", method: "GET", auth: "Bearer draft-secret" },
+    ]);
+    assert.deepEqual(readSettings(f.app.config.settingsPath), defaults());
+    assert.equal(f.app.operationId, null);
+
+    const saved = defaults();
+    saved.openai.baseURL = provider.baseURL;
+    saved.openai.apiKey = "saved-secret";
+    await saveSettings(f.app.config.settingsPath, saved);
+    const savedKey = await f.post(
+      "/api/models",
+      { ...draft, apiKey: "" },
+      generation,
+    );
+    assert.equal(savedKey.status, 200);
+    assert.equal(provider.requests.at(-1)!.auth, "Bearer saved-secret");
+    assert.equal(readSettings(f.app.config.settingsPath).openai.model, "");
+
+    for (const body of [
+      { ...draft, apiKey: "", baseURL: provider.baseURL + "/other" },
+      { ...draft, clearKey: true },
+      { ...draft, baseURL: "invalid" },
+    ])
+      assert.equal((await f.post("/api/models", body, generation)).status, 400);
+    assert.equal(provider.requests.length, 2);
+    assert.deepEqual(readSettings(f.app.config.settingsPath), saved);
+  } finally {
+    await provider.close();
+    await f.cleanup();
+  }
+});
+test("model discovery reports empty lists and provider errors without exposing keys", async () => {
+  const f = await fixture(),
+    provider = await modelService();
+  try {
+    const draft = {
+      baseURL: provider.baseURL,
+      apiKey: "private-test-key",
+      clearKey: false,
+    };
+    assert.equal((await f.post("/api/models", draft)).status, 409);
+    assert.equal(provider.requests.length, 0);
+    const writer = await f.connect(),
+      generation = writer.snapshot.generation;
+    provider.state.models = [];
+    const empty = await f.post("/api/models", draft, generation);
+    assert.deepEqual(await empty.json(), { models: [] });
+    for (const status of [401, 404, 429, 500]) {
+      provider.state.status = status;
+      const response = await f.post("/api/models", draft, generation);
+      assert.equal(response.status, 502);
+      const body = await response.text();
+      assert.match(body, new RegExp(`HTTP ${status}`));
+      assert.ok(!body.includes(draft.apiKey));
+    }
+    assert.equal(
+      provider.requests.length,
+      5,
+      "fetching models never retries automatically",
+    );
+    assert.equal(f.app.operationId, null);
+  } finally {
+    await provider.close();
+    await f.cleanup();
+  }
+});
 test("HTTP bootstrap single-use, origin/CSRF boundaries and observer windows", async () => {
   const f = await fixture();
   try {
@@ -140,7 +226,11 @@ test("reconnection fences old writer and deduplicates exactly identical commands
     const body = { kind: "login", request_id: token() };
     const first = await f.post("/api/operations", body, b.snapshot.generation),
       again = await f.post("/api/operations", body, b.snapshot.generation);
-    assert.deepEqual(await first.json(), await again.json());
+    const accepted = (await first.json()) as any;
+    const repeated = (await again.json()) as any;
+    assert.deepEqual(accepted.result, repeated.result);
+    assert.equal(accepted.snapshot.operation_id, accepted.result.operation_id);
+    assert.equal(repeated.snapshot.operation_id, accepted.result.operation_id);
     assert.equal(calls, 1);
     assert.equal(
       (
@@ -161,6 +251,44 @@ test("reconnection fences old writer and deduplicates exactly identical commands
     await f.cleanup();
   }
 });
+test("local queue inspection stays read-only while another operation runs", async () => {
+  const f = await fixture();
+  let release!: () => void;
+  try {
+    const task = f.repo.upsert(COURSE, "local-account");
+    f.repo.review(task, "permission", {
+      recovery: "blocked",
+      message: "需管理员授权",
+    });
+    assert.equal((await fetch(f.origin + "/api/queues")).status, 401);
+    const writer = await f.connect();
+    f.app.execute = () =>
+      new Promise<void>((resolve) => {
+        release = resolve;
+      });
+    await f.post(
+      "/api/operations",
+      { kind: "learn", request_id: token() },
+      writer.snapshot.generation,
+    );
+    const operation = f.app.operationId;
+    const response = await fetch(f.origin + "/api/queues", {
+      headers: { Cookie: f.cookie },
+    });
+    assert.equal(response.status, 200);
+    const queues = (await response.json()) as any;
+    assert.equal(queues.accounts[0].counts.failure, 1);
+    assert.equal(queues.accounts[0].failures[0].message, "需管理员授权");
+    assert.equal(f.app.operationId, operation);
+    assert.equal(f.app.view.prompt, null);
+    assert.equal(f.repo.hasFailure(task.id), true);
+  } finally {
+    release?.();
+    await f.app.settled();
+    await f.cleanup();
+  }
+});
+
 test("prompt generation, cancellation and next operation release", async () => {
   const f = await fixture();
   f.app.execute = async () => {
@@ -230,5 +358,78 @@ test("projected logs remain bounded and redact tokens", async () => {
     assert.ok(!JSON.stringify(s).includes("token=secret"));
   } finally {
     await f.close();
+  }
+});
+
+test("portable file upload and download work offline behind the local session and controller boundaries", async () => {
+  const f = await fixture();
+  try {
+    const writer = await f.connect(),
+      generation = writer.snapshot.generation;
+    const bundle = {
+      format: "course-pilot.tasks",
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      tasks: Array.from({ length: 200 }, () => ({
+        url: COURSE,
+        state: "pending",
+        issue: {
+          reason: "memo",
+          message: "x".repeat(400),
+          recovery: "retry",
+        },
+      })),
+      sources: [],
+    };
+    assert.ok(Buffer.byteLength(JSON.stringify(bundle)) > 65536);
+    const result = await f.post(
+      "/api/import",
+      { bundle, request_id: token() },
+      generation,
+    );
+    assert.equal(result.status, 200);
+    await f.app.settled();
+    assert.equal(f.repo.queue(IMPORT_INBOX, "learn").length, 1);
+    await f.post(
+      "/api/operations",
+      {
+        kind: "export_queues",
+        account: IMPORT_INBOX,
+        selection: "pending",
+        request_id: token(),
+      },
+      generation,
+    );
+    await f.app.settled();
+    const href = f.app.view.summary.download.href;
+    assert.equal((await fetch(f.origin + href)).status, 401);
+    const download = await fetch(f.origin + href, {
+      headers: { Cookie: f.cookie },
+    });
+    assert.equal(download.status, 200);
+    assert.match(
+      download.headers.get("content-disposition")!,
+      /attachment; filename="course-pilot-pending-/,
+    );
+    const saved = (await download.json()) as any;
+    assert.equal(saved.tasks.length, 1);
+    const invalid = await f.post(
+      "/api/import",
+      {
+        bundle: {
+          ...saved,
+          tasks: [{ url: "file:///private", state: "pending" }],
+        },
+        request_id: token(),
+      },
+      generation,
+    );
+    assert.equal(invalid.status, 200);
+    await f.app.settled();
+    assert.equal(f.app.view.summary.title, "操作未完成");
+    assert.equal(f.repo.queue(IMPORT_INBOX, "learn").length, 1);
+    f.chrome.assertDone();
+  } finally {
+    await f.cleanup();
   }
 });

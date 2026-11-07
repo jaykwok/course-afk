@@ -11,6 +11,8 @@ import { PlatformHttp } from "../browser/http.ts";
 import {
   data,
   ReviewRequired,
+  failureRecovery,
+  type Recovery,
   AuthenticationError,
   sleep,
   list,
@@ -274,7 +276,11 @@ export async function learn(
 ) {
   if (task.kind !== "course") {
     await discover([task.url], ctx);
-    if (task.kind === "subject" && ctx.repo.task(task.id).details.residual)
+    if (
+      task.kind === "subject" &&
+      !ctx.repo.hasFailure(task.id) &&
+      ctx.repo.task(task.id).details.residual
+    )
       await learnSubjectLinks(task, ctx);
     return;
   }
@@ -285,7 +291,8 @@ export async function learn(
     await prepare(tab, ctx);
     const { sections } = await courseInfo(http, task);
     let states = await progress(http, task, sections);
-    const issues: { section: string; message: string }[] = [];
+    const issues: { section: string; message: string; recovery: Recovery }[] =
+      [];
     let examsPending = false;
     for (const s of sections) {
       ctx.auth.assert(ctx.lease);
@@ -320,6 +327,7 @@ export async function learn(
       if (![1, 2, 3, 5, 6].includes(Number(s.sectionType))) {
         issues.push({
           section: s.id,
+          recovery: "blocked",
           message:
             Number(s.sectionType) === 4
               ? "H5 章节需要人工学习"
@@ -385,6 +393,7 @@ export async function learn(
         issues.push({
           section: s.id,
           message: e instanceof Error ? e.message : "章节学习失败",
+          recovery: failureRecovery(e),
         });
       }
     }
@@ -404,6 +413,9 @@ export async function learn(
       ctx.repo.review(task, "partial_course_failure", {
         message: "部分章节尚未完成",
         sections: issues,
+        recovery: issues.some((issue) => issue.recovery === "retry")
+          ? "retry"
+          : "blocked",
       });
     else
       ctx.repo.outcome(
@@ -486,6 +498,18 @@ async function learnSubjectLinks(task: Task, ctx: DiscoveryContext) {
         discoveryComplete: true,
       });
       ctx.repo.reconcile(task.id);
+    } else if (manifest.complete && !manifest.residual) {
+      // A child's failure is recorded on that child, not again on every parent.
+      ctx.repo.remove(task.id, "learn");
+      ctx.repo.remove(task.id, "failure");
+      ctx.repo.outcome(task.id, "WAITING_CHILDREN", {
+        residual: false,
+        discoveryComplete: false,
+        ownDiscoveryComplete: true,
+        recovery: undefined,
+        reason: "discovery_pending",
+        message: "子入口待处理，已确认的主题活动进度已保留",
+      });
     } else
       ctx.repo.review(
         task,

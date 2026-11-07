@@ -9,8 +9,9 @@
   "scripts": {
     "prestart": "npm run build",
     "start": "node dist/src/main.js",
+    "console": "node dist/src/main.js",
     "check": "tsc --noEmit",
-    "build": "tsc && node tools/copy-assets.ts",
+    "build": "tsc && node dist/tools/copy-assets.js",
     "test": "node --test --test-concurrency=1 test/*.test.ts",
     "test:browser": "node --test --test-concurrency=1 test/browser/*.test.ts",
     "check-startup": "node src/main.ts --check-startup",

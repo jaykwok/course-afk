@@ -17,7 +17,7 @@ import type { DiscoveryContext } from "../src/platform/discovery.ts";
 import { configuration } from "../src/config.ts";
 import { HOME } from "../src/config.ts";
 import { InputActionError, type Tab } from "nodriver-ts";
-import { digest } from "../src/utils.ts";
+import { ReviewRequired } from "../src/utils.ts";
 
 const snapshot = (url: string, values: string[], extra = {}) => ({
   url,
@@ -427,93 +427,6 @@ test("retrying only a failed child resolves ancestor discovery without completin
   }
 });
 
-test("reparse removes old entry aliases and article failures while retaining history and account isolation", async () => {
-  const temp = await temporary(),
-    repo = new Repository(temp.dir);
-  const root = "https://cms.mylearning.cn/topic/parent.html",
-    article = "https://cms.mylearning.cn/topic/site.html";
-  try {
-    const parent = repo.upsert(root, "a"),
-      old = repo.upsert(article, "a"),
-      other = repo.upsert(article, "b");
-    repo.link(parent, old);
-    repo.review(old, "discovery_incomplete");
-    repo.review(other, "discovery_incomplete");
-    const url = "https://cms.mylearning.cn//topic//nested.html#top",
-      businessId = digest(url);
-    const id = digest(
-      JSON.stringify([
-        "cms.mylearning.cn",
-        "a",
-        "entry",
-        businessId,
-        "",
-        "",
-        "",
-      ]),
-    );
-    repo.db
-      .prepare(
-        "INSERT INTO tasks(id,account,kind,url,identity,status) VALUES(?,'a','entry',?,?,'NEEDS_REVIEW')",
-      )
-      .run(
-        id,
-        url,
-        JSON.stringify({ id, account: "a", kind: "entry", url, businessId }),
-      );
-    const alias = repo.task(id);
-    repo.link(parent, alias);
-    repo.enqueue(alias, "discover");
-    const run = repo.begin(alias, "learn");
-    repo.end(run, "NEEDS_REVIEW", {});
-    await traverse(
-      [root],
-      async (task) =>
-        task.url === article
-          ? { links: [], complete: true, ignored: "内容页无学习入口" }
-          : {
-              links: task.url === root ? [normalize(url), article] : [COURSE],
-              complete: true,
-            },
-      {
-        repo,
-        lease: {
-          account: "a",
-          generation: 0,
-          fingerprint: "x",
-          signal: new AbortController().signal,
-        },
-        report() {},
-      },
-    );
-    assert.equal(repo.queue("a", "failure").length, 0);
-    assert.equal(repo.queue("a", "discover").length, 0);
-    assert.equal(repo.queue("b", "failure").length, 1);
-    assert.equal(repo.task(old.id).details.ignored, true);
-    assert.equal(
-      repo.task(alias.id).details.canonicalId,
-      repo.upsert(url, "a").id,
-    );
-    assert.equal(
-      repo.db
-        .prepare("SELECT count(*) n FROM runs WHERE task_id=?")
-        .get(alias.id)?.n,
-      1,
-    );
-    assert.equal(
-      repo.db
-        .prepare("SELECT count(*) n FROM edges WHERE child=? OR parent=?")
-        .get(alias.id, alias.id)?.n,
-      0,
-    );
-    repo.complete(repo.upsert(COURSE, "a"), { finishStatus: 2 });
-    assert.equal(repo.task(parent.id).status, "COMPLETED");
-  } finally {
-    repo.close();
-    await temp.close();
-  }
-});
-
 test("static topic aliases are deduplicated and placeholder pages are pruned before opening or queuing", async () => {
   const root = "https://cms.mylearning.cn/topic/root.html";
   const aliases = [
@@ -532,11 +445,7 @@ test("static topic aliases are deduplicated and placeholder pages are pruned bef
   const temp = await temporary(),
     repo = new Repository(temp.dir);
   try {
-    const parent = repo.upsert(root, "a"),
-      empty = repo.upsert(placeholders[0], "a");
-    repo.link(parent, empty);
-    repo.enqueue(empty, "discover");
-    repo.review(empty, "discovery_incomplete");
+    const parent = repo.upsert(root, "a");
     const seen: string[] = [];
     const result = await traverse(
       [...aliases, ...placeholders],
@@ -559,7 +468,6 @@ test("static topic aliases are deduplicated and placeholder pages are pruned bef
     assert.equal(result.complete, true);
     assert.equal(repo.queue("a", "failure").length, 0);
     assert.equal(repo.queue("a", "discover").length, 0);
-    assert.equal(repo.task(empty.id).details.ignored, true);
     repo.complete(repo.upsert(COURSE, "a"), { finishStatus: 2 });
     assert.equal(repo.task(parent.id).status, "COMPLETED");
   } finally {
@@ -779,7 +687,6 @@ test("subject learning refreshes nested activity progress without erasing incomp
           signal: new AbortController().signal,
         },
         report: () => {},
-        confirm: async () => false,
         auth: {
           assert() {},
           async navigate(_scope: unknown, _url: string) {
@@ -832,8 +739,11 @@ test("subject learning refreshes nested activity progress without erasing incomp
         !incompleteChild,
       );
       assert.equal(repo.task(task.id).details.residual, false);
-      if (incompleteChild)
-        assert.equal(repo.task(task.id).details.reason, "discovery_incomplete");
+      if (incompleteChild) {
+        assert.equal(repo.task(task.id).details.reason, "discovery_pending");
+        assert.equal(repo.hasFailure(task.id), false);
+        assert.equal(repo.queue(account, "failure").length, 1);
+      }
       if (!incompleteChild)
         assert.equal(
           repo.queue(account, "learn").some((t) => t.id === task.id),
@@ -1084,6 +994,71 @@ test("recursive traversal shares cycles and aliases, preserves partial discoveri
     await temp.close();
   }
 });
+test("failure isolation uses recovery metadata across shared branches, preserves useful work, and reconciles parents on recheck", async () => {
+  const temp = await temporary(),
+    repo = new Repository(temp.dir);
+  const root = "https://cms.mylearning.cn/topic/root.html",
+    left = root.replace("root", "left"),
+    right = root.replace("root", "right"),
+    blocked = root.replace("root", "gate"),
+    partial = root.replace("root", "partial");
+  const reads = new Map<string, number>();
+  let open = false;
+  const ctx = {
+    repo,
+    lease: {
+      account: "a",
+      generation: 0,
+      fingerprint: "test",
+      signal: new AbortController().signal,
+    },
+    report() {},
+  };
+  const read = async (task: { url: string }) => {
+    reads.set(task.url, (reads.get(task.url) || 0) + 1);
+    if (task.url === root)
+      return { links: [left, right, partial], complete: true };
+    if (task.url === left || task.url === right)
+      return { links: [blocked, COURSE], complete: true };
+    if (task.url === blocked && !open)
+      throw new ReviewRequired(
+        "arbitrary-new-reason",
+        "需要外部条件改变",
+        "blocked",
+      );
+    if (task.url === partial)
+      return { links: [EXAM], complete: open, message: "分页暂未返回完整" };
+    return { links: [COURSE], complete: true };
+  };
+  try {
+    const first = await traverse([root], read, ctx);
+    assert.equal(first.issues.length, 2);
+    assert.equal(reads.get(blocked), 1);
+    assert.equal(repo.queue("a", "learn").length, 1);
+    assert.equal(repo.queue("a", "exam").length, 1);
+    assert.equal(repo.queue("a", "discover").length, 0);
+    assert.equal(repo.queue("a", "failure").length, 2);
+    const stopped = repo.upsert(blocked, "a");
+    assert.equal(stopped.status, "BLOCKED");
+    await traverse([root], read, ctx);
+    assert.equal(reads.get(blocked), 1); // Visiting a shared blocked branch cannot reopen it.
+    assert.equal(reads.get(partial), 2); // An explicit reparse can recover a technical read failure.
+    assert.equal(repo.upsert(root, "a").details.discoveryComplete, false);
+    assert.equal(repo.hasFailure(repo.upsert(root, "a").id), false);
+    open = true;
+    await traverse([blocked, partial], read, ctx);
+    assert.equal(repo.queue("a", "failure").length, 0);
+    assert.equal(repo.upsert(root, "a").details.discoveryComplete, true);
+    assert.notEqual(repo.upsert(root, "a").status, "COMPLETED");
+    repo.complete(repo.upsert(COURSE, "a"), { source: "platform" });
+    repo.complete(repo.upsert(EXAM, "a"), { source: "platform" });
+    assert.equal(repo.upsert(root, "a").status, "COMPLETED");
+  } finally {
+    repo.close();
+    await temp.close();
+  }
+});
+
 test("limits preserve pending containers; cancellation propagates without discarding leaf work", async () => {
   const temp = await temporary(),
     repo = new Repository(temp.dir),
